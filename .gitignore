@@ -1,0 +1,30 @@
+# --- ROS 2 Build & Install Artifacts ---
+build/
+install/
+log/
+.colcon/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# --- Large Model Files (CRITICAL) ---
+# Prevent uploading 5GB+ AI models to GitHub
+*.gguf
+*.bin
+models/
+src/models/
+
+# --- OS & Editor ---
+.DS_Store
+.vscode/
+.idea/
+*~
+
+# --- Local Maps (Optional) ---
+# Uncomment if you don't want to track map files
+# *.yaml
+# *.pgm

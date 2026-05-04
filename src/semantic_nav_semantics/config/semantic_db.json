@@ -1,0 +1,67 @@
+{
+    "locations": {
+        "corridor": {
+            "frame_id": "map",
+            "x": 1.5610082250424882,
+            "y": 0.285580970153352,
+            "yaw": 0.0,
+            "aliases": ["hallway", "passage", "hall"]
+        },
+        "living_room": {
+            "frame_id": "map",
+            "x": -2.653806018735047,
+            "y": 3.2201717642999084,
+            "yaw": 0.0,
+            "aliases": ["living room", "living space"]
+        },
+        "kitchen": {
+            "frame_id": "map",
+            "x": 13.2217,
+            "y": -0.2792,
+            "yaw": 0.0,
+            "aliases": ["kitchen"]
+        },
+        "bedroom": {
+            "frame_id": "map",
+            "x": 0.6876,
+            "y": -0.8698,
+            "yaw": 0.0,
+            "aliases": ["bedroom"]
+        },
+        "dining": {
+            "frame_id": "map",
+            "x": 4.393064480857726,
+            "y": 1.2208558910145955,
+            "yaw": 0.0,
+            "aliases": ["dining area", "dining room"]
+        },
+        "second_bedroom": {
+            "frame_id": "map",
+            "x": 0.9435,
+            "y": 4.3064,
+            "yaw": 0.0,
+            "aliases": ["second bedroom"]
+        },
+        "washroom": {
+            "frame_id": "map",
+            "x": 8.0489,
+            "y": 4.0435,
+            "yaw": 0.0,
+            "aliases": ["washroom", "bathroom"]
+        },
+        "postbox": {
+            "frame_id": "map",
+            "x": 7.820305761389775,
+            "y": 0.6458266518244637,
+            "yaw": 0.0,
+            "aliases": ["postbox", "mailbox"]
+        },
+        "secret garden": {
+            "frame_id": "map",
+            "x": 50.0,
+            "y": 50.0,
+            "yaw": 0.0,
+            "aliases": ["secret garden", "hidden garden"]
+        }
+    }
+}

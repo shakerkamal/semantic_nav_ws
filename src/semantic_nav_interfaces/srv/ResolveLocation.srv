@@ -1,0 +1,6 @@
+string query
+---
+bool success
+string location_id
+geometry_msgs/PoseStamped pose
+string message
