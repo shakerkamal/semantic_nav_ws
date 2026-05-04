@@ -1,9 +1,13 @@
 import math
 import rclpy
+import threading
 
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 
+from action_msgs.msg import GoalStatus
 from nav2_msgs.action import ComputePathToPose
 from semantic_nav_interfaces.srv import ValidatePose
 
@@ -24,21 +28,26 @@ class SemanticNavValidator(Node):
 
         self.declare_parameter('compute_path_action', '/compute_path_to_pose')
         self.declare_parameter('default_planner_id', '')
+        self.declare_parameter('validation_timeout_sec', 10.0)
 
         action_name = self.get_parameter('compute_path_action').get_parameter_value().string_value
         self._default_planner_id = self.get_parameter('default_planner_id').get_parameter_value().string_value
+        self._timeout = float(self.get_parameter('validation_timeout_sec').value)
+        self._cb_group = ReentrantCallbackGroup()
 
-        self._planner_client = ActionClient(self, ComputePathToPose, action_name)
+        self._planner_client = ActionClient(self, ComputePathToPose, action_name, callback_group=self._cb_group)
 
         self._srv = self.create_service(
             ValidatePose,
             'validate_pose_goal',
-            self.validate_pose_callback
+            self.validate_pose_callback,
+            callback_group=self._cb_group
         )
 
         self.get_logger().info(f'Validator initialized, waiting for {action_name} action server...')
 
     def validate_pose_callback(self, request, response):
+        self.get_logger().info('Received validation request')
         goal_pose = request.goal
 
         if goal_pose.header.frame_id != 'map':
@@ -61,47 +70,94 @@ class SemanticNavValidator(Node):
         action_goal.use_start = bool(request.use_start)
         if action_goal.use_start:
             action_goal.start = request.start
+        
+        done_event = threading.Event()
+        result_box = {
+            'error': None,
+            'status': None,
+            'result': None,
+        }
 
-        send_goal_future = self._planner_client.send_goal_async(action_goal)
-        rclpy.spin_until_future_complete(self, send_goal_future)
+        self.get_logger().info('Sending ComputePathToPose goal')
 
-        goal_handle = send_goal_future.result()
+        send_goal_future = self._planner_client.send_goal_async(action_goal, feedback_callback=None)
 
-        if goal_handle is None or not goal_handle.accepted:
+        def on_goal_response(future):
+            try:
+                goal_handle = future.result()
+                # if goal_handle is None or not goal_handle.accepted:
+                #     result_box['error'] = 'Planner rejected validation request'
+                #     done_event.set()
+                #     return
+                
+                # get_result_future = goal_handle.get_result_async()
+                # get_result_future.add_done_callback(on_get_result)
+            except Exception as e:
+                result_box['error'] = f'Planner action call failed: {str(e)}'
+                done_event.set()
+                return
+            
+            if goal_handle is None or not goal_handle.accepted:
+                result_box['error'] = 'Planner rejected validation request'
+                done_event.set()
+                return
+            
+            self.get_logger().info('Goal accepted by planner, waiting for result...')
+
+            result_future = goal_handle.get_result_async()
+
+            def on_result(future):
+                try:
+                    result_wrap = future.result()
+                except Exception as e:
+                    result_box['error'] = f'Failed to get result from planner: {str(e)}'
+                    done_event.set()
+                    return
+                
+                if result_wrap is None:
+                        result_box['error'] = 'Planner failed to return a result'
+                        done_event.set()
+                        return
+                
+                result_box['status'] = result_wrap.status
+                result_box['result'] = result_wrap.result
+                done_event.set()
+            
+            result_future.add_done_callback(on_result)
+        
+        send_goal_future.add_done_callback(on_goal_response)
+
+        if not done_event.wait(timeout=self._timeout):
             response.valid = False
-            response.message = 'Planner rejected validation request'
+            response.message = 'Planner validation timed out'
             response.path_length = 0.0
             response.pose_count = 0
             return response
         
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
-
-        result_wrap = result_future.result()
-        if result_wrap is None:
+        if result_box['error'] is not None:
             response.valid = False
-            response.message = 'Planner failed to return a result'
+            response.message = result_box['error']
             response.path_length = 0.0
             response.pose_count = 0
             return response
         
-        status = result_wrap.status
-        result = result_wrap.result
+        status = result_box['status']
+        result = result_box['result']
 
-        if status != 4:  # 4 == SUCCEEDED
+        if status != GoalStatus.STATUS_SUCCEEDED:
             response.valid = False
             response.message = f'Planner failed with status code {status}'
             response.path_length = 0.0
             response.pose_count = 0
             return response
-        
+
         if len(result.path.poses) == 0:
             response.valid = False
             response.message = 'Planner returned an empty path'
             response.path_length = 0.0
             response.pose_count = 0
             return response
-        
+
         response.valid = True
         response.message = 'Pose is valid and reachable'
         response.path_length = float(path_length(result.path))
@@ -111,7 +167,13 @@ class SemanticNavValidator(Node):
 def main(args=None):
     rclpy.init(args=args)
     validator = SemanticNavValidator()
-    rclpy.spin(validator)
-    validator.destroy_node()
-    rclpy.shutdown()
+
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(validator)
+    try:
+        executor.spin()
+    finally:
+        rclpy.spin(validator)
+        validator.destroy_node()
+        rclpy.shutdown()
         

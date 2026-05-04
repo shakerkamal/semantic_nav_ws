@@ -29,48 +29,47 @@ class NavigationOrchestrator(Node):
         self._validate_pose_client = self.create_client(ValidatePose, self._validate_service_name)
         self._execute_pose_client = ActionClient(self, ExecutePose, self._execute_action_name)
 
-        self.get_logger().info(f'Navigation Orchestrator initialized with query: "{self._query}"')
-
-        self._done = False
-        self._final_success = False
         self._goal_handle = None
         self._result_future = None
-        
-        # # Create service client for resolving location
-        # self._resolve_location_client = self.create_client(ResolveLocation, 'resolve_location')
-        # while not self._resolve_location_client.wait_for_service(timeout_sec=1.0):
-        #     self.get_logger().info('Waiting for resolve_location service...')
-        
-        # # Create action client for executing pose
-        # self._execute_pose_client = ActionClient(self, ExecutePose, 'execute_pose')
-        # while not self._execute_pose_client.wait_for_server(timeout_sec=1.0):
-        #     self.get_logger().info('Waiting for execute_pose action server...')
+        self._final_success = False
+
+        self.get_logger().info(f'Navigation Orchestrator initialized with query: "{self._query}"')
+
+    def _log_stage_info(self, stage: str, message: str):
+        self.get_logger().info(f'[{stage}] {message}')
+
+    def _log_stage_error(self, stage: str, message: str):
+        self.get_logger().error(f'[{stage}] {message}')             
 
     def run(self) -> bool:
         if not self._query:
-            self.get_logger().error('No query provided. Please set the "query" parameter.')
+            self._log_stage_error('RESOLUTION', 'No query provided. Please set the "query" parameter.')
             return False
         
         pose = self._resolve_query()
         if pose is None:
-            self.get_logger().error('Failed to resolve query to a pose.')
+            self._log_stage_error('RESOLUTION', 'Failed to resolve query to a pose.')
             return False
         
         if self._enable_validation:
-            self.get_logger().info('Validating resolved pose with planner...')
+            self._log_stage_info('VALIDATION', 'Validating resolved pose with planner...')
             if not self._validate_pose(pose):
-                self.get_logger().error('Pose validation failed. Aborting navigation.')
+                self._log_stage_error('VALIDATION', 'Pose validation failed. Aborting navigation.')
                 return False
-            self.get_logger().info('Pose validation succeeded.')
+            self._log_stage_info('VALIDATION', 'Pose validation succeeded.')
         
-        return self._execute_pose(pose)
+        if not self._execute_pose(pose):
+            self._log_stage_error('EXECUTION', 'Failed to execute pose. Navigation unsuccessful.')
+            return False
+        
+        return True
     
     def _resolve_query(self):
-        self.get_logger().info(f'Resolving location for query: "{self._query}"')
+        self._log_stage_info('RESOLUTION', f'Resolving location for query: "{self._query}"')
 
         if not self._resolve_location_client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error(f'Resolve location service "{self._resolve_service_name}" not available')
-            return False
+            self._log_stage_error('RESOLUTION', f'Resolve location service "{self._resolve_service_name}" not available')
+            return None
         
         req = ResolveLocation.Request()
         req.query = self._query
@@ -78,21 +77,32 @@ class NavigationOrchestrator(Node):
         future = self._resolve_location_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
 
-        if future.result() is None:
-            self.get_logger().error(f'Failed to call resolve_location service: {future.exception()}')
-            return False
+        if not future.done():
+            self._log_stage_error('RESOLUTION', 'Service call to resolve location did not complete')
+            return None
+        
+        if future.exception() is not None:
+            self._log_stage_error('RESOLUTION', f'Failed to call resolve_location service: {future.exception()}')
+            return None
         
         response = future.result()
+        if response is None:
+            self._log_stage_error('RESOLUTION', 'Resolve location service returned no response.')
+            return None
 
         if not response.success:
-            self.get_logger().error(f'Location resolution failed: {response.message}')
-            return False
+            self._log_stage_error('RESOLUTION', f'Location resolution failed: {response.message}')
+            return None
         
-        self.get_logger().info(f'Location resolved: {response.location_name}, executing pose...')
+        self._log_stage_info('RESOLUTION', f'Location resolved: {response.location_id}, executing pose...')
 
         pose = response.pose
-        self.get_logger().info(
-            f"Resolved '{self._query}' -> location_id='{response.place_id}', "
+        if pose is None or pose.header.frame_id == '':
+            self._log_stage_error('RESOLUTION', 'Resolution succeeded but returned an invalid pose.')
+            return None
+
+        self._log_stage_info('RESOLUTION',
+            f"Resolved '{self._query}' -> location_id='{response.location_id}', "
             f"frame='{pose.header.frame_id}', "
             f"x={pose.pose.position.x:.3f}, y={pose.pose.position.y:.3f}"
         )
@@ -100,10 +110,14 @@ class NavigationOrchestrator(Node):
         return pose
     
     def _validate_pose(self, pose) -> bool:
-        self.get_logger().info('Validating goal with ComputePathToPose...')
+        self._log_stage_info('VALIDATION', 'Validating goal with ComputePathToPose...')
+
+        if pose is None:
+            self._log_stage_error('VALIDATION', 'No pose provided for validation.')
+            return False
 
         if not self._validate_pose_client.wait_for_service(timeout_sec=10.0):
-            self.get_logger().error(f'Validate pose service "{self._validate_service_name}" not available')
+            self._log_stage_error('VALIDATION', f'Validate pose service "{self._validate_service_name}" not available')
             return False
         
         req = ValidatePose.Request()
@@ -114,68 +128,98 @@ class NavigationOrchestrator(Node):
         future = self._validate_pose_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
 
-        if future.result() is None:
-            self.get_logger().error(f'Validation service call failed: {future.exception()}')
+        if not future.done():
+            self._log_stage_error('VALIDATION', 'Service call to validate pose did not complete')
             return False
-        
-        response = future.result()
 
-        if not response.valid:
-            self.get_logger().error(f'Goal validation failed: {response.message}')
+        if future.exception() is not None:
+            self._log_stage_error('VALIDATION', f'Validation service call failed: {future.exception()}')
+            return False
+
+        response = future.result()
+        if response is None:
+            self._log_stage_error('VALIDATION', 'Validate pose service returned no response.')
             return False
         
-        self.get_logger().info(
+        if not response.valid:
+            self._log_stage_error('VALIDATION', f'Goal validation failed: {response.message}')
+            return False
+        
+        self._log_stage_info('VALIDATION',
             f"Validation succeeded: {response.message}, "
             f"path_length={response.path_length:.3f}, pose_count={response.pose_count}"
         )
         return True
     
     def _execute_pose(self, pose) -> bool:
+        if pose is None:
+            self._log_stage_error('EXECUTION', 'No pose provided for execution.')
+            return False
+        
         if not self._execute_pose_client.wait_for_server(timeout_sec=10.0):
-            self.get_logger().error(f'Execute pose action server "{self._execute_action_name}" not available')
+            self._log_stage_error('EXECUTION', f'Execute pose action server "{self._execute_action_name}" not available')
             return False
         
         goal_msg = ExecutePose.Goal()
         goal_msg.pose = pose
         goal_msg.behavior_tree = '' # Optional: specify a behavior tree if needed
 
-        self.get_logger().info(f'Sending goal to execute_pose action server: frame={pose.header.frame_id}, x={pose.pose.position.x:.3f}, y={pose.pose.position.y:.3f}')
+        self._log_stage_info('EXECUTION',
+            f"Sending goal to execute_pose action server: "
+            f"frame={pose.header.frame_id}, "
+            f"x={pose.pose.position.x:.3f}, y={pose.pose.position.y:.3f}"
+        )
 
         send_goal_future = self._execute_pose_client.send_goal_async(goal_msg, feedback_callback=self.feedback_callback)
 
         rclpy.spin_until_future_complete(self, send_goal_future)
 
+        if not send_goal_future.done():
+            self._log_stage_error('EXECUTION', 'Send goal to execute_pose action server did not complete')
+            return False
+        
+        if send_goal_future.exception() is not None:
+            self._log_stage_error('EXECUTION', f'Failed to send goal to execute_pose action server: {send_goal_future.exception()}')
+            return False
+
         self._goal_handle = send_goal_future.result()
         if self._goal_handle is None:
-            self.get_logger().error("Failed to get goal handle from executor.")
+            self._log_stage_error('EXECUTION', "Failed to get goal handle from executor.")
             return False
         
         if not self._goal_handle.accepted:
-            self.get_logger().error('Goal rejected by action server')
+            self._log_stage_error('EXECUTION', 'Goal rejected by action server')
             return False
         
-        self.get_logger().info('Goal accepted, waiting for result...')
+        self._log_stage_info('EXECUTION', 'Goal accepted, waiting for result...')
         self._result_future = self._goal_handle.get_result_async()
         rclpy.spin_until_future_complete(self, self._result_future)
 
+        if not self._result_future.done():
+            self._log_stage_error('EXECUTION', 'ExecutePose result did not complete.')
+            return False
+
+        if self._result_future.exception() is not None:
+            self._log_stage_error('EXECUTION', f'Failed to get result from execute_pose action: {self._result_future.exception()}')
+            return False
+
         result_wrap = self._result_future.result()
         if result_wrap is None:
-            self.get_logger().error(f'Failed to get result from execute_pose action: {self._result_future.exception()}')
+            self._log_stage_error('EXECUTION', f'Failed to get result from execute_pose action: {self._result_future.exception()}')
             return False
         
         result = result_wrap.result
         status = result_wrap.status
 
-        self.get_logger().info(
+        self._log_stage_info('EXECUTION',
             f"Executor finished with status={status}, success={result.success}, message='{result.message}'"
         )
 
-        self._final_success = bool(result.success)
-        return self._final_success
+        return bool(result.success)
 
     def feedback_callback(self, feedback_msg):
         fb = feedback_msg.feedback
-        self.get_logger().info(
+        self._log_stage_info('EXECUTION',
             "Feedback: "
             f"distance_remaining={fb.distance_remaining:.3f}, "
             f"recoveries={fb.number_of_recoveries}, "
@@ -185,7 +229,7 @@ class NavigationOrchestrator(Node):
 
     def cancel_goal(self):
         if self._goal_handle is not None:
-            self.get_logger().info('Cancel request received. Cancelling goal...')
+            self._log_stage_info('EXECUTION', 'Cancel request received. Cancelling goal...')
             cancel_future = self._goal_handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self, cancel_future)
 
