@@ -32,6 +32,7 @@ class NavigationOrchestrator(Node):
         self._goal_handle = None
         self._result_future = None
         self._final_success = False
+        self._db_version: int = 0
 
         self.get_logger().info(f'Navigation Orchestrator initialized with query: "{self._query}"')
 
@@ -93,8 +94,9 @@ class NavigationOrchestrator(Node):
         if not response.success:
             self._log_stage_error('RESOLUTION', f'Location resolution failed: {response.message}')
             return None
-        
-        self._log_stage_info('RESOLUTION', f'Location resolved: {response.location_id}, executing pose...')
+
+        self._db_version = response.db_version
+        self._log_stage_info('RESOLUTION', f'Location resolved: {response.location_id} (db_version={self._db_version})')
 
         pose = response.pose
         if pose is None or pose.header.frame_id == '':
@@ -103,6 +105,7 @@ class NavigationOrchestrator(Node):
 
         self._log_stage_info('RESOLUTION',
             f"Resolved '{self._query}' -> location_id='{response.location_id}', "
+            f"db_version={self._db_version}, "
             f"frame='{pose.header.frame_id}', "
             f"x={pose.pose.position.x:.3f}, y={pose.pose.position.y:.3f}"
         )
@@ -110,7 +113,7 @@ class NavigationOrchestrator(Node):
         return pose
     
     def _validate_pose(self, pose) -> bool:
-        self._log_stage_info('VALIDATION', 'Validating goal with ComputePathToPose...')
+        self._log_stage_info('VALIDATION', f'Validating goal with ComputePathToPose (db_version={self._db_version})...')
 
         if pose is None:
             self._log_stage_error('VALIDATION', 'No pose provided for validation.')
@@ -165,7 +168,7 @@ class NavigationOrchestrator(Node):
         goal_msg.behavior_tree = '' # Optional: specify a behavior tree if needed
 
         self._log_stage_info('EXECUTION',
-            f"Sending goal to execute_pose action server: "
+            f"Sending goal to execute_pose action server (db_version={self._db_version}): "
             f"frame={pose.header.frame_id}, "
             f"x={pose.pose.position.x:.3f}, y={pose.pose.position.y:.3f}"
         )
@@ -212,7 +215,8 @@ class NavigationOrchestrator(Node):
         status = result_wrap.status
 
         self._log_stage_info('EXECUTION',
-            f"Executor finished with status={status}, success={result.success}, message='{result.message}'"
+            f"Executor finished with status={status}, success={result.success}, "
+            f"db_version={self._db_version}, message='{result.message}'"
         )
 
         return bool(result.success)

@@ -3,4 +3,5 @@ string query
 bool success
 string location_id
 geometry_msgs/PoseStamped pose
+uint32 db_version
 string message

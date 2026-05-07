@@ -8,6 +8,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(action_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/SemanticDB.msg"
   "action/ExecutePose.action"
   "srv/ResolveLocation.srv"
   "srv/ValidatePose.srv"
