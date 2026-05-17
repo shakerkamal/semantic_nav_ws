@@ -4,6 +4,12 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use simulation time'
+    )
+
     semantic_db_path_arg = DeclareLaunchArgument(
         'semantic_db_path',
         default_value='',
@@ -28,7 +34,8 @@ def generate_launch_description():
         name='semantic_resolver',
         output='screen',
         parameters=[{
-            'semantic_db_path': LaunchConfiguration('semantic_db_path')
+            'semantic_db_path': LaunchConfiguration('semantic_db_path'),
+            'use_sim_time': LaunchConfiguration('use_sim_time')
         }]
     )
 
@@ -37,16 +44,23 @@ def generate_launch_description():
         executable='validator_node',
         name='semantic_nav_validator',
         output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time')
+        }]
     )
 
     executor_node = Node(
         package='semantic_nav_executor',
         executable='executor_node',
         name='semantic_nav_executor',
-        output='screen'
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time')
+        }]
     )
 
     return LaunchDescription([
+        use_sim_time_arg,
         semantic_db_path_arg,
         resolve_service_arg,
         execute_action_arg,

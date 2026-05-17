@@ -85,13 +85,6 @@ class SemanticNavValidator(Node):
         def on_goal_response(future):
             try:
                 goal_handle = future.result()
-                # if goal_handle is None or not goal_handle.accepted:
-                #     result_box['error'] = 'Planner rejected validation request'
-                #     done_event.set()
-                #     return
-                
-                # get_result_future = goal_handle.get_result_async()
-                # get_result_future.add_done_callback(on_get_result)
             except Exception as e:
                 result_box['error'] = f'Planner action call failed: {str(e)}'
                 done_event.set()
