@@ -1,0 +1,23 @@
+# Strict semantic navigation intent grammar.
+# The LLM may infer a free-form target, but deterministic code must validate it
+# against semantic_db.json before navigation.
+
+root ::= ws (navigate | clarify | reject) ws
+
+navigate ::= "{" ws action-key ws ":" ws "\"navigate\"" ws "," ws target-key ws ":" ws string ws "," ws confidence-key ws ":" ws confidence ws "}"
+clarify ::= "{" ws action-key ws ":" ws "\"clarify\"" ws "," ws target-key ws ":" ws "\"\"" ws "," ws confidence-key ws ":" ws confidence ws "}"
+reject ::= "{" ws action-key ws ":" ws "\"reject\"" ws "," ws target-key ws ":" ws "\"\"" ws "," ws confidence-key ws ":" ws confidence ws "}"
+
+action-key ::= "\"action\""
+target-key ::= "\"target\""
+confidence-key ::= "\"confidence\""
+
+confidence ::= "100" | [1-9] [0-9]? | "0"
+
+string ::= "\"" char{1,80} "\""
+
+char ::= [^"\\\x7F\x00-\x1F] | "\\" escape
+escape ::= ["\\/bfnrt] | "u" hex hex hex hex
+hex ::= [0-9a-fA-F]
+
+ws ::= [ \t\n\r]*

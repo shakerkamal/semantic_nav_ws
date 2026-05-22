@@ -9,52 +9,80 @@
         },
         "living_room": {
             "frame_id": "map",
-            "x": -2.653806018735047,
-            "y": 3.2201717642999084,
+            "x": -0.12302362233525191,
+            "y": -0.0026456069078263735,
             "yaw": 0.0,
             "aliases": ["living room", "living space"]
         },
         "kitchen": {
             "frame_id": "map",
-            "x": 13.2217,
-            "y": -0.2792,
+            "x": 7.91571588540369,
+            "y": -4.27366745354795,
             "yaw": 0.0,
             "aliases": ["kitchen"]
         },
+        "refrigerator": {
+            "frame_id": "map",
+            "x": 7.912405502167188,
+            "y": -1.2821508877220351,
+            "yaw": 0.0,
+            "aliases": ["refrigerator", "fridge"]
+        },
+        "gym": {
+            "frame_id": "map",
+            "x": 2.35379575854586,
+            "y": 4.125599627744856,
+            "yaw": 0.0,
+            "aliases": ["gym", "exercise room"]
+        },
+        "tea table": {
+            "frame_id": "map",
+            "x": -0.46565164584372637,
+            "y": 4.733301028215364,
+            "yaw": 0.0,
+            "aliases": ["tea table", "coffee table"]
+        },
         "bedroom": {
             "frame_id": "map",
-            "x": 0.6876,
-            "y": -0.8698,
+            "x": -5.7201136691259284,
+            "y": 0.6235689902420261,
             "yaw": 0.0,
             "aliases": ["bedroom"]
         },
         "dining": {
             "frame_id": "map",
-            "x": 4.393064480857726,
-            "y": 1.2208558910145955,
+            "x": 6.796589748098804,
+            "y": -0.6073232520050683,
             "yaw": 0.0,
             "aliases": ["dining area", "dining room"]
         },
         "second_bedroom": {
             "frame_id": "map",
-            "x": 0.9435,
-            "y": 4.3064,
+            "x": -5.172165057225223,
+            "y": -3.4055816823607694,
             "yaw": 0.0,
             "aliases": ["second bedroom"]
         },
-        "washroom": {
+        "bedroom_door": {
             "frame_id": "map",
-            "x": 8.0489,
-            "y": 4.0435,
+            "x": -2.5878587288949877,
+            "y": -1.3945694077447757,
             "yaw": 0.0,
-            "aliases": ["washroom", "bathroom"]
+            "aliases": ["bedroom door", "bedroom entrance"]
         },
-        "postbox": {
+        "shoe_rack": {
             "frame_id": "map",
-            "x": 7.820305761389775,
-            "y": 0.6458266518244637,
+            "x": 4.101495596199826,
+            "y": -4.54135933451702,
             "yaw": 0.0,
-            "aliases": ["postbox", "mailbox"]
+            "aliases": ["shoe rack", "shoe storage"]
+        },
+        "main_entrance": {
+            "frame_id": "map",
+            "x": 5.934540801938378,
+            "y": -4.705002489343168,
+            "yaw": 0.0,
+            "aliases": ["main entrance", "front door"]
         },
         "secret garden": {
             "frame_id": "map",

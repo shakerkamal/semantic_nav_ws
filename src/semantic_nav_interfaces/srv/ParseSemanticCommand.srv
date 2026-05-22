@@ -1,0 +1,10 @@
+string command
+---
+bool success
+string intent
+string location_query
+string canonical_location_id
+uint8 confidence_percent
+bool location_known
+string raw_output
+string message

@@ -22,7 +22,7 @@ def path_length(path_msg):
         total_length += math.hypot(p1.x - p0.x, p1.y - p0.y)
     return total_length
 
-class SemanticNavValidator(Node):
+class ValidatorNode(Node):
     def __init__(self):
         super().__init__('semantic_nav_validator')
 
@@ -159,7 +159,7 @@ class SemanticNavValidator(Node):
     
 def main(args=None):
     rclpy.init(args=args)
-    validator = SemanticNavValidator()
+    validator = ValidatorNode()
 
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(validator)

@@ -12,6 +12,7 @@
   <depend>semantic_nav_executor</depend>
   <depend>semantic_nav_semantics</depend>
   <depend>semantic_nav_validator</depend>
+  <depend>semantic_nav_llm</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

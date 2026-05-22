@@ -12,6 +12,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ExecutePose.action"
   "srv/ResolveLocation.srv"
   "srv/ValidatePose.srv"
+  "srv/ParseSemanticCommand.srv"
   DEPENDENCIES geometry_msgs builtin_interfaces
 )
 
