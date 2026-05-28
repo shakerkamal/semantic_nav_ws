@@ -29,7 +29,10 @@ def generate_launch_description():
     llm_semantic_db_path = LaunchConfiguration('llm_semantic_db_path')
     llama_action = LaunchConfiguration('llama_action')
     parse_service = LaunchConfiguration('parse_service')
+    propose_recovery_service = LaunchConfiguration('propose_recovery_service')
     grammar_path = LaunchConfiguration('grammar_path')
+    recovery_grammar_path = LaunchConfiguration('recovery_grammar_path')
+    recovery_max_tokens = LaunchConfiguration('recovery_max_tokens')
     min_confidence_percent = LaunchConfiguration('min_confidence_percent')
     max_tokens = LaunchConfiguration('max_tokens')
     llm_result_timeout_sec = LaunchConfiguration('llm_result_timeout_sec')
@@ -114,6 +117,12 @@ def generate_launch_description():
         description='Service exposed by semantic_nav_llm navigator_node'
     )
 
+    propose_recovery_service_arg = DeclareLaunchArgument(
+        'propose_recovery_service',
+        default_value='/propose_recovery',
+        description='Service exposed by semantic_nav_llm for recovery proposals'
+    )
+
     grammar_path_arg = DeclareLaunchArgument(
         'grammar_path',
         default_value=os.path.join(
@@ -122,6 +131,22 @@ def generate_launch_description():
             'semantic_intent.gbnf'
         ),
         description='Absolute path to semantic intent GBNF grammar'
+    )
+
+    recovery_grammar_path_arg = DeclareLaunchArgument(
+        'recovery_grammar_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_llm'),
+            'config',
+            'recovery_intent.gbnf'
+        ),
+        description='Absolute path to recovery GBNF grammar'
+    )
+
+    recovery_max_tokens_arg = DeclareLaunchArgument(
+        'recovery_max_tokens',
+        default_value='192',
+        description='Request-level generation cap for recovery JSON'
     )
 
     min_confidence_percent_arg = DeclareLaunchArgument(
@@ -250,6 +275,9 @@ def generate_launch_description():
             'llm_result_timeout_sec': llm_result_timeout_sec,
             'debug_prompt': debug_prompt,
             'debug_grammar': debug_grammar,
+            'propose_recovery_service': propose_recovery_service,
+            'recovery_grammar_path': recovery_grammar_path,
+            'recovery_max_tokens': recovery_max_tokens,
         }.items()
     )
 
@@ -273,7 +301,9 @@ def generate_launch_description():
         llm_result_timeout_sec_arg,
         debug_prompt_arg,
         debug_grammar_arg,
-
+        propose_recovery_service_arg,
+        recovery_grammar_path_arg,
+        recovery_max_tokens_arg,
         aws_small_house_sim_launch,
 
         TimerAction(

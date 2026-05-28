@@ -1,6 +1,4 @@
 # Strict semantic navigation intent grammar.
-# The LLM may infer a free-form target, but deterministic code must validate it
-# against semantic_db.json before navigation.
 
 root ::= ws (navigate | clarify | reject) ws
 

@@ -9,11 +9,12 @@ find_package(action_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SemanticDB.msg"
-  "action/ExecutePose.action"
   "srv/ResolveLocation.srv"
   "srv/ValidatePose.srv"
   "srv/ParseSemanticCommand.srv"
-  DEPENDENCIES geometry_msgs builtin_interfaces
+  "srv/ProposeRecovery.srv"
+  "action/ExecutePose.action"
+  DEPENDENCIES geometry_msgs builtin_interfaces action_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)

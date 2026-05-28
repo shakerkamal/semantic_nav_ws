@@ -1,0 +1,32 @@
+# Request
+string original_nl_command
+string original_target
+string failure_stage
+string nav2_message
+
+# Attempt history.
+# Milestone 1 can pass these empty.
+# Later milestones should populate these arrays in parallel.
+string[] attempted_actions
+string[] attempted_values
+string[] attempt_outcomes
+string[] attempt_rationales
+
+geometry_msgs/PoseStamped robot_pose_at_failure
+
+# Rendered semantic-distance summary computed by the orchestrator.
+# Milestone 1 may pass: "not computed in milestone 1"
+string nearest_locations_summary
+
+float32 distance_remaining_at_abort
+uint32 nav2_recoveries_attempted
+uint32 remaining_retry_budget
+---
+bool success
+string action
+string target
+string[] waypoints
+string rationale
+uint8 confidence_percent
+string raw_output
+string message

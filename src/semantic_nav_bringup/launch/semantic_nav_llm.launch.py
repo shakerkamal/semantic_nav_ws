@@ -11,6 +11,10 @@ def generate_launch_description():
     llama_action = LaunchConfiguration("llama_action")
     parse_service = LaunchConfiguration("parse_service")
 
+    propose_recovery_service = LaunchConfiguration("propose_recovery_service")
+    recovery_grammar_path = LaunchConfiguration("recovery_grammar_path")
+    recovery_max_tokens = LaunchConfiguration("recovery_max_tokens")
+
     min_confidence_percent = LaunchConfiguration("min_confidence_percent")
     max_tokens = LaunchConfiguration("max_tokens")
     target_min_len = LaunchConfiguration("target_min_len")
@@ -40,6 +44,12 @@ def generate_launch_description():
         "semantic_intent.gbnf",
     ])
 
+    default_recovery_grammar_path = PathJoinSubstitution([
+        FindPackageShare("semantic_nav_llm"),
+        "config",
+        "recovery_intent.gbnf",
+    ])
+
     return LaunchDescription([
         DeclareLaunchArgument(
             "semantic_db_path",
@@ -52,6 +62,16 @@ def generate_launch_description():
             description="Path to semantic_nav_llm GBNF grammar file.",
         ),
         DeclareLaunchArgument(
+            "recovery_grammar_path",
+            default_value=default_recovery_grammar_path,
+            description="Path to semantic_nav_llm recovery GBNF grammar file.",
+        ),
+        DeclareLaunchArgument(
+            "recovery_max_tokens",
+            default_value="192",
+            description="Request-level generation cap for recovery JSON.",
+        ),
+        DeclareLaunchArgument(
             "llama_action",
             default_value="/llama/generate_response",
             description="llama_ros GenerateResponse action endpoint.",
@@ -60,6 +80,11 @@ def generate_launch_description():
             "parse_service",
             default_value="/parse_semantic_command",
             description="Service exposed by semantic_nav_llm navigator_node.",
+        ),
+        DeclareLaunchArgument(
+            "propose_recovery_service",
+            default_value="/propose_recovery",
+            description="Service exposed by semantic_nav_llm for recovery proposals.",
         ),
 
         DeclareLaunchArgument(
@@ -158,6 +183,9 @@ def generate_launch_description():
                 "debug_prompt": debug_prompt,
                 "debug_grammar": debug_grammar,
                 "allow_json_extraction_fallback": allow_json_extraction_fallback,
+                "propose_recovery_service": propose_recovery_service,
+                "recovery_grammar_path": recovery_grammar_path,
+                "recovery_max_tokens": recovery_max_tokens,
             }],
         ),
     ])
