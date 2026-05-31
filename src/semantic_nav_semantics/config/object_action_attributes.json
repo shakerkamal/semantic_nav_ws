@@ -1,0 +1,25 @@
+{
+  "defaults": {
+    "openable": false,
+    "safety_class": "none",
+    "clearable": false
+  },
+  "by_tag": {
+    "closet door":  { "openable": true,  "safety_class": "none",   "clearable": false },
+    "door":         { "openable": true,  "safety_class": "none",   "clearable": false },
+    "gate":         { "openable": true,  "safety_class": "none",   "clearable": false },
+
+    "window":       { "openable": false, "safety_class": "none",   "clearable": false },
+
+    "stool":        { "openable": false, "safety_class": "none",   "clearable": true  },
+    "chair":        { "openable": false, "safety_class": "none",   "clearable": true  },
+    "potted plant": { "openable": false, "safety_class": "none",   "clearable": true  },
+
+    "couch":        { "openable": false, "safety_class": "none",   "clearable": false },
+
+    "person":       { "openable": false, "safety_class": "human",  "clearable": false },
+    "human":        { "openable": false, "safety_class": "human",  "clearable": false },
+    "cat":          { "openable": false, "safety_class": "animal", "clearable": false },
+    "dog":          { "openable": false, "safety_class": "animal", "clearable": false }
+  }
+}

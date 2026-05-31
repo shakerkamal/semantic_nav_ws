@@ -39,6 +39,15 @@ def generate_launch_description():
     debug_prompt = LaunchConfiguration('debug_prompt')
     debug_grammar = LaunchConfiguration('debug_grammar')
 
+    # Recovery trigger layer options.
+    use_recovery_trigger_layer = LaunchConfiguration('use_recovery_trigger_layer')
+    plan_topic = LaunchConfiguration('plan_topic')
+    global_costmap_topic = LaunchConfiguration('global_costmap_topic')
+    recovery_trigger_topic = LaunchConfiguration('recovery_trigger_topic')
+    occupied_threshold = LaunchConfiguration('occupied_threshold')
+    sample_radius_m = LaunchConfiguration('sample_radius_m')
+    recovery_trigger_debounce_sec = LaunchConfiguration('recovery_trigger_debounce_sec')
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
@@ -48,7 +57,7 @@ def generate_launch_description():
     semantic_db_path_arg = DeclareLaunchArgument(
         'semantic_db_path',
         default_value='',
-        description='Optional absolute path to semantic_db.json'
+        description='Optional absolute path to semantic_db.json for legacy resolver/core fallback'
     )
 
     semantic_db_topic_arg = DeclareLaunchArgument(
@@ -102,7 +111,7 @@ def generate_launch_description():
             'config',
             'semantic_db.json'
         ),
-        description='Absolute path to semantic_db.json used by semantic_nav_llm navigator_node'
+        description='Absolute path to semantic location DB used by semantic_nav_llm navigator_node'
     )
 
     llama_action_arg = DeclareLaunchArgument(
@@ -145,7 +154,7 @@ def generate_launch_description():
 
     recovery_max_tokens_arg = DeclareLaunchArgument(
         'recovery_max_tokens',
-        default_value='192',
+        default_value='256',
         description='Request-level generation cap for recovery JSON'
     )
 
@@ -163,7 +172,7 @@ def generate_launch_description():
 
     llm_result_timeout_sec_arg = DeclareLaunchArgument(
         'llm_result_timeout_sec',
-        default_value='60.0',
+        default_value='180.0',
         description='Timeout waiting for llama_ros GenerateResponse result'
     )
 
@@ -177,6 +186,48 @@ def generate_launch_description():
         'debug_grammar',
         default_value='false',
         description='Print GBNF grammar sent from navigator_node to llama_ros'
+    )
+
+    use_recovery_trigger_layer_arg = DeclareLaunchArgument(
+        'use_recovery_trigger_layer',
+        default_value='true',
+        description='Launch the semantic recovery trigger layer plan_intersection_monitor'
+    )
+
+    plan_topic_arg = DeclareLaunchArgument(
+        'plan_topic',
+        default_value='/plan',
+        description='Nav2 global plan topic monitored by plan_intersection_monitor'
+    )
+
+    global_costmap_topic_arg = DeclareLaunchArgument(
+        'global_costmap_topic',
+        default_value='/global_costmap/costmap',
+        description='Global costmap occupancy grid topic monitored by plan_intersection_monitor'
+    )
+
+    recovery_trigger_topic_arg = DeclareLaunchArgument(
+        'recovery_trigger_topic',
+        default_value='/recovery_trigger',
+        description='RecoveryTrigger topic published by plan_intersection_monitor and consumed by the orchestrator'
+    )
+
+    occupied_threshold_arg = DeclareLaunchArgument(
+        'occupied_threshold',
+        default_value='90',
+        description='OccupancyGrid value at or above which a plan cell is considered blocked'
+    )
+
+    sample_radius_m_arg = DeclareLaunchArgument(
+        'sample_radius_m',
+        default_value='0.05',
+        description='Radius around each plan pose sampled for occupied costmap cells'
+    )
+
+    recovery_trigger_debounce_sec_arg = DeclareLaunchArgument(
+        'recovery_trigger_debounce_sec',
+        default_value='1.0',
+        description='Monitor-side debounce window for repeated plan/costmap intersection triggers'
     )
 
     aws_small_house_sim_launch = IncludeLaunchDescription(
@@ -281,6 +332,26 @@ def generate_launch_description():
         }.items()
     )
 
+    recovery_trigger_layer_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                bringup_dir,
+                'launch',
+                'recovery_trigger_layer.launch.py'
+            )
+        ),
+        condition=IfCondition(use_recovery_trigger_layer),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'plan_topic': plan_topic,
+            'costmap_topic': global_costmap_topic,
+            'recovery_trigger_topic': recovery_trigger_topic,
+            'occupied_threshold': occupied_threshold,
+            'sample_radius_m': sample_radius_m,
+            'debounce_sec': recovery_trigger_debounce_sec,
+        }.items()
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         semantic_db_path_arg,
@@ -304,6 +375,15 @@ def generate_launch_description():
         propose_recovery_service_arg,
         recovery_grammar_path_arg,
         recovery_max_tokens_arg,
+
+        use_recovery_trigger_layer_arg,
+        plan_topic_arg,
+        global_costmap_topic_arg,
+        recovery_trigger_topic_arg,
+        occupied_threshold_arg,
+        sample_radius_m_arg,
+        recovery_trigger_debounce_sec_arg,
+
         aws_small_house_sim_launch,
 
         TimerAction(
@@ -314,6 +394,11 @@ def generate_launch_description():
         TimerAction(
             period=5.0,
             actions=[nav2_launch, rviz_launch]
+        ),
+
+        TimerAction(
+            period=7.0,
+            actions=[recovery_trigger_layer_launch]
         ),
 
         semantic_core_launch,

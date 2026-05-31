@@ -1,26 +1,49 @@
-# Request
 string original_nl_command
 string original_target
 string failure_stage
 string nav2_message
 
-# Attempt history.
-# Milestone 1 can pass these empty.
-# Later milestones should populate these arrays in parallel.
 string[] attempted_actions
 string[] attempted_values
 string[] attempt_outcomes
 string[] attempt_rationales
 
 geometry_msgs/PoseStamped robot_pose_at_failure
-
-# Rendered semantic-distance summary computed by the orchestrator.
-# Milestone 1 may pass: "not computed in milestone 1"
 string nearest_locations_summary
 
 float32 distance_remaining_at_abort
 uint32 nav2_recoveries_attempted
 uint32 remaining_retry_budget
+
+# --- BT-LLM trigger provenance ---
+# "plan_intersection_monitor" | "stall_watchdog" | "bt_recovery_plugin" | "action_backstop"
+string trigger_source
+
+# --- Responsible-object summary ---
+string responsible_object_key
+string match_type                    # "verified" | "inferred" | "unknown"
+
+string responsible_object_tag
+string responsible_object_state      # "static" | "semi-static" | "movable"
+geometry_msgs/Point responsible_bbox_center
+geometry_msgs/Vector3 responsible_bbox_extent
+
+string responsible_safety_class      # "none" | "human" | "animal"
+bool responsible_openable
+bool responsible_clearable
+
+# --- Blockage geometry ---
+geometry_msgs/Point blockage_centroid
+float32 blockage_extent_m
+
+# --- Deterministic short-circuit context ---
+uint16 deterministic_waits_used
+uint16 deterministic_wait_cap
+float32 total_seconds_blocked
+
+# --- Semantic DB version snapshot ---
+uint32 db_version
+builtin_interfaces/Time db_stamp
 ---
 bool success
 string action
@@ -30,3 +53,8 @@ string rationale
 uint8 confidence_percent
 string raw_output
 string message
+
+# --- BT-LLM response additions ---
+string responsible_object_key
+string operator_message
+uint8 wait_seconds

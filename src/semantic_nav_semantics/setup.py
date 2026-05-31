@@ -1,3 +1,4 @@
+from glob import glob
 from setuptools import find_packages, setup
 
 package_name = 'semantic_nav_semantics'
@@ -10,7 +11,8 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/config', ['config/semantic_db.json']),
+        ('share/' + package_name + '/config', glob('config/*.json')),
+
     ],
     install_requires=['setuptools'],
     zip_safe=True,

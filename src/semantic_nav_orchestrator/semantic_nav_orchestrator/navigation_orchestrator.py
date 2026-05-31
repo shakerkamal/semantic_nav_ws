@@ -3,23 +3,30 @@ import math
 import sys
 import json
 import uuid
+import time
+import threading
 from datetime import datetime, timezone
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import dataclass, asdict, field
+from typing import Optional, List, Tuple
+from enum import Enum
 
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.executors import MultiThreadedExecutor
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Time
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Point, PoseStamped, Vector3
+from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from rclpy.duration import Duration
 from tf2_ros import TransformException, Buffer, TransformListener
+from nav2_msgs.srv import ClearEntireCostmap
 
 from semantic_nav_interfaces.action import ExecutePose
-from semantic_nav_interfaces.srv import ResolveLocation, ValidatePose, ParseSemanticCommand, ProposeRecovery
+from semantic_nav_interfaces.srv import ResolveLocation, ValidatePose, ParseSemanticCommand, ProposeRecovery, RequestRecovery
+from semantic_nav_interfaces.msg import RecoveryTrigger
 
 
 @dataclass(frozen=True)
@@ -29,6 +36,45 @@ class ResolvedTarget:
     pose: PoseStamped
     db_version: int
     db_stamp: Time
+
+@dataclass(frozen=True)
+class ObjectActionAttributes:
+    openable: bool
+    clearable: bool
+    safety_class: str
+
+@dataclass(frozen=True)
+class SemanticObject:
+    key: str
+    object_id: int
+    tag: str
+    caption: str
+    state: str
+    x: float
+    y: float
+    z: float
+    extent_x: float
+    extent_y: float
+    extent_z: float
+    volume: float
+    openable: bool
+    clearable: bool
+    safety_class: str
+
+@dataclass(frozen=True)
+class ResponsibleObjectMatch:
+    match_type: str
+    object: Optional[SemanticObject]
+    distance_m: float
+    summary: str
+
+@dataclass(frozen=True)
+class ObjectRecoveryContext:
+    summary: str
+    policy: str
+    primary_tag: str
+    primary_state: str
+    primary_distance: float
 
 @dataclass(frozen=True)
 class ParsedCommand:
@@ -45,6 +91,45 @@ class PipelineOutcome:
     stage: str
     message: str
     target: Optional[ResolvedTarget] = None
+
+class RecoveryFSMState(str, Enum):
+    IDLE = "IDLE"
+    EXECUTING = "EXECUTING"
+    DETERMINISTIC_WAIT = "DETERMINISTIC_WAIT"
+    RECOVERY_IN_PROGRESS = "RECOVERY_IN_PROGRESS"
+    LLM_WAIT = "LLM_WAIT"
+    AWAITING_OPERATOR = "AWAITING_OPERATOR"
+    OPERATOR_RECHECK = "OPERATOR_RECHECK"
+    ESCALATE_OPERATOR = "ESCALATE_OPERATOR"
+    TERMINAL_SUCCESS = "TERMINAL_SUCCESS"
+    TERMINAL_FAIL = "TERMINAL_FAIL"
+
+@dataclass
+class TriggerInfo:
+    trigger_source: str
+    failure_stage: str
+    nav2_message: str = ""
+
+    robot_pose: Optional[PoseStamped] = None
+
+    responsible_object_key: str = ""
+    responsible_object_tag: str = ""
+    responsible_object_state: str = ""
+    responsible_bbox_center: Point = field(default_factory=Point)
+    responsible_bbox_extent: Vector3 = field(default_factory=Vector3)
+    responsible_safety_class: str = "none"
+    responsible_openable: bool = False
+    responsible_clearable: bool = False
+    match_type: str = "unknown"
+
+    blockage_centroid: Point = field(default_factory=Point)
+    blockage_extent_m: float = 0.0
+
+    blocked_plan_index_lo: int = 0
+    blocked_plan_index_hi: int = 0
+
+    debounce_key: str = ""
+    stamp_sec: float = 0.0
 
 @dataclass
 class AttemptRecord:
@@ -65,6 +150,9 @@ class RecoveryProposal:
     confidence_percent: int
     raw_output: str
     message: str
+    responsible_object_key: str = ""
+    operator_message: str = ""
+    wait_seconds: int = 0
 
 class NavigationOrchestrator(Node):
     def __init__(self):
@@ -79,13 +167,21 @@ class NavigationOrchestrator(Node):
         self.declare_parameter('validate_service', '/validate_pose_goal')
         self.declare_parameter('execute_action', '/execute_pose')
 
-        default_semantic_db_path = os.path.join(
+        default_semantic_map_path = os.path.join(
+            get_package_share_directory("semantic_nav_semantics"),
+            "config",
+            "map_v001.json",
+        )
+        default_legacy_semantic_db_path = os.path.join(
             get_package_share_directory("semantic_nav_semantics"),
             "config",
             "semantic_db.json",
         )
 
-        self.declare_parameter("semantic_db_path", default_semantic_db_path)
+        # map_v001.json is the primary semantic source going forward.
+        # semantic_db.json is kept only as a temporary fallback for older room-level catalogs.
+        self.declare_parameter("semantic_map_path", default_semantic_map_path)
+        self.declare_parameter("semantic_db_path", default_legacy_semantic_db_path)
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_base_frame", "base_link")
         self.declare_parameter("nearest_location_count", 5)
@@ -106,9 +202,33 @@ class NavigationOrchestrator(Node):
         self.declare_parameter('action_server_wait_timeout_sec', 10.0)
         self.declare_parameter('action_send_goal_timeout_sec', 10.0)
 
-
         # Set <= 0.0 for no execution timeout.
         self.declare_parameter('execution_timeout_sec', 300.0)
+
+        # BT parameters for recovery triggering and logging
+        self.declare_parameter("recovery_status_topic", "/recovery_status")
+        self.declare_parameter("request_recovery_service", "/request_recovery")
+        self.declare_parameter("recovery_trigger_topic", "/recovery_trigger")
+        self.declare_parameter("enable_bt_recovery_trigger", True)
+        self.declare_parameter("enable_plan_intersection_trigger", True)
+        self.declare_parameter("enable_stall_watchdog", True)
+        self.declare_parameter("stall_distance_epsilon_m", 0.05)
+        self.declare_parameter("stall_window_sec", 4.0)
+        self.declare_parameter("stall_nav2_recoveries_cap", 2)
+        self.declare_parameter("responsible_object_debounce_sec", 2.0)
+        self.declare_parameter("unknown_blockage_debounce_sec", 1.0)
+        self.declare_parameter("bbox_inflation_m", 0.20)
+        self.declare_parameter("nearest_fallback_radius_m", 0.90)
+        self.declare_parameter("start_idle", False)
+
+        default_semantic_object_db_path = default_semantic_map_path
+        default_object_action_attributes_path = os.path.join(
+            get_package_share_directory("semantic_nav_semantics"),
+            "config",
+            "object_action_attributes.json",
+        )
+        self.declare_parameter("semantic_object_db_path", default_semantic_object_db_path)
+        self.declare_parameter("object_action_attributes_path", default_object_action_attributes_path)
 
         self._query = self.get_parameter('query').get_parameter_value().string_value.strip()
         self._command = self.get_parameter('command').get_parameter_value().string_value.strip()
@@ -118,15 +238,40 @@ class NavigationOrchestrator(Node):
         self._validate_service_name = self.get_parameter('validate_service').get_parameter_value().string_value
         self._execute_action_name = self.get_parameter('execute_action').get_parameter_value().string_value
 
+        self._semantic_map_path = self.get_parameter("semantic_map_path").get_parameter_value().string_value.strip()
         self._semantic_db_path = self.get_parameter('semantic_db_path').get_parameter_value().string_value.strip()
         self._global_frame = self.get_parameter('global_frame').get_parameter_value().string_value.strip()
         self._robot_base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value.strip()
         self._nearest_location_count = self.get_parameter('nearest_location_count').get_parameter_value().integer_value
+        self._semantic_object_db_path = self.get_parameter("semantic_object_db_path").get_parameter_value().string_value.strip()
+        self._object_action_attributes_path = self.get_parameter("object_action_attributes_path").get_parameter_value().string_value.strip()
+        self._bbox_inflation_m = self.get_parameter("bbox_inflation_m").get_parameter_value().double_value
+        self._nearest_fallback_radius_m = self.get_parameter("nearest_fallback_radius_m").get_parameter_value().double_value
+        self._start_idle = self.get_parameter("start_idle").get_parameter_value().bool_value
+        self._recovery_trigger_topic = self.get_parameter("recovery_trigger_topic").get_parameter_value().string_value
+        self._enable_plan_intersection_trigger = self.get_parameter("enable_plan_intersection_trigger").get_parameter_value().bool_value
+        self._enable_stall_watchdog = self.get_parameter("enable_stall_watchdog").get_parameter_value().bool_value
+        self._stall_distance_epsilon_m = self.get_parameter("stall_distance_epsilon_m").get_parameter_value().double_value
+        self._stall_window_sec = self.get_parameter("stall_window_sec").get_parameter_value().double_value
+        self._stall_nav2_recoveries_cap = self.get_parameter("stall_nav2_recoveries_cap").get_parameter_value().integer_value
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        self._recovery_locations = self._load_recovery_locations(self._semantic_db_path)
+        self._log_stage_info(
+            "RECOVERY",
+            (
+                f"Using semantic_map_path='{self._semantic_map_path}' as the primary semantic map; "
+                f"legacy semantic_db_path='{self._semantic_db_path}' remains a fallback."
+            ),
+        )
+        self._recovery_locations = self._load_recovery_locations_from_sources(
+            [self._semantic_map_path, self._semantic_db_path]
+        )
+        self._object_action_defaults, self._object_action_by_tag = self._load_object_action_attributes(
+            self._object_action_attributes_path,
+        )
+        self._semantic_objects = self._load_semantic_objects(self._semantic_object_db_path)
 
         self._planner_id = self.get_parameter('planner_id').get_parameter_value().string_value
         self._behavior_tree = self.get_parameter('behavior_tree').get_parameter_value().string_value
@@ -142,14 +287,52 @@ class NavigationOrchestrator(Node):
         self._action_send_goal_timeout_sec = self.get_parameter('action_send_goal_timeout_sec').get_parameter_value().double_value
         self._execution_timeout_sec = self.get_parameter('execution_timeout_sec').get_parameter_value().double_value
 
+        self._fsm_state = RecoveryFSMState.IDLE
+        self._active_recovery = False
+        self._last_trigger: Optional[TriggerInfo] = None
+        self._last_trigger_by_key = {}
+
+        self._attempt_records: List[AttemptRecord] = []
+
         self._parse_command_client = self.create_client(ParseSemanticCommand, self._parse_service_name)
         self._propose_recovery_client = self.create_client(ProposeRecovery, self._propose_recovery_service_name)
         self._resolve_location_client = self.create_client(ResolveLocation, self._resolve_service_name)
         self._validate_pose_client = self.create_client(ValidatePose, self._validate_service_name)
         self._execute_pose_client = ActionClient(self, ExecutePose, self._execute_action_name)
 
+        self._recovery_status_pub = self.create_publisher(
+            String,
+            self.get_parameter("recovery_status_topic").get_parameter_value().string_value,
+            10,
+        )
+        self._publish_recovery_status("RECOVERY_IDLE")
+
+        if self.get_parameter("enable_bt_recovery_trigger").value:
+            self._request_recovery_srv = self.create_service(
+                RequestRecovery,
+                self.get_parameter("request_recovery_service").get_parameter_value().string_value,
+                self._handle_request_recovery,
+            )
+
+        self._recovery_trigger_sub = None
+        if self._enable_plan_intersection_trigger:
+            self._recovery_trigger_sub = self.create_subscription(
+                RecoveryTrigger,
+                self._recovery_trigger_topic,
+                self._handle_recovery_trigger_msg,
+                10,
+            )
+            self._log_stage_info(
+                "RECOVERY/MONITOR",
+                f"Subscribed to recovery trigger topic '{self._recovery_trigger_topic}'.",
+            )
+
         self._goal_handle = None
         self._result_future = None
+        self._navigation_goal_active = False
+        self._stall_watchdog_triggered = False
+        self._stall_baseline_distance_remaining: Optional[float] = None
+        self._stall_baseline_stamp_sec: Optional[float] = None
         self._final_success = False
 
         self._resolved_target: Optional[ResolvedTarget] = None
@@ -172,7 +355,10 @@ class NavigationOrchestrator(Node):
             f"recovery_cap={self._recovery_cap}, "
             f"propose_recovery_service='{self._propose_recovery_service_name}', "
             f"require_recovery_approval={self._require_recovery_approval}, "
-            f"allow_stdin_intervention={self._allow_stdin_intervention}"
+            f"allow_stdin_intervention={self._allow_stdin_intervention}, "
+            f"recovery_trigger_topic='{self._recovery_trigger_topic}', "
+            f"enable_plan_intersection_trigger={self._enable_plan_intersection_trigger}, "
+            f"enable_stall_watchdog={self._enable_stall_watchdog}"
         )
 
     def _log_stage_info(self, stage: str, message: str):
@@ -185,10 +371,19 @@ class NavigationOrchestrator(Node):
         self.get_logger().error(f'[{stage}] {message}')      
 
     def _wait_for_future(self, future, timeout_sec: float) -> bool:
+        # The node is spun by MultiThreadedExecutor in main(). Poll here instead
+        # of calling spin_until_future_complete(), which can block service callbacks
+        # or conflict with the executor that already owns this node.
         if timeout_sec is None or timeout_sec <= 0.0:
-            rclpy.spin_until_future_complete(self, future)
-        else:
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout_sec)
+            while rclpy.ok() and not future.done():
+                time.sleep(0.01)
+            return future.done()
+
+        deadline = time.monotonic() + float(timeout_sec)
+        while rclpy.ok() and not future.done():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
 
         return future.done()
 
@@ -253,6 +448,17 @@ class NavigationOrchestrator(Node):
         return True
 
     def run(self) -> bool:
+        if self._start_idle:
+            self._log_stage_info(
+                "RECOVERY",
+                "start_idle=true. Orchestrator initialized without starting navigation.",
+            )
+            self._transition_recovery_fsm(
+                RecoveryFSMState.IDLE,
+                reason="start_idle",
+            )
+            return True
+
         semantic_query = self._get_semantic_query()
         if semantic_query is None:
             return False
@@ -500,17 +706,29 @@ class NavigationOrchestrator(Node):
         original_nl_command: str = "",
     ) -> bool:
         attempts = []
+        self._attempt_records = attempts
+
         recovery_count = 0
         current_query = initial_query
         chain_queue = []
         original_target_id = None
+
+        self._active_recovery = False
+        self._last_trigger = None
+        self._transition_recovery_fsm(
+            RecoveryFSMState.EXECUTING,
+            reason="starting_navigation_pipeline",
+        )
 
         self._log_stage_info(
             "RECOVERY",
             (
                 f"Recovery loop enabled: recovery_cap={self._recovery_cap}, "
                 f"require_recovery_approval={self._require_recovery_approval}, "
-                f"allow_stdin_intervention={self._allow_stdin_intervention}"
+                f"allow_stdin_intervention={self._allow_stdin_intervention}, "
+                f"recovery_trigger_topic='{self._recovery_trigger_topic}', "
+                f"enable_plan_intersection_trigger={self._enable_plan_intersection_trigger}, "
+                f"enable_stall_watchdog={self._enable_stall_watchdog}"
             ),
         )
 
@@ -521,8 +739,14 @@ class NavigationOrchestrator(Node):
                 original_target_id = outcome.target.location_id
 
             if outcome.success:
+                self._active_recovery = False
+
                 if chain_queue:
                     next_query = chain_queue.pop(0)
+                    self._transition_recovery_fsm(
+                        RecoveryFSMState.EXECUTING,
+                        reason="continuing_waypoint_chain",
+                    )
                     self._log_stage_info(
                         "RECOVERY",
                         (
@@ -533,6 +757,10 @@ class NavigationOrchestrator(Node):
                     current_query = next_query
                     continue
 
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.TERMINAL_SUCCESS,
+                    reason="goal_reached",
+                )
                 return True
 
             if outcome.stage == "resolution":
@@ -545,6 +773,11 @@ class NavigationOrchestrator(Node):
                 )
 
             if outcome.stage not in {"validation", "execution"}:
+                self._active_recovery = False
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.TERMINAL_FAIL,
+                    reason=f"unsupported_failure_stage:{outcome.stage}",
+                )
                 return False
 
             failed_target_id = (
@@ -562,6 +795,30 @@ class NavigationOrchestrator(Node):
                     last_outcome=outcome,
                 )
 
+            trigger_status = self._action_backstop_trigger(
+                failure_stage=outcome.stage,
+                nav2_message=outcome.message,
+                robot_pose=self._make_recovery_pose(outcome.target),
+                distance_remaining=self._last_feedback_distance_remaining,
+                nav2_recoveries=self._last_feedback_recoveries,
+                failed_target_id=failed_target_id,
+                recovery_count=recovery_count,
+            )
+
+            if trigger_status not in {"accepted", "already_in_recovery"}:
+                return self._escalate_intervention(
+                    reason=f"recovery_trigger_{trigger_status}",
+                    original_nl_command=original_nl_command,
+                    original_target=stable_original_target,
+                    attempts=attempts,
+                    last_outcome=outcome,
+                )
+
+            self._transition_recovery_fsm(
+                RecoveryFSMState.LLM_WAIT,
+                reason="calling_propose_recovery",
+            )
+
             proposal = self._call_propose_recovery(
                 original_nl_command=original_nl_command,
                 original_target=stable_original_target,
@@ -570,6 +827,11 @@ class NavigationOrchestrator(Node):
                 attempts=attempts,
                 target=outcome.target,
                 remaining_retry_budget=self._recovery_cap - recovery_count,
+            )
+
+            self._transition_recovery_fsm(
+                RecoveryFSMState.RECOVERY_IN_PROGRESS,
+                reason="proposal_received",
             )
 
             recovery_count += 1
@@ -643,6 +905,11 @@ class NavigationOrchestrator(Node):
                 )
 
             if self._require_recovery_approval:
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.AWAITING_OPERATOR,
+                    reason="proposal_approval_required",
+                )
+
                 if not self._approve_recovery_proposal(proposal):
                     attempts.append(
                         AttemptRecord(
@@ -662,6 +929,11 @@ class NavigationOrchestrator(Node):
                         last_outcome=outcome,
                     )
 
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.RECOVERY_IN_PROGRESS,
+                    reason="proposal_approved",
+                )
+
             if proposal.action == "retry_target":
                 attempts.append(
                     AttemptRecord(
@@ -672,6 +944,11 @@ class NavigationOrchestrator(Node):
                         failure_stage=outcome.stage,
                         message=proposal.message,
                     )
+                )
+                self._active_recovery = False
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.EXECUTING,
+                    reason="dispatching_retry_target",
                 )
                 chain_queue = []
                 current_query = proposal.target
@@ -711,6 +988,12 @@ class NavigationOrchestrator(Node):
                 current_query = proposal.waypoints[0]
                 chain_queue = list(proposal.waypoints[1:])
 
+                self._active_recovery = False
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.EXECUTING,
+                    reason="dispatching_waypoint_chain",
+                )
+
                 self._log_stage_info(
                     "RECOVERY",
                     (
@@ -740,7 +1023,7 @@ class NavigationOrchestrator(Node):
                 attempts=attempts,
                 last_outcome=outcome,
             )
-        
+
     def _call_propose_recovery(
         self,
         original_nl_command: str,
@@ -801,6 +1084,8 @@ class NavigationOrchestrator(Node):
 
         req.remaining_retry_budget = int(remaining_retry_budget)
 
+        self._populate_bt_recovery_request_defaults(req, target)
+
         future = self._propose_recovery_client.call_async(req)
 
         if not self._wait_for_future(future, self._service_call_timeout_sec):
@@ -849,8 +1134,70 @@ class NavigationOrchestrator(Node):
             confidence_percent=int(response.confidence_percent),
             raw_output=response.raw_output,
             message=response.message,
+            responsible_object_key=getattr(response, "responsible_object_key", ""),
+            operator_message=getattr(response, "operator_message", ""),
+            wait_seconds=int(getattr(response, "wait_seconds", 0)),
         )
-    
+
+    def _populate_bt_recovery_request_defaults(
+        self,
+        req: ProposeRecovery.Request,
+        target: Optional[ResolvedTarget],
+    ) -> None:
+        trigger = self._last_trigger
+
+        req.trigger_source = (
+            trigger.trigger_source
+            if trigger is not None and trigger.trigger_source
+            else "action_backstop"
+        )
+
+        req.responsible_object_key = (
+            trigger.responsible_object_key
+            if trigger is not None
+            else ""
+        )
+        req.match_type = (
+            trigger.match_type
+            if trigger is not None and trigger.match_type
+            else "unknown"
+        )
+
+        req.responsible_object_tag = (
+            trigger.responsible_object_tag
+            if trigger is not None
+            else ""
+        )
+        req.responsible_object_state = (
+            trigger.responsible_object_state
+            if trigger is not None
+            else ""
+        )
+
+        if trigger is not None:
+            req.responsible_bbox_center = trigger.responsible_bbox_center
+            req.responsible_bbox_extent = trigger.responsible_bbox_extent
+            req.responsible_safety_class = trigger.responsible_safety_class or "none"
+            req.responsible_openable = bool(trigger.responsible_openable)
+            req.responsible_clearable = bool(trigger.responsible_clearable)
+            req.blockage_centroid = trigger.blockage_centroid
+            req.blockage_extent_m = float(trigger.blockage_extent_m)
+        else:
+            req.blockage_centroid = Point()
+            req.blockage_extent_m = 0.0
+
+        req.deterministic_waits_used = 0
+        req.deterministic_wait_cap = 0
+        req.total_seconds_blocked = 0.0
+
+        if target is not None:
+            req.db_version = int(target.db_version)
+            req.db_stamp = target.db_stamp
+        else:
+            req.db_version = int(self._db_version)
+            if self._db_stamp is not None:
+                req.db_stamp = self._db_stamp
+
     def _make_recovery_pose(self, target: Optional[ResolvedTarget]) -> PoseStamped:
         pose = self._lookup_robot_pose()
 
@@ -918,19 +1265,144 @@ class NavigationOrchestrator(Node):
         return None
         
     
+    def _load_recovery_locations_from_sources(self, db_paths: List[str]):
+        for db_path in db_paths:
+            locations = self._load_recovery_locations(db_path)
+            if locations:
+                self._log_stage_info(
+                    "RECOVERY",
+                    (
+                        f"Using '{db_path}' for nearest-location recovery summaries "
+                        f"({len(locations)} locations)."
+                    ),
+                )
+                return locations
+
+        self._log_stage_warn(
+            "RECOVERY",
+            "No usable semantic location catalog found in semantic_map_path or legacy semantic_db_path.",
+        )
+        return []
+
+    def _iter_recovery_location_records(self, data):
+        if not isinstance(data, dict):
+            return
+
+        # map_v001.json is expected to become the single semantic source, but during
+        # the transition we accept several common room/location containers. The old
+        # semantic_db.json format is still covered by the 'locations' case.
+        candidate_keys = [
+            "locations",
+            "rooms",
+            "places",
+            "semantic_locations",
+            "waypoints",
+            "nodes",
+        ]
+
+        for container_key in candidate_keys:
+            container = data.get(container_key)
+
+            if isinstance(container, dict):
+                for key, record in container.items():
+                    yield key, record
+                return
+
+            if isinstance(container, list):
+                for index, record in enumerate(container):
+                    yield f"{container_key}_{index}", record
+                return
+
+        # Conservative fallback for transitional map files with top-level room-like
+        # records. Deliberately skip object records so object bbox centers do not
+        # pollute nearest-room summaries.
+        for key, record in data.items():
+            if not isinstance(record, dict):
+                continue
+            if str(key).startswith("object_"):
+                continue
+            if "object_state" in record or "object-state" in record or "object_tag" in record:
+                continue
+            yield key, record
+
+    @staticmethod
+    def _extract_xy_from_mapping(value):
+        if not isinstance(value, dict):
+            return None
+
+        try:
+            x = float(value["x"])
+            y = float(value["y"])
+            return x, y
+        except Exception:
+            return None
+
+    @staticmethod
+    def _extract_xy_from_sequence(value):
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return None
+
+        try:
+            x = float(value[0])
+            y = float(value[1])
+            return x, y
+        except Exception:
+            return None
+
+    def _extract_location_xy(self, record: dict):
+        # Old semantic_db.json: {"x": ..., "y": ...}
+        xy = self._extract_xy_from_mapping(record)
+        if xy is not None:
+            return xy
+
+        # Common Pose-like maps: {"pose": {"position": {"x": ..., "y": ...}}}
+        pose = record.get("pose")
+        if isinstance(pose, dict):
+            position = pose.get("position", pose)
+            xy = self._extract_xy_from_mapping(position)
+            if xy is not None:
+                return xy
+            xy = self._extract_xy_from_sequence(position)
+            if xy is not None:
+                return xy
+
+        for key in ["position", "center", "centroid", "bbox_center"]:
+            value = record.get(key)
+            xy = self._extract_xy_from_mapping(value)
+            if xy is not None:
+                return xy
+            xy = self._extract_xy_from_sequence(value)
+            if xy is not None:
+                return xy
+
+        return None
+
+    def _location_id_from_record(self, fallback_key: str, record: dict) -> str:
+        for key in [
+            "location_id",
+            "canonical_location_id",
+            "room_id",
+            "place_id",
+            "id",
+            "name",
+            "room_name",
+            "label",
+            "tag",
+        ]:
+            value = record.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        return str(fallback_key)
+
     def _load_recovery_locations(self, db_path: str):
         if not db_path:
-            self._log_stage_warn(
-                "RECOVERY",
-                "semantic_db_path is empty. Nearest-location summaries disabled.",
-            )
             return []
 
         if not os.path.exists(db_path):
             self._log_stage_warn(
                 "RECOVERY",
-                f"semantic_db_path does not exist: '{db_path}'. "
-                "Nearest-location summaries disabled.",
+                f"Semantic map candidate does not exist: '{db_path}'.",
             )
             return []
 
@@ -940,50 +1412,442 @@ class NavigationOrchestrator(Node):
         except Exception as exc:
             self._log_stage_warn(
                 "RECOVERY",
-                f"Failed to read semantic DB for recovery summaries: {exc}",
-            )
-            return []
-
-        locations = data.get("locations", {})
-        if not isinstance(locations, dict):
-            self._log_stage_warn(
-                "RECOVERY",
-                "semantic DB has no valid 'locations' object. "
-                "Nearest-location summaries disabled.",
+                f"Failed to read semantic map candidate '{db_path}' for recovery summaries: {exc}",
             )
             return []
 
         parsed = []
+        skipped_invalid_geometry = 0
 
-        for location_id, record in locations.items():
+        for fallback_key, record in self._iter_recovery_location_records(data):
             if not isinstance(record, dict):
                 continue
 
-            frame_id = str(record.get("frame_id", "map"))
-            if frame_id != "map":
+            frame_id = str(record.get("frame_id", record.get("frame", "map")))
+            if frame_id and frame_id != "map":
                 continue
 
-            try:
-                x = float(record["x"])
-                y = float(record["y"])
-            except Exception:
+            xy = self._extract_location_xy(record)
+            if xy is None:
+                skipped_invalid_geometry += 1
                 continue
 
+            x, y = xy
             if not math.isfinite(x) or not math.isfinite(y):
+                skipped_invalid_geometry += 1
                 continue
 
             parsed.append({
-                "id": str(location_id),
+                "id": self._location_id_from_record(fallback_key, record),
                 "x": x,
                 "y": y,
+                "source": db_path,
             })
 
         self._log_stage_info(
             "RECOVERY",
-            f"Loaded {len(parsed)} semantic locations for nearest-location summaries.",
+            (
+                f"Parsed {len(parsed)} semantic recovery locations from '{db_path}' "
+                f"(skipped_invalid_geometry={skipped_invalid_geometry})."
+            ),
         )
 
         return parsed
+
+    @staticmethod
+    def _normalize_object_tag(tag: str) -> str:
+        return " ".join(str(tag or "").strip().lower().split())
+
+    @staticmethod
+    def _safe_object_state(value: str) -> str:
+        state = str(value or "").strip().lower()
+        if state in {"static", "semi-static", "movable"}:
+            return state
+        return ""
+
+    @staticmethod
+    def _safe_safety_class(value: str) -> str:
+        safety_class = str(value or "none").strip().lower()
+        if safety_class in {"none", "human", "animal"}:
+            return safety_class
+        return "none"
+
+    @staticmethod
+    def _make_responsible_object_key(tag: str, object_id: int) -> str:
+        normalized_tag = NavigationOrchestrator._normalize_object_tag(tag)
+        if not normalized_tag:
+            normalized_tag = "object"
+        return f"{normalized_tag}:{int(object_id)}"
+
+    def _load_object_action_attributes(self, path: str):
+        defaults = ObjectActionAttributes(
+            openable=False,
+            clearable=False,
+            safety_class="none",
+        )
+        by_tag = {}
+
+        if not path:
+            self._log_stage_warn(
+                "RECOVERY",
+                "object_action_attributes_path is empty. Object action attributes use safe defaults.",
+            )
+            return defaults, by_tag
+
+        if not os.path.exists(path):
+            self._log_stage_warn(
+                "RECOVERY",
+                f"object_action_attributes_path does not exist: '{path}'. "
+                "Object action attributes use safe defaults.",
+            )
+            return defaults, by_tag
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            self._log_stage_warn(
+                "RECOVERY",
+                f"Failed to read object action attributes '{path}': {exc}. "
+                "Object action attributes use safe defaults.",
+            )
+            return defaults, by_tag
+
+        raw_defaults = data.get("defaults", {})
+        if isinstance(raw_defaults, dict):
+            defaults = ObjectActionAttributes(
+                openable=bool(raw_defaults.get("openable", False)),
+                clearable=bool(raw_defaults.get("clearable", False)),
+                safety_class=self._safe_safety_class(raw_defaults.get("safety_class", "none")),
+            )
+
+        raw_by_tag = data.get("by_tag", {})
+        if isinstance(raw_by_tag, dict):
+            for tag, attrs in raw_by_tag.items():
+                if not isinstance(attrs, dict):
+                    continue
+
+                normalized_tag = self._normalize_object_tag(tag)
+                if not normalized_tag:
+                    continue
+
+                by_tag[normalized_tag] = ObjectActionAttributes(
+                    openable=bool(attrs.get("openable", defaults.openable)),
+                    clearable=bool(attrs.get("clearable", defaults.clearable)),
+                    safety_class=self._safe_safety_class(
+                        attrs.get("safety_class", defaults.safety_class)
+                    ),
+                )
+
+        self._log_stage_info(
+            "RECOVERY",
+            (
+                f"Loaded object action attributes: "
+                f"defaults(openable={defaults.openable}, "
+                f"clearable={defaults.clearable}, "
+                f"safety_class='{defaults.safety_class}'), "
+                f"tag_entries={len(by_tag)}."
+            ),
+        )
+
+        return defaults, by_tag
+
+    def _object_attributes_for_tag(self, tag: str) -> ObjectActionAttributes:
+        normalized_tag = self._normalize_object_tag(tag)
+        return self._object_action_by_tag.get(
+            normalized_tag,
+            self._object_action_defaults,
+        )
+
+    def _iter_semantic_object_records(self, data):
+        if isinstance(data, dict):
+            objects = data.get("objects", None)
+            if isinstance(objects, dict):
+                for key, record in objects.items():
+                    yield key, record
+                return
+
+            if isinstance(objects, list):
+                for index, record in enumerate(objects):
+                    yield f"object_{index}", record
+                return
+
+            for key, record in data.items():
+                if str(key).startswith("object_") and isinstance(record, dict):
+                    yield key, record
+
+    def _load_semantic_objects(self, db_path: str) -> List[SemanticObject]:
+        if not db_path:
+            self._log_stage_warn(
+                "RECOVERY",
+                "semantic_object_db_path is empty. Responsible-object matching disabled.",
+            )
+            return []
+
+        if not os.path.exists(db_path):
+            self._log_stage_warn(
+                "RECOVERY",
+                f"semantic_object_db_path does not exist: '{db_path}'. "
+                "Responsible-object matching disabled.",
+            )
+            return []
+
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            self._log_stage_warn(
+                "RECOVERY",
+                f"Failed to read semantic object DB '{db_path}': {exc}. "
+                "Responsible-object matching disabled.",
+            )
+            return []
+
+        objects: List[SemanticObject] = []
+        skipped_missing_state = 0
+        skipped_invalid_geometry = 0
+
+        for fallback_key, record in self._iter_semantic_object_records(data):
+            if not isinstance(record, dict):
+                continue
+
+            state = self._safe_object_state(
+                record.get("object_state", record.get("object-state", ""))
+            )
+            if not state:
+                skipped_missing_state += 1
+                continue
+
+            tag = str(
+                record.get(
+                    "object_tag",
+                    record.get("tag", record.get("name", fallback_key)),
+                )
+            ).strip()
+            caption = str(record.get("object_caption", record.get("caption", "")))
+
+            try:
+                object_id = int(record.get("id", len(objects)))
+            except Exception:
+                object_id = len(objects)
+
+            center = record.get("bbox_center", record.get("center", None))
+            extent = record.get("bbox_extent", record.get("extent", None))
+
+            try:
+                cx = float(center[0])
+                cy = float(center[1])
+                cz = float(center[2]) if len(center) > 2 else 0.0
+                ex = abs(float(extent[0]))
+                ey = abs(float(extent[1]))
+                ez = abs(float(extent[2])) if len(extent) > 2 else 0.0
+            except Exception:
+                skipped_invalid_geometry += 1
+                continue
+
+            values = [cx, cy, cz, ex, ey, ez]
+            if not all(math.isfinite(v) for v in values):
+                skipped_invalid_geometry += 1
+                continue
+
+            try:
+                volume = float(record.get("bbox_volume", record.get("volume", 0.0)))
+            except Exception:
+                volume = 0.0
+
+            attrs = self._object_attributes_for_tag(tag)
+            key = self._make_responsible_object_key(tag, object_id)
+
+            objects.append(
+                SemanticObject(
+                    key=key,
+                    object_id=object_id,
+                    tag=tag,
+                    caption=caption,
+                    state=state,
+                    x=cx,
+                    y=cy,
+                    z=cz,
+                    extent_x=ex,
+                    extent_y=ey,
+                    extent_z=ez,
+                    volume=volume,
+                    openable=attrs.openable,
+                    clearable=attrs.clearable,
+                    safety_class=attrs.safety_class,
+                )
+            )
+
+        self._log_stage_info(
+            "RECOVERY",
+            (
+                f"Loaded {len(objects)} semantic objects for responsible-object matching "
+                f"from '{db_path}'. "
+                f"skipped_missing_state={skipped_missing_state}, "
+                f"skipped_invalid_geometry={skipped_invalid_geometry}."
+            ),
+        )
+
+        return objects
+
+    def _find_semantic_object_by_key(self, key: str) -> Optional[SemanticObject]:
+        if not key:
+            return None
+
+        for obj in self._semantic_objects:
+            if obj.key == key:
+                return obj
+
+        return None
+
+    def _bbox_contains_point_2d(
+        self,
+        obj: SemanticObject,
+        point: Point,
+        inflation_m: float,
+    ) -> bool:
+        half_x = (float(obj.extent_x) * 0.5) + float(inflation_m)
+        half_y = (float(obj.extent_y) * 0.5) + float(inflation_m)
+
+        return (
+            abs(float(point.x) - float(obj.x)) <= half_x
+            and abs(float(point.y) - float(obj.y)) <= half_y
+        )
+
+    @staticmethod
+    def _distance_2d_to_object_center(obj: SemanticObject, point: Point) -> float:
+        dx = float(point.x) - float(obj.x)
+        dy = float(point.y) - float(obj.y)
+        return math.sqrt(dx * dx + dy * dy)
+
+    def _match_responsible_object(self, point: Point) -> ResponsibleObjectMatch:
+        if not self._semantic_objects:
+            return ResponsibleObjectMatch(
+                match_type="unknown",
+                object=None,
+                distance_m=float("inf"),
+                summary="semantic object catalog unavailable",
+            )
+
+        verified = []
+        for obj in self._semantic_objects:
+            if self._bbox_contains_point_2d(obj, point, self._bbox_inflation_m):
+                verified.append((self._distance_2d_to_object_center(obj, point), obj))
+
+        if verified:
+            verified.sort(key=lambda item: item[0])
+            distance, obj = verified[0]
+            return ResponsibleObjectMatch(
+                match_type="verified",
+                object=obj,
+                distance_m=distance,
+                summary=(
+                    f"verified object match: key='{obj.key}', tag='{obj.tag}', "
+                    f"object_state='{obj.state}', distance={distance:.2f} m"
+                ),
+            )
+
+        nearest = []
+        for obj in self._semantic_objects:
+            distance = self._distance_2d_to_object_center(obj, point)
+            if distance <= float(self._nearest_fallback_radius_m):
+                nearest.append((distance, obj))
+
+        if nearest:
+            nearest.sort(key=lambda item: item[0])
+            distance, obj = nearest[0]
+            return ResponsibleObjectMatch(
+                match_type="inferred",
+                object=obj,
+                distance_m=distance,
+                summary=(
+                    f"inferred nearest object: key='{obj.key}', tag='{obj.tag}', "
+                    f"object_state='{obj.state}', distance={distance:.2f} m"
+                ),
+            )
+
+        return ResponsibleObjectMatch(
+            match_type="unknown",
+            object=None,
+            distance_m=float("inf"),
+            summary="no responsible object match",
+        )
+
+    def _copy_object_geometry_to_trigger(
+        self,
+        trigger: TriggerInfo,
+        obj: SemanticObject,
+        match_type: str,
+    ) -> None:
+        trigger.responsible_object_key = obj.key
+        trigger.responsible_object_tag = obj.tag
+        trigger.responsible_object_state = obj.state
+        trigger.match_type = match_type
+
+        trigger.responsible_bbox_center.x = float(obj.x)
+        trigger.responsible_bbox_center.y = float(obj.y)
+        trigger.responsible_bbox_center.z = float(obj.z)
+
+        trigger.responsible_bbox_extent.x = float(obj.extent_x)
+        trigger.responsible_bbox_extent.y = float(obj.extent_y)
+        trigger.responsible_bbox_extent.z = float(obj.extent_z)
+
+        trigger.responsible_safety_class = obj.safety_class
+        trigger.responsible_openable = bool(obj.openable)
+        trigger.responsible_clearable = bool(obj.clearable)
+
+    def _augment_trigger_with_responsible_object(self, trigger: TriggerInfo) -> None:
+        if trigger.responsible_object_key:
+            obj = self._find_semantic_object_by_key(trigger.responsible_object_key)
+            if obj is not None:
+                match_type = trigger.match_type if trigger.match_type else "inferred"
+                if match_type not in {"verified", "inferred", "unknown"}:
+                    match_type = "inferred"
+                self._copy_object_geometry_to_trigger(trigger, obj, match_type)
+                self._log_stage_info(
+                    "RECOVERY/OBJECT",
+                    (
+                        f"Using supplied responsible object: key='{obj.key}', "
+                        f"match_type='{trigger.match_type}', "
+                        f"object_state='{obj.state}', safety_class='{obj.safety_class}', "
+                        f"openable={obj.openable}, clearable={obj.clearable}."
+                    ),
+                )
+                return
+
+            self._log_stage_warn(
+                "RECOVERY/OBJECT",
+                (
+                    f"Trigger supplied responsible_object_key='{trigger.responsible_object_key}', "
+                    "but it was not found in the semantic object DB. Treating as unknown."
+                ),
+            )
+            trigger.responsible_object_key = ""
+
+        match = self._match_responsible_object(trigger.blockage_centroid)
+        if match.object is None:
+            trigger.match_type = "unknown"
+            trigger.responsible_object_tag = ""
+            trigger.responsible_object_state = ""
+            trigger.responsible_safety_class = "none"
+            trigger.responsible_openable = False
+            trigger.responsible_clearable = False
+            self._log_stage_info("RECOVERY/OBJECT", match.summary)
+            return
+
+        self._copy_object_geometry_to_trigger(
+            trigger=trigger,
+            obj=match.object,
+            match_type=match.match_type,
+        )
+
+        self._log_stage_info(
+            "RECOVERY/OBJECT",
+            (
+                f"{match.summary}; safety_class='{match.object.safety_class}', "
+                f"openable={match.object.openable}, clearable={match.object.clearable}."
+            ),
+        )
 
     def _build_nearest_locations_summary(
         self,
@@ -1060,6 +1924,12 @@ class NavigationOrchestrator(Node):
         attempts: list,
         last_outcome: Optional[PipelineOutcome],
     ) -> bool:
+        self._active_recovery = False
+        self._transition_recovery_fsm(
+            RecoveryFSMState.ESCALATE_OPERATOR,
+            reason=reason,
+        )
+
         self._log_stage_warn(
             "RECOVERY",
             f"Escalating to operator intervention: reason='{reason}'",
@@ -1069,6 +1939,10 @@ class NavigationOrchestrator(Node):
             self._log_stage_error(
                 "RECOVERY",
                 "stdin intervention disabled. Aborting orchestrator.",
+            )
+            self._transition_recovery_fsm(
+                RecoveryFSMState.TERMINAL_FAIL,
+                reason="stdin_intervention_disabled",
             )
             return False
 
@@ -1122,6 +1996,11 @@ class NavigationOrchestrator(Node):
                     f"Operator provided new semantic target: '{new_target}'",
                 )
 
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.OPERATOR_RECHECK,
+                    reason="operator_new_target",
+                )
+
                 return self._run_with_recovery(
                     initial_query=new_target,
                     original_nl_command="",
@@ -1132,12 +2011,20 @@ class NavigationOrchestrator(Node):
                     "RECOVERY",
                     "Operator aborted orchestrator for teleoperation.",
                 )
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.TERMINAL_FAIL,
+                    reason="operator_abort",
+                )
                 return False
 
             if choice == "g":
                 self._log_stage_warn(
                     "RECOVERY",
                     "Operator selected give up.",
+                )
+                self._transition_recovery_fsm(
+                    RecoveryFSMState.TERMINAL_FAIL,
+                    reason="operator_give_up",
                 )
                 return False
 
@@ -1159,6 +2046,83 @@ class NavigationOrchestrator(Node):
         record = {
             "session_id": self._session_id,
             "ts": datetime.now(timezone.utc).isoformat(),
+            "fsm_state": self._fsm_state.value,
+            "trigger_source": (
+                self._last_trigger.trigger_source
+                if self._last_trigger is not None
+                else ""
+            ),
+            "trigger_debounce_key": (
+                self._last_trigger.debounce_key
+                if self._last_trigger is not None
+                else ""
+            ),
+            "responsible_object": {
+                "key": (
+                    self._last_trigger.responsible_object_key
+                    if self._last_trigger is not None
+                    else ""
+                ),
+                "match_type": (
+                    self._last_trigger.match_type
+                    if self._last_trigger is not None
+                    else "unknown"
+                ),
+                "tag": (
+                    self._last_trigger.responsible_object_tag
+                    if self._last_trigger is not None
+                    else ""
+                ),
+                "object_state": (
+                    self._last_trigger.responsible_object_state
+                    if self._last_trigger is not None
+                    else ""
+                ),
+                "safety_class": (
+                    self._last_trigger.responsible_safety_class
+                    if self._last_trigger is not None
+                    else "none"
+                ),
+                "openable": (
+                    bool(self._last_trigger.responsible_openable)
+                    if self._last_trigger is not None
+                    else False
+                ),
+                "clearable": (
+                    bool(self._last_trigger.responsible_clearable)
+                    if self._last_trigger is not None
+                    else False
+                ),
+            },
+            "responsible_object_key": (
+                self._last_trigger.responsible_object_key
+                if self._last_trigger is not None
+                else ""
+            ),
+            "blockage_geometry": {
+                "centroid": {
+                    "x": (
+                        float(self._last_trigger.blockage_centroid.x)
+                        if self._last_trigger is not None
+                        else 0.0
+                    ),
+                    "y": (
+                        float(self._last_trigger.blockage_centroid.y)
+                        if self._last_trigger is not None
+                        else 0.0
+                    ),
+                    "z": (
+                        float(self._last_trigger.blockage_centroid.z)
+                        if self._last_trigger is not None
+                        else 0.0
+                    ),
+                },
+                "extent_m": (
+                    float(self._last_trigger.blockage_extent_m)
+                    if self._last_trigger is not None
+                    else 0.0
+                ),
+            },
             "original_nl_command": original_nl_command,
             "original_target": original_target,
             "failure_stage": failure_stage,
@@ -1362,10 +2326,12 @@ class NavigationOrchestrator(Node):
         return True
     
     def _execute_pose(self, target: ResolvedTarget) -> bool:
+        self._navigation_goal_active = False
         self._last_execution_message = ""
         self._last_feedback_distance_remaining = 0.0
         self._last_feedback_recoveries = 0
         self._last_feedback_pose = None
+        self._reset_stall_watchdog()
 
         if target is None or target.pose is None:
             self._last_execution_message = "No resolved target provided for execution."
@@ -1457,6 +2423,8 @@ class NavigationOrchestrator(Node):
             )
             return False
 
+        self._navigation_goal_active = True
+
         self._log_stage_info(
             "EXECUTION",
             (
@@ -1481,6 +2449,7 @@ class NavigationOrchestrator(Node):
                 self._last_execution_message + " Cancelling goal.",
             )
             self.cancel_goal()
+            self._navigation_goal_active = False
             return False
 
         if self._result_future.exception() is not None:
@@ -1492,6 +2461,7 @@ class NavigationOrchestrator(Node):
                 "EXECUTION",
                 self._last_execution_message,
             )
+            self._navigation_goal_active = False
             return False
 
         result_wrap = self._result_future.result()
@@ -1501,6 +2471,7 @@ class NavigationOrchestrator(Node):
                 "EXECUTION",
                 self._last_execution_message,
             )
+            self._navigation_goal_active = False
             return False
 
         result = result_wrap.result
@@ -1539,6 +2510,7 @@ class NavigationOrchestrator(Node):
                 ),
             )
 
+        self._navigation_goal_active = False
         return succeeded
 
     def feedback_callback(self, feedback_msg):
@@ -1568,6 +2540,122 @@ class NavigationOrchestrator(Node):
             ),
         )
 
+        self._maybe_fire_stall_watchdog(fb)
+
+    def _reset_stall_watchdog(self) -> None:
+        self._stall_watchdog_triggered = False
+        self._stall_baseline_distance_remaining = None
+        self._stall_baseline_stamp_sec = None
+
+    def _maybe_fire_stall_watchdog(self, fb) -> None:
+        if not self._enable_stall_watchdog:
+            return
+
+        if self._stall_watchdog_triggered:
+            return
+
+        if self._active_recovery or not self._navigation_goal_active:
+            return
+
+        if self._fsm_state != RecoveryFSMState.EXECUTING:
+            return
+
+        try:
+            distance_remaining = float(fb.distance_remaining)
+            nav2_recoveries = int(fb.number_of_recoveries)
+        except Exception:
+            return
+
+        if not math.isfinite(distance_remaining):
+            return
+
+        now = time.monotonic()
+
+        if self._stall_baseline_distance_remaining is None:
+            self._stall_baseline_distance_remaining = distance_remaining
+            self._stall_baseline_stamp_sec = now
+            return
+
+        trigger_reason = ""
+
+        if (
+            self._stall_nav2_recoveries_cap > 0
+            and nav2_recoveries >= self._stall_nav2_recoveries_cap
+        ):
+            trigger_reason = (
+                f"nav2_recoveries_cap_reached:{nav2_recoveries}"
+            )
+        else:
+            distance_delta = abs(
+                distance_remaining - float(self._stall_baseline_distance_remaining)
+            )
+
+            if distance_delta > self._stall_distance_epsilon_m:
+                self._stall_baseline_distance_remaining = distance_remaining
+                self._stall_baseline_stamp_sec = now
+                return
+
+            elapsed = now - float(self._stall_baseline_stamp_sec or now)
+            if elapsed >= self._stall_window_sec:
+                trigger_reason = (
+                    f"no_progress_for_{elapsed:.2f}s:"
+                    f"distance_delta={distance_delta:.3f}"
+                )
+
+        if not trigger_reason:
+            return
+
+        self._stall_watchdog_triggered = True
+        self._raise_stall_watchdog_trigger(
+            reason=trigger_reason,
+            current_pose=fb.current_pose,
+            distance_remaining=distance_remaining,
+            nav2_recoveries=nav2_recoveries,
+        )
+
+    def _raise_stall_watchdog_trigger(
+        self,
+        reason: str,
+        current_pose: PoseStamped,
+        distance_remaining: float,
+        nav2_recoveries: int,
+    ) -> None:
+        blockage_centroid = Point()
+        if current_pose is not None:
+            blockage_centroid.x = float(current_pose.pose.position.x)
+            blockage_centroid.y = float(current_pose.pose.position.y)
+            blockage_centroid.z = float(current_pose.pose.position.z)
+
+        trigger = TriggerInfo(
+            trigger_source="stall_watchdog",
+            failure_stage="execution",
+            nav2_message=(
+                f"Controller stall watchdog fired: {reason}; "
+                f"distance_remaining={distance_remaining:.3f}; "
+                f"nav2_recoveries={nav2_recoveries}"
+            ),
+            robot_pose=current_pose,
+            match_type="unknown",
+            blockage_centroid=blockage_centroid,
+            blockage_extent_m=0.0,
+            debounce_key=f"stall_watchdog:{reason}",
+            stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
+        )
+
+        status = self._on_trigger(trigger)
+
+        self._log_stage_warn(
+            "RECOVERY/STALL",
+            (
+                f"Stall watchdog trigger processed: status={status}, "
+                f"reason='{reason}', distance_remaining={distance_remaining:.3f}, "
+                f"nav2_recoveries={nav2_recoveries}"
+            ),
+        )
+
+        if status == "accepted":
+            self._cancel_active_goal_for_recovery(trigger)
+
     def cancel_goal(self):
         if self._goal_handle is None:
             return
@@ -1592,6 +2680,292 @@ class NavigationOrchestrator(Node):
                 "EXECUTION",
                 f"Cancel request failed: {cancel_future.exception()}",
             )
+
+    def _action_backstop_trigger(
+        self,
+        failure_stage: str,
+        nav2_message: str,
+        robot_pose: Optional[PoseStamped],
+        distance_remaining: float = 0.0,
+        nav2_recoveries: int = 0,
+        failed_target_id: str = "",
+        recovery_count: int = 0,
+    ) -> str:
+        blockage_centroid = Point()
+        if robot_pose is not None:
+            blockage_centroid.x = float(robot_pose.pose.position.x)
+            blockage_centroid.y = float(robot_pose.pose.position.y)
+            blockage_centroid.z = float(robot_pose.pose.position.z)
+
+        trigger = TriggerInfo(
+            trigger_source="action_backstop",
+            failure_stage=failure_stage,
+            nav2_message=nav2_message,
+            robot_pose=robot_pose,
+            match_type="unknown",
+            blockage_centroid=blockage_centroid,
+            blockage_extent_m=0.0,
+            debounce_key=(
+                f"action_backstop:{failure_stage}:"
+                f"{failed_target_id or 'unknown'}:{recovery_count}"
+            ),
+            stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
+        )
+
+        status = self._on_trigger(trigger)
+
+        self.get_logger().info(
+            f"[RECOVERY/BACKSTOP] status={status} "
+            f"stage={failure_stage} distance_remaining={distance_remaining:.3f} "
+            f"nav2_recoveries={nav2_recoveries}"
+        )
+
+        return status
+
+    def _transition_recovery_fsm(self, new_state: RecoveryFSMState, reason: str = "") -> None:
+        old_state = self._fsm_state
+        self._fsm_state = new_state
+
+        self.get_logger().info(
+            f"[RECOVERY/FSM] {old_state.value} -> {new_state.value}"
+            + (f" reason={reason}" if reason else "")
+        )
+
+        self._publish_recovery_status(new_state.value, reason=reason)
+
+
+    def _publish_recovery_status(self, status: str, reason: str = "") -> None:
+        msg = String()
+        if reason:
+            msg.data = f"{status}|reason={reason}"
+        else:
+            msg.data = status
+        self._recovery_status_pub.publish(msg)
+    
+    def _trigger_bucket_key(self, trigger: TriggerInfo) -> str:
+        if trigger.responsible_object_key:
+            return f"object:{trigger.responsible_object_key}"
+
+        if trigger.debounce_key:
+            return f"debounce:{trigger.debounce_key}"
+
+        x = round(float(trigger.blockage_centroid.x), 1)
+        y = round(float(trigger.blockage_centroid.y), 1)
+        return f"centroid:{x:.1f},{y:.1f}"
+
+
+    def _is_duplicate_trigger(self, trigger: TriggerInfo) -> bool:
+        now = time.monotonic()
+        key = self._trigger_bucket_key(trigger)
+
+        debounce_sec = (
+            float(self.get_parameter("responsible_object_debounce_sec").value)
+            if trigger.responsible_object_key
+            else float(self.get_parameter("unknown_blockage_debounce_sec").value)
+        )
+
+        last = self._last_trigger_by_key.get(key)
+        if last is not None and (now - last) < debounce_sec:
+            return True
+
+        self._last_trigger_by_key[key] = now
+        return False
+    
+    def _finite_point(self, point: Point) -> bool:
+        values = [point.x, point.y, point.z]
+        return all(math.isfinite(float(v)) for v in values)
+
+    def _trigger_is_navigation_source(self, trigger: TriggerInfo) -> bool:
+        return trigger.trigger_source in {
+            "action_backstop",
+            "plan_intersection_monitor",
+            "stall_watchdog",
+        }
+
+    def _validate_trigger(self, trigger: TriggerInfo) -> bool:
+        if not trigger.trigger_source:
+            self.get_logger().warn("[RECOVERY/TRIGGER] rejected trigger with empty source")
+            return False
+
+        if not self._finite_point(trigger.blockage_centroid):
+            self._log_stage_warn(
+                "RECOVERY/MONITOR",
+                f"Rejected trigger from '{trigger.trigger_source}' with non-finite blockage centroid.",
+            )
+            return False
+
+        if trigger.blocked_plan_index_hi < trigger.blocked_plan_index_lo:
+            self._log_stage_warn(
+                "RECOVERY/MONITOR",
+                (
+                    f"Rejected trigger from '{trigger.trigger_source}' with invalid plan indices: "
+                    f"lo={trigger.blocked_plan_index_lo}, hi={trigger.blocked_plan_index_hi}."
+                ),
+            )
+            return False
+
+        if not math.isfinite(float(trigger.blockage_extent_m)) or float(trigger.blockage_extent_m) < 0.0:
+            self._log_stage_warn(
+                "RECOVERY/MONITOR",
+                f"Rejected trigger from '{trigger.trigger_source}' with invalid blockage_extent_m.",
+            )
+            return False
+
+        return True
+
+    def _accept_trigger(self, trigger: TriggerInfo) -> str:
+        self._last_trigger = trigger
+        self._active_recovery = True
+        self._transition_recovery_fsm(
+            RecoveryFSMState.RECOVERY_IN_PROGRESS,
+            reason=trigger.trigger_source,
+        )
+        return "accepted"
+
+    def _cancel_active_goal_for_recovery(self, trigger: TriggerInfo) -> None:
+        if self._goal_handle is None:
+            self._log_stage_info(
+                "RECOVERY/TRIGGER",
+                f"Accepted trigger source='{trigger.trigger_source}' but no active goal handle is available to cancel.",
+            )
+            return
+
+        self._log_stage_warn(
+            "RECOVERY/TRIGGER",
+            (
+                f"Accepted trigger source='{trigger.trigger_source}'. "
+                "Cancelling active ExecutePose goal so recovery can run through the orchestrator."
+            ),
+        )
+
+        # Do not block inside a subscriber/feedback callback while waiting for the
+        # cancel service response. The main MultiThreadedExecutor keeps spinning,
+        # and the navigation worker observes the resulting ExecutePose terminal state.
+        threading.Thread(target=self.cancel_goal, daemon=True).start()
+
+    def _handle_recovery_trigger_msg(self, msg: RecoveryTrigger) -> None:
+        if not self._enable_plan_intersection_trigger:
+            return
+
+        trigger = TriggerInfo(
+            trigger_source=msg.trigger_source or "plan_intersection_monitor",
+            failure_stage="execution",
+            nav2_message=msg.note,
+            robot_pose=self._make_recovery_pose(self._resolved_target),
+            responsible_object_key=msg.responsible_object_key,
+            match_type=msg.match_type or "unknown",
+            blockage_centroid=msg.blockage_centroid,
+            blockage_extent_m=float(msg.blockage_extent_m),
+            blocked_plan_index_lo=int(msg.blocked_plan_index_lo),
+            blocked_plan_index_hi=int(msg.blocked_plan_index_hi),
+            debounce_key=msg.debounce_key,
+            stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
+        )
+
+        status = self._on_trigger(trigger)
+
+        self._log_stage_info(
+            "RECOVERY/MONITOR",
+            (
+                f"RecoveryTrigger processed: status={status}, "
+                f"source='{trigger.trigger_source}', match_type='{trigger.match_type}', "
+                f"key='{self._trigger_bucket_key(trigger)}', "
+                f"blocked_indices=[{trigger.blocked_plan_index_lo}, {trigger.blocked_plan_index_hi}], "
+                f"extent={trigger.blockage_extent_m:.3f}"
+            ),
+        )
+
+        if status == "accepted":
+            self._cancel_active_goal_for_recovery(trigger)
+
+    def _on_trigger(self, trigger: TriggerInfo) -> str:
+        if not self._validate_trigger(trigger):
+            return "rejected"
+
+        self._augment_trigger_with_responsible_object(trigger)
+
+        if self._active_recovery:
+            self.get_logger().info(
+                f"[RECOVERY/TRIGGER] already_in_recovery source={trigger.trigger_source}"
+            )
+            return "already_in_recovery"
+
+        if trigger.trigger_source != "action_backstop" and self._is_duplicate_trigger(trigger):
+            self.get_logger().info(
+                f"[RECOVERY/TRIGGER] duplicate source={trigger.trigger_source} "
+                f"key={self._trigger_bucket_key(trigger)}"
+            )
+            return "duplicate"
+
+        if not self._trigger_is_navigation_source(trigger):
+            self.get_logger().info(
+                f"[RECOVERY/TRIGGER] rejected non-wired trigger source={trigger.trigger_source}"
+            )
+            return "rejected"
+
+        if trigger.trigger_source == "plan_intersection_monitor":
+            if not self._navigation_goal_active:
+                self.get_logger().info(
+                    "[RECOVERY/TRIGGER] rejected monitor trigger because no active ExecutePose goal is running"
+                )
+                return "rejected"
+
+            if self._fsm_state not in {
+                RecoveryFSMState.EXECUTING,
+                RecoveryFSMState.RECOVERY_IN_PROGRESS,
+            }:
+                self.get_logger().info(
+                    f"[RECOVERY/TRIGGER] rejected monitor trigger while fsm_state={self._fsm_state.value}"
+                )
+                return "rejected"
+
+        if trigger.trigger_source == "stall_watchdog":
+            if not self._navigation_goal_active:
+                self.get_logger().info(
+                    "[RECOVERY/TRIGGER] rejected stall watchdog trigger because no active ExecutePose goal is running"
+                )
+                return "rejected"
+
+            if self._fsm_state != RecoveryFSMState.EXECUTING:
+                self.get_logger().info(
+                    f"[RECOVERY/TRIGGER] rejected stall watchdog trigger while fsm_state={self._fsm_state.value}"
+                )
+                return "rejected"
+
+        return self._accept_trigger(trigger)
+
+    def _handle_request_recovery(
+        self,
+        request: RequestRecovery.Request,
+        response: RequestRecovery.Response,
+    ) -> RequestRecovery.Response:
+        trigger = TriggerInfo(
+            trigger_source=request.trigger_source or "bt_recovery_plugin",
+            failure_stage=request.failure_stage or "execution",
+            nav2_message=request.nav2_message,
+            robot_pose=request.robot_pose,
+            responsible_object_key=request.responsible_object_key,
+            responsible_object_tag=request.responsible_object_tag,
+            responsible_object_state=request.responsible_object_state,
+            blockage_centroid=request.blockage_centroid,
+            blockage_extent_m=float(request.blockage_extent_m),
+            debounce_key=request.debounce_key,
+            stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
+        )
+
+        status = self._on_trigger(trigger)
+        response.status = status
+
+        if status == "accepted":
+            response.message = "Recovery trigger accepted by orchestrator."
+        elif status == "duplicate":
+            response.message = "Duplicate recovery trigger absorbed."
+        elif status == "already_in_recovery":
+            response.message = "Recovery already in progress."
+        else:
+            response.message = "Recovery trigger rejected in current orchestrator mode."
+
+        return response
 
 def extract_query_from_argv() -> Optional[str]:
     """
@@ -1635,15 +3009,43 @@ def main(args=None):
         ])
         node._query = cli_query.strip()
 
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+
+    exit_code = 1
+    navigation_done = threading.Event()
+
+    def navigation_worker():
+        nonlocal exit_code
+
+        try:
+            success = node.run()
+
+            if success:
+                node.get_logger().info('Navigation task completed successfully!')
+                exit_code = 0
+            else:
+                node.get_logger().error('Navigation task failed.')
+                exit_code = 1
+
+        except Exception as exc:
+            node.get_logger().error(f'Navigation worker failed: {exc}')
+            exit_code = 1
+
+        finally:
+            navigation_done.set()
+
+    worker = threading.Thread(target=navigation_worker, daemon=True)
+    worker.start()
+
     try:
-        success = node.run()
+        while rclpy.ok():
+            executor.spin_once(timeout_sec=0.1)
 
-        if success:
-            node.get_logger().info('Navigation task completed successfully!')
-        else:
-            node.get_logger().error('Navigation task failed.')
+            if not node._start_idle and navigation_done.is_set():
+                break
 
-        raise SystemExit(0 if success else 1)
+        raise SystemExit(exit_code)
 
     except KeyboardInterrupt:
         node.get_logger().info('Keyboard interrupt received, cancelling goal...')
@@ -1651,6 +3053,7 @@ def main(args=None):
         raise SystemExit(130)
 
     finally:
+        executor.remove_node(node)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

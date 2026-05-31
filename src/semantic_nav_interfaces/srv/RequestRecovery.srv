@@ -1,0 +1,22 @@
+std_msgs/Header header
+
+# Usually "bt_recovery_plugin"
+string trigger_source
+
+# "validation" | "execution" | "bt_recovery"
+string failure_stage
+
+string nav2_message
+geometry_msgs/PoseStamped robot_pose
+
+# Optional evidence. Empty/zero means unknown.
+string debounce_key
+string responsible_object_key
+string responsible_object_tag
+string responsible_object_state
+geometry_msgs/Point blockage_centroid
+float32 blockage_extent_m
+---
+# "accepted" | "duplicate" | "already_in_recovery" | "rejected"
+string status
+string message
