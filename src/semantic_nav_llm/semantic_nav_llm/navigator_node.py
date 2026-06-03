@@ -22,51 +22,84 @@ class SemanticCatalog:
     valid_queries: Tuple[str, ...]
     normalized_to_canonical: Dict[str, str]
 
-
 @dataclass(frozen=True)
 class LLMIntent:
     action: str
     target: str
     confidence: int
+
 @dataclass(frozen=True)
 class ParsedRecoveryAction:
     action: str
     target: str
     waypoints: List[str]
+    wait_seconds: int
+    responsible_object_key: str
+    operator_message: str
     rationale: str
     confidence: int
 
 class NavigatorNode(Node):
     """
-    LLM semantic intent parser for semantic navigation.
+    LLM semantic intent and recovery-policy parser for semantic navigation.
 
     Provides:
       /parse_semantic_command
         semantic_nav_interfaces/srv/ParseSemanticCommand
 
+      /propose_recovery
+        semantic_nav_interfaces/srv/ProposeRecovery
+
     Calls:
       /llama/generate_response
         llama_msgs/action/GenerateResponse
 
-    Expected GBNF-constrained LLM output:
-      {"action":"navigate","target":"kitchen","confidence":95}
-      {"action":"clarify","target":"","confidence":85}
-      {"action":"reject","target":"","confidence":95}
-
-    Service response mapping:
-      action=navigate -> intent=navigate_to_location
-      action=clarify  -> intent=clarify
-      action=reject   -> intent=reject
-
     Safety boundary:
       This node never emits poses, x/y/yaw, cmd_vel, Nav2 goals,
-      planner IDs, or behavior-tree commands.
+      planner IDs, or behavior-tree commands. It returns only constrained
+      semantic intents and constrained BT-policy recovery proposals.
     """
+
+    RECOVERY_ACTIONS = {
+        "retry_target",
+        "reroute_via_waypoints",
+        "wait_then_replan",
+        "open_door_then_replan",
+        "clear_object_then_replan",
+        "give_up",
+    }
+
+    RECOVERY_EXPECTED_KEYS = {
+        "retry_target": {"action", "target", "rationale", "confidence"},
+        "reroute_via_waypoints": {"action", "waypoints", "rationale", "confidence"},
+        "wait_then_replan": {"action", "wait_seconds", "rationale", "confidence"},
+        "open_door_then_replan": {
+            "action",
+            "responsible_object_key",
+            "operator_message",
+            "rationale",
+            "confidence",
+        },
+        "clear_object_then_replan": {
+            "action",
+            "responsible_object_key",
+            "operator_message",
+            "rationale",
+            "confidence",
+        },
+        "give_up": {"action", "rationale", "confidence"},
+    }
 
     def __init__(self):
         super().__init__("navigator_node")
 
-        default_semantic_db_path = os.path.join(
+        default_semantic_map_path = os.path.join(
+            get_package_share_directory("semantic_nav_semantics"),
+            "config",
+            "map_v001.json",
+        )
+
+        default_legacy_semantic_db_path = os.path.join(
             get_package_share_directory("semantic_nav_semantics"),
             "config",
             "semantic_db.json",
@@ -86,12 +119,14 @@ class NavigatorNode(Node):
 
         self.declare_parameter("service_name", "/parse_semantic_command")
         self.declare_parameter("llama_action", "/llama/generate_response")
-        self.declare_parameter("semantic_db_path", default_semantic_db_path)
+        self.declare_parameter("semantic_map_path", default_semantic_map_path)
+        self.declare_parameter("semantic_db_path", default_semantic_map_path)
+        self.declare_parameter("legacy_semantic_db_path", default_legacy_semantic_db_path)
         self.declare_parameter("grammar_path", default_grammar_path)
 
         self.declare_parameter("propose_recovery_service", "/propose_recovery")
         self.declare_parameter("recovery_grammar_path", default_recovery_grammar_path)
-        self.declare_parameter("recovery_max_tokens", 192)
+        self.declare_parameter("recovery_max_tokens", 256)
 
         self.declare_parameter("llama_wait_timeout_sec", 60.0)
         self.declare_parameter("llm_send_goal_timeout_sec", 60.0)
@@ -124,8 +159,20 @@ class NavigatorNode(Node):
             .get_parameter_value()
             .string_value
         )
+        self._semantic_map_path = (
+            self.get_parameter("semantic_map_path")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
         self._semantic_db_path = (
             self.get_parameter("semantic_db_path")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+        self._legacy_semantic_db_path = (
+            self.get_parameter("legacy_semantic_db_path")
             .get_parameter_value()
             .string_value
             .strip()
@@ -228,13 +275,14 @@ class NavigatorNode(Node):
             .get_parameter_value()
             .integer_value
         )
-        
 
         self._callback_group = ReentrantCallbackGroup()
 
-        self._catalog = self._load_semantic_catalog(self._semantic_db_path)
+        self._catalog = self._load_semantic_catalog_with_fallback()
         self._gbnf_grammar = self._load_gbnf(self._grammar_path)
-        self._recovery_gbnf_grammar = self._load_recovery_gbnf(self._recovery_grammar_path)
+        self._recovery_gbnf_grammar = self._load_recovery_gbnf(
+            self._recovery_grammar_path
+        )
 
         self._llama_client = ActionClient(
             self,
@@ -264,7 +312,9 @@ class NavigatorNode(Node):
             f"recovery_grammar_path='{self._recovery_grammar_path}', "
             f"recovery_max_tokens={self._recovery_max_tokens}, "
             f"llama_action='{self._llama_action_name}', "
+            f"semantic_map_path='{self._semantic_map_path}', "
             f"semantic_db_path='{self._semantic_db_path}', "
+            f"legacy_semantic_db_path='{self._legacy_semantic_db_path}', "
             f"grammar_path='{self._grammar_path}', "
             f"canonical_locations={len(self._catalog.canonical_locations)}, "
             f"valid_queries={len(self._catalog.valid_queries)}"
@@ -321,30 +371,32 @@ class NavigatorNode(Node):
             parsed=parsed,
             raw_output=raw_output,
         )
-    
+
     def _handle_propose_recovery(self, request, response):
         """
-        Milestone 2A recovery handler.
+        BT-LLM recovery policy handler.
 
-        Supports:
-        - retry_target
-        - give_up
+        Supports constrained symbolic recovery actions only:
+          - retry_target
+          - reroute_via_waypoints
+          - wait_then_replan
+          - open_door_then_replan
+          - clear_object_then_replan
+          - give_up
 
-        Explicitly rejects:
-        - via_waypoints
-
-        Milestone 3 will enable via_waypoints and chain validation.
-        Milestone 2 will replace this hardcoded give_up with:
-        - recovery prompt construction
-        - llama_ros GenerateResponse call
-        - recovery_intent.gbnf enforcement
-        - retry_target validation
+        This node validates semantic plausibility and fills ProposeRecovery.
+        It does not clear costmaps, prompt operators, revalidate planners,
+        publish motion, or dispatch Nav2 goals. The orchestrator remains the
+        execution authority and Nav2 remains the geometric veto.
         """
 
         self.get_logger().warn(
             "[RECOVERY] LLM recovery invoked. "
             f"original_target='{request.original_target}', "
             f"failure_stage='{request.failure_stage}', "
+            f"trigger_source='{getattr(request, 'trigger_source', '')}', "
+            f"match_type='{getattr(request, 'match_type', '')}', "
+            f"responsible_object_key='{getattr(request, 'responsible_object_key', '')}', "
             f"nav2_message='{request.nav2_message}', "
             f"remaining_retry_budget={request.remaining_retry_budget}"
         )
@@ -469,7 +521,6 @@ class NavigatorNode(Node):
                 f"({len(gbnf_grammar)} chars)."
             )
 
-        # grammar_schema is for schema-style constraints in versions that expose it.
         if hasattr(sc, "grammar_schema"):
             sc.grammar_schema = ""
 
@@ -552,7 +603,7 @@ class NavigatorNode(Node):
             return None
 
         return text.strip()
-    
+
     def _wait_for_future(self, future, timeout_sec: float) -> bool:
         """
         Wait without nested spin_until_future_complete.
@@ -623,8 +674,7 @@ class NavigatorNode(Node):
 
         if not isinstance(data, dict):
             return None
-        
-        # Exact schema only.
+
         if set(data.keys()) != {"action", "target", "confidence"}:
             self.get_logger().error(
                 f"Invalid LLM JSON keys: got={sorted(data.keys())}, "
@@ -647,7 +697,7 @@ class NavigatorNode(Node):
             target=target,
             confidence=confidence,
         )
-    
+
     def _validate_and_fill_response(
         self,
         response,
@@ -728,7 +778,7 @@ class NavigatorNode(Node):
         )
 
         return response
-    
+
     def _handle_navigate_action(
         self,
         response,
@@ -779,7 +829,7 @@ class NavigatorNode(Node):
                 response=response,
                 raw_output=raw_output,
                 message=(
-                    f"LLM target='{target}' is not known in semantic_db.json. "
+                    f"LLM target='{target}' is not known in the semantic map. "
                     "Navigation intent rejected before resolution/validation/execution."
                 ),
             )
@@ -805,7 +855,7 @@ class NavigatorNode(Node):
         )
 
         return response
-    
+
     @staticmethod
     def _fill_failure(response, raw_output: str, message: str):
         response.success = False
@@ -820,38 +870,38 @@ class NavigatorNode(Node):
 
     def _build_prompt(self, command: str) -> str:
         return f"""You are a robotics navigation agent for a mobile robot using ROS 2 Nav2.
-        Return exactly one JSON object matching this schema:
-        {{"action":"navigate|clarify|reject","target":"string","confidence":0-100}}
+Return exactly one JSON object matching this schema:
+{{"action":"navigate|clarify|reject","target":"string","confidence":0-100}}
 
-        Task:
-        Infer the best semantic destination from the user command.
+Task:
+Infer the best semantic destination from the user command.
 
-        Rules:
-        - Use action "navigate" when the user names a place or expresses a need that implies a place.
-        - Use action "clarify" when the user wants navigation but the destination is unclear.
-        - Use action "reject" for raw robot motion commands or non-navigation commands.
-        - For navigate, target must be a short common place or functional destination.
-        - For clarify or reject, target must be "".
-        - Do not output coordinates, poses, velocity commands, Nav2 commands, or explanations.
-        - Do not use articles such as "the", "a", or "an" in the target.
-        - No markdown. No prose.
+Rules:
+- Use action "navigate" when the user names a place or expresses a need that implies a place.
+- Use action "clarify" when the user wants navigation but the destination is unclear.
+- Use action "reject" for raw robot motion commands or non-navigation commands.
+- For navigate, target must be a short common place or functional destination.
+- For clarify or reject, target must be "".
+- Do not output coordinates, poses, velocity commands, Nav2 commands, or explanations.
+- Do not use articles such as "the", "a", or "an" in the target.
+- No markdown. No prose.
 
-        Examples:
-        User: I am hungry
-        Output: {{"action":"navigate","target":"kitchen","confidence":95}}
+Examples:
+User: I am hungry
+Output: {{"action":"navigate","target":"kitchen","confidence":95}}
 
-        User: I am tired
-        Output: {{"action":"navigate","target":"bedroom","confidence":90}}
+User: I am tired
+Output: {{"action":"navigate","target":"bedroom","confidence":90}}
 
-        User: Drive forward two meters
-        Output: {{"action":"reject","target":"","confidence":95}}
+User: Drive forward two meters
+Output: {{"action":"reject","target":"","confidence":95}}
 
-        User: Take me there
-        Output: {{"action":"clarify","target":"","confidence":85}}
+User: Take me there
+Output: {{"action":"clarify","target":"","confidence":85}}
 
-        User:
-        {command}
-        """
+User:
+{command}
+"""
 
     def _build_recovery_prompt(self, request) -> str:
         available_locations = ", ".join(self._catalog.canonical_locations)
@@ -862,71 +912,242 @@ class NavigatorNode(Node):
             request.nearest_locations_summary.strip()
             or "robot pose unavailable"
         )
+        responsible_object_text = self._render_responsible_object_context(request)
+        eligibility_text = self._render_action_eligibility(request)
 
-        return f"""You are a semantic recovery planner for a mobile robot using ROS 2 Nav2.
+        return f"""You are a BT-aware semantic recovery policy planner for a mobile robot using ROS 2 Nav2.
 
-    Nav2's geometric planner has failed. Use semantic world knowledge to propose ONE recovery plan.
+Nav2 has failed or is about to fail. Choose exactly ONE constrained recovery policy.
+The orchestrator will validate your proposal and Nav2 remains the geometric authority.
+You do not compute paths, poses, velocities, planner IDs, or behavior-tree XML.
 
-    Return ONLY one JSON object in one of these forms:
-    {{"action":"retry_target","target":"...","rationale":"...","confidence":0-100}}
-    {{"action":"via_waypoints","waypoints":["..."],"rationale":"...","confidence":0-100}}
-    {{"action":"give_up","rationale":"...","confidence":0-100}}
+Return ONLY one JSON object in exactly one of these forms:
+{{"action":"retry_target","target":"...","rationale":"...","confidence":0-100}}
+{{"action":"reroute_via_waypoints","waypoints":["..."],"rationale":"...","confidence":0-100}}
+{{"action":"wait_then_replan","wait_seconds":3,"rationale":"...","confidence":0-100}}
+{{"action":"open_door_then_replan","responsible_object_key":"...","operator_message":"...","rationale":"...","confidence":0-100}}
+{{"action":"clear_object_then_replan","responsible_object_key":"...","operator_message":"...","rationale":"...","confidence":0-100}}
+{{"action":"give_up","rationale":"...","confidence":0-100}}
 
-    Rules:
-    - Pick targets and waypoints ONLY from the available semantic locations list.
-    - Do not propose anything listed in Already tried.
-    - Use retry_target only for a substitute destination that partially satisfies the original user intent.
-    - Use via_waypoints when the original target should still be reached through intermediate semantic locations.
-    - For via_waypoints, the final waypoint MUST be the original canonical target.
-    - For via_waypoints, use 1 to 6 total waypoints.
-    - Avoid internal repeats in waypoint chains.
-    - Prefer transition locations such as corridor, hallway, passage, or door as intermediate waypoints, not as substitute destinations.
-    - Use give_up if there is no semantically useful alternative or waypoint chain.
-    - JSON only. No markdown. No prose outside JSON.
-    - Do not output coordinates, poses, velocity commands, Nav2 commands, or behavior tree names.
-    - rationale must briefly explain why the proposal makes semantic sense.
+Action meanings:
+- retry_target: choose a substitute semantic destination that partially satisfies the original user intent.
+- reroute_via_waypoints: preserve the original final target and route through semantic waypoints.
+- wait_then_replan: wait briefly for a transient blockage, then the orchestrator clears costmaps and replans.
+- open_door_then_replan: ask the operator to open a verified openable door/gate, then replan.
+- clear_object_then_replan: ask the operator to clear a verified clearable non-human/non-animal object, then replan.
+- give_up: concede when there is no safe semantic recovery.
 
-    Available semantic locations:
-    {available_locations}
+Rules:
+- Pick retry targets and waypoints ONLY from the available semantic locations list.
+- Do not propose anything listed in Already tried.
+- For reroute_via_waypoints, the final waypoint MUST be the original canonical target.
+- For reroute_via_waypoints, use 1 to 6 total waypoints and avoid internal repeats.
+- Use open_door_then_replan only if the Action eligibility block says it is ELIGIBLE.
+- Use clear_object_then_replan only if the Action eligibility block says it is ELIGIBLE.
+- Use wait_then_replan only if the Action eligibility block says it is ELIGIBLE.
+- For operator actions, responsible_object_key must exactly match the verified object key shown below.
+- operator_message must be short, imperative, and contain no newline.
+- Human or animal blockages must never be cleared; use wait, reroute, retry, or give_up.
+- JSON only. No markdown. No prose outside JSON.
+- rationale must briefly explain why the proposal is semantically safe and useful.
 
-    Original goal:
-    user command: "{user_command}"
-    canonical target: {request.original_target}
+Available semantic locations:
+{available_locations}
 
-    Failure:
-    stage: {request.failure_stage}
-    Nav2 message: "{request.nav2_message}"
-    robot pose summary: {nearest_summary}
-    distance remaining at abort: {float(request.distance_remaining_at_abort):.3f}
-    Nav2 recoveries attempted: {int(request.nav2_recoveries_attempted)}
+Original goal:
+user command: "{user_command}"
+canonical target: {request.original_target}
 
-    Already tried:
-    {attempts_text}
+Failure:
+trigger source: {getattr(request, 'trigger_source', '') or 'unknown'}
+stage: {request.failure_stage}
+Nav2 message: "{request.nav2_message}"
+robot pose summary: {nearest_summary}
+distance remaining at abort: {float(request.distance_remaining_at_abort):.3f}
+Nav2 recoveries attempted: {int(request.nav2_recoveries_attempted)}
 
-    Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_budget) - 1)}
-    """
+{responsible_object_text}
+
+Action eligibility:
+{eligibility_text}
+
+Already tried:
+{attempts_text}
+
+Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_budget) - 1)}
+"""
+
+    def _render_responsible_object_context(self, request) -> str:
+        match_type = (getattr(request, "match_type", "") or "unknown").strip()
+        responsible_object_key = (
+            getattr(request, "responsible_object_key", "") or ""
+        ).strip()
+
+        if match_type == "unknown" or not responsible_object_key:
+            return """Responsible object:
+  match_type: unknown
+  responsible_object_key: ""
+  no DB-matched object is verified as responsible for this blockage"""
+
+        center = getattr(request, "responsible_bbox_center", None)
+        extent = getattr(request, "responsible_bbox_extent", None)
+
+        center_text = "unavailable"
+        extent_text = "unavailable"
+
+        if center is not None:
+            center_text = f"({float(center.x):.2f}, {float(center.y):.2f}, {float(center.z):.2f})"
+
+        if extent is not None:
+            extent_text = f"({float(extent.x):.2f}, {float(extent.y):.2f}, {float(extent.z):.2f})"
+
+        return f"""Responsible object:
+  match_type: {match_type}
+  responsible_object_key: "{responsible_object_key}"
+  object_tag: "{getattr(request, 'responsible_object_tag', '')}"
+  object_state: "{getattr(request, 'responsible_object_state', '')}"
+  safety_class: "{getattr(request, 'responsible_safety_class', '')}"
+  openable: {bool(getattr(request, 'responsible_openable', False))}
+  clearable: {bool(getattr(request, 'responsible_clearable', False))}
+  bbox_center: {center_text}
+  bbox_extent: {extent_text}
+  blockage_centroid: ({float(getattr(request, 'blockage_centroid').x):.2f}, {float(getattr(request, 'blockage_centroid').y):.2f}, {float(getattr(request, 'blockage_centroid').z):.2f})
+  blockage_extent_m: {float(getattr(request, 'blockage_extent_m', 0.0)):.2f}"""
+
+    def _render_action_eligibility(self, request) -> str:
+        lines = []
+
+        match_type = (getattr(request, "match_type", "") or "unknown").strip()
+        object_key = (getattr(request, "responsible_object_key", "") or "").strip()
+        safety_class = (
+            getattr(request, "responsible_safety_class", "") or "none"
+        ).strip()
+        object_state = (
+            getattr(request, "responsible_object_state", "") or ""
+        ).strip()
+        object_tag = (
+            getattr(request, "responsible_object_tag", "") or ""
+        ).strip()
+        openable = bool(getattr(request, "responsible_openable", False))
+        clearable = bool(getattr(request, "responsible_clearable", False))
+
+        deterministic_waits_used = int(
+            getattr(request, "deterministic_waits_used", 0)
+        )
+        deterministic_wait_cap = int(
+            getattr(request, "deterministic_wait_cap", 0)
+        )
+
+        lines.append("  retry_target: ELIGIBLE — subject to semantic target validation")
+        lines.append("  reroute_via_waypoints: ELIGIBLE — subject to waypoint validation")
+
+        if deterministic_waits_used >= deterministic_wait_cap:
+            lines.append(
+                "  wait_then_replan: ELIGIBLE — deterministic wait short-circuit exhausted"
+            )
+        else:
+            lines.append(
+                "  wait_then_replan: INELIGIBLE — deterministic wait short-circuit not exhausted"
+            )
+
+        if match_type != "verified" or not object_key:
+            lines.append(
+                "  open_door_then_replan: INELIGIBLE — no verified responsible object"
+            )
+            lines.append(
+                "  clear_object_then_replan: INELIGIBLE — no verified responsible object"
+            )
+        elif safety_class != "none":
+            lines.append(
+                f"  open_door_then_replan: INELIGIBLE — safety_class={safety_class}"
+            )
+            lines.append(
+                f"  clear_object_then_replan: INELIGIBLE — safety_class={safety_class}"
+            )
+        else:
+            if openable:
+                lines.append(
+                    "  open_door_then_replan: ELIGIBLE — verified openable object"
+                )
+            else:
+                lines.append(
+                    "  open_door_then_replan: INELIGIBLE — object is not openable"
+                )
+
+            if not clearable:
+                lines.append(
+                    "  clear_object_then_replan: INELIGIBLE — object is not clearable"
+                )
+            elif object_state not in {"movable", "semi-static"}:
+                lines.append(
+                    f"  clear_object_then_replan: INELIGIBLE — object_state={object_state}"
+                )
+            elif self._tag_is_door_or_gate(object_tag):
+                lines.append(
+                    "  clear_object_then_replan: INELIGIBLE — door/gate should be opened, not cleared"
+                )
+            else:
+                lines.append(
+                    "  clear_object_then_replan: ELIGIBLE — verified clearable non-human/non-animal object"
+                )
+
+        lines.append("  give_up: ELIGIBLE — safe terminal fallback")
+
+        return "\n".join(lines)
+
+    def _load_semantic_catalog_with_fallback(self) -> SemanticCatalog:
+        candidate_paths = []
+
+        for path in [
+            self._semantic_map_path,
+            self._semantic_db_path,
+            self._legacy_semantic_db_path,
+        ]:
+            if path and path not in candidate_paths:
+                candidate_paths.append(path)
+
+        last_error = None
+
+        for path in candidate_paths:
+            try:
+                catalog = self._load_semantic_catalog(path)
+                self.get_logger().info(
+                    f"Loaded semantic catalog for navigator_node from '{path}'."
+                )
+                return catalog
+            except Exception as exc:
+                last_error = exc
+                self.get_logger().warn(
+                    f"Could not load semantic catalog from '{path}': {exc}"
+                )
+
+        raise RuntimeError(
+            f"Could not load semantic catalog from any configured path. "
+            f"Last error: {last_error}"
+        )
 
     def _load_semantic_catalog(self, db_path: str) -> SemanticCatalog:
         if not db_path:
-            raise ValueError("semantic_db_path cannot be empty.")
+            raise ValueError("semantic map path cannot be empty.")
 
         if not os.path.exists(db_path):
-            raise FileNotFoundError(f"Semantic DB not found at '{db_path}'.")
+            raise FileNotFoundError(f"Semantic map not found at '{db_path}'.")
 
         with open(db_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        locations = data.get("locations")
-        if not isinstance(locations, dict) or not locations:
+        location_records = self._extract_location_records(data)
+
+        if not location_records:
             raise ValueError(
-                "Semantic DB must contain non-empty object field 'locations'."
+                "Semantic map must contain non-empty semantic location records."
             )
 
         canonical_locations: List[str] = []
         valid_queries_set: Set[str] = set()
         normalized_to_canonical: Dict[str, str] = {}
 
-        for location_id, record in locations.items():
+        for location_id, record in location_records:
             if not isinstance(location_id, str):
                 raise ValueError("All location IDs must be strings.")
 
@@ -941,19 +1162,27 @@ class NavigatorNode(Node):
 
             names = [canonical]
 
-            aliases = record.get("aliases", [])
-            if aliases is None:
-                aliases = []
+            for key in ["aliases", "alias", "names", "labels"]:
+                aliases = record.get(key, [])
 
-            if not isinstance(aliases, list):
-                raise ValueError(f"Location '{location_id}' aliases must be a list.")
+                if aliases is None:
+                    continue
 
-            for alias in aliases:
-                if not isinstance(alias, str):
+                if isinstance(aliases, str):
+                    names.append(aliases)
+                    continue
+
+                if not isinstance(aliases, list):
                     raise ValueError(
-                        f"Location '{location_id}' has a non-string alias."
+                        f"Location '{location_id}' field '{key}' must be string or list."
                     )
-                names.append(alias)
+
+                for alias in aliases:
+                    if not isinstance(alias, str):
+                        raise ValueError(
+                            f"Location '{location_id}' has a non-string alias."
+                        )
+                    names.append(alias)
 
             for name in names:
                 cleaned = " ".join(name.strip().split())
@@ -978,6 +1207,63 @@ class NavigatorNode(Node):
             normalized_to_canonical=normalized_to_canonical,
         )
 
+    def _extract_location_records(self, data) -> List[Tuple[str, dict]]:
+        if not isinstance(data, dict):
+            return []
+
+        for container_key in [
+            "locations",
+            "rooms",
+            "places",
+            "semantic_locations",
+            "waypoints",
+            "nodes",
+        ]:
+            container = data.get(container_key)
+            records = self._records_from_location_container(container)
+            if records:
+                return records
+
+        return []
+
+    def _records_from_location_container(self, container) -> List[Tuple[str, dict]]:
+        records = []
+
+        if isinstance(container, dict):
+            for key, value in container.items():
+                if not isinstance(value, dict):
+                    continue
+
+                location_id = (
+                    str(value.get("id", "")).strip()
+                    or str(value.get("name", "")).strip()
+                    or str(value.get("location_id", "")).strip()
+                    or str(key).strip()
+                )
+
+                if not location_id:
+                    continue
+
+                records.append((location_id, value))
+
+        elif isinstance(container, list):
+            for value in container:
+                if not isinstance(value, dict):
+                    continue
+
+                location_id = (
+                    str(value.get("id", "")).strip()
+                    or str(value.get("name", "")).strip()
+                    or str(value.get("location_id", "")).strip()
+                )
+
+                if not location_id:
+                    continue
+
+                records.append((location_id, value))
+
+        return records
+
     def _load_gbnf(self, grammar_path: str) -> str:
         if not grammar_path:
             raise ValueError("grammar_path cannot be empty.")
@@ -999,7 +1285,7 @@ class NavigatorNode(Node):
                 "with the free-target grammar."
             )
 
-        if "root ::=" not in grammar:
+        if "root ::= " not in grammar and "root ::=" not in grammar:
             raise ValueError("GBNF grammar must define a root rule.")
 
         self.get_logger().info(
@@ -1014,8 +1300,14 @@ class NavigatorNode(Node):
 
         required_tokens = [
             "retry_target",
-            "via_waypoints",
+            "reroute_via_waypoints",
+            "wait_then_replan",
+            "open_door_then_replan",
+            "clear_object_then_replan",
             "give_up",
+            "responsible_object_key",
+            "operator_message",
+            "wait_seconds",
             "rationale",
             "confidence",
         ]
@@ -1027,12 +1319,12 @@ class NavigatorNode(Node):
             )
 
         self.get_logger().info(
-            f"Loaded strict recovery GBNF grammar from '{grammar_path}' "
+            f"Loaded strict BT-policy recovery GBNF grammar from '{grammar_path}' "
             f"({len(grammar)} chars)."
         )
 
         return grammar
-    
+
     def _canonicalize_query(self, query: str) -> Optional[str]:
         cleaned = self._sanitize_target(query)
         normalized = self._normalize(cleaned)
@@ -1102,7 +1394,7 @@ class NavigatorNode(Node):
             )
 
         return "\n".join(lines)
-    
+
     def _parse_recovery_output(self, raw_output: str) -> Optional[ParsedRecoveryAction]:
         text = (raw_output or "").strip()
 
@@ -1132,19 +1424,39 @@ class NavigatorNode(Node):
             )
             return None
 
-        if action == "retry_target":
-            expected_keys = {"action", "target", "rationale", "confidence"}
-            if set(data.keys()) != expected_keys:
-                self.get_logger().error(
-                    f"Invalid retry_target keys: got={sorted(data.keys())}, "
-                    f"expected={sorted(expected_keys)}"
-                )
-                return None
+        if action == "via_waypoints":
+            self.get_logger().warn(
+                "Legacy recovery action 'via_waypoints' received. "
+                "Rejecting because M3A uses 'reroute_via_waypoints'."
+            )
+            return None
 
+        expected_keys = self.RECOVERY_EXPECTED_KEYS.get(action)
+        if expected_keys is None:
+            self.get_logger().error(
+                f"Invalid recovery action='{action}'."
+            )
+            return None
+
+        if set(data.keys()) != expected_keys:
+            self.get_logger().error(
+                f"Invalid {action} keys: got={sorted(data.keys())}, "
+                f"expected={sorted(expected_keys)}"
+            )
+            return None
+
+        try:
+            rationale = str(data["rationale"]).strip()
+            confidence = int(data["confidence"])
+        except Exception as exc:
+            self.get_logger().error(
+                f"Invalid common recovery fields in LLM output: {exc}"
+            )
+            return None
+
+        if action == "retry_target":
             try:
                 target = self._sanitize_target(str(data["target"]))
-                rationale = str(data["rationale"]).strip()
-                confidence = int(data["confidence"])
             except Exception as exc:
                 self.get_logger().error(
                     f"Invalid retry_target fields in LLM output: {exc}"
@@ -1155,25 +1467,43 @@ class NavigatorNode(Node):
                 action=action,
                 target=target,
                 waypoints=[],
+                wait_seconds=0,
+                responsible_object_key="",
+                operator_message="",
                 rationale=rationale,
                 confidence=confidence,
             )
 
-        if action == "give_up":
-            expected_keys = {"action", "rationale", "confidence"}
-            if set(data.keys()) != expected_keys:
+        if action == "reroute_via_waypoints":
+            try:
+                waypoints = [
+                    self._sanitize_target(str(w))
+                    for w in data["waypoints"]
+                    if str(w).strip()
+                ]
+            except Exception as exc:
                 self.get_logger().error(
-                    f"Invalid give_up keys: got={sorted(data.keys())}, "
-                    f"expected={sorted(expected_keys)}"
+                    f"Invalid reroute_via_waypoints fields in LLM output: {exc}"
                 )
                 return None
 
+            return ParsedRecoveryAction(
+                action=action,
+                target="",
+                waypoints=waypoints,
+                wait_seconds=0,
+                responsible_object_key="",
+                operator_message="",
+                rationale=rationale,
+                confidence=confidence,
+            )
+
+        if action == "wait_then_replan":
             try:
-                rationale = str(data["rationale"]).strip()
-                confidence = int(data["confidence"])
+                wait_seconds = int(data["wait_seconds"])
             except Exception as exc:
                 self.get_logger().error(
-                    f"Invalid give_up fields in LLM output: {exc}"
+                    f"Invalid wait_then_replan fields in LLM output: {exc}"
                 )
                 return None
 
@@ -1181,36 +1511,47 @@ class NavigatorNode(Node):
                 action=action,
                 target="",
                 waypoints=[],
+                wait_seconds=wait_seconds,
+                responsible_object_key="",
+                operator_message="",
                 rationale=rationale,
                 confidence=confidence,
             )
 
-        if action == "via_waypoints":
-            self.get_logger().warn(
-                "via_waypoints proposal received, but waypoint chains are disabled "
-                "until Milestone 3."
-            )
-
-            rationale = str(data.get("rationale", "")).strip()
-            confidence = int(data.get("confidence", 0))
+        if action in {"open_door_then_replan", "clear_object_then_replan"}:
+            try:
+                responsible_object_key = self._sanitize_target(
+                    str(data["responsible_object_key"])
+                )
+                operator_message = str(data["operator_message"]).strip()
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Invalid {action} fields in LLM output: {exc}"
+                )
+                return None
 
             return ParsedRecoveryAction(
                 action=action,
                 target="",
-                waypoints=[
-                    self._sanitize_target(str(w))
-                    for w in data.get("waypoints", [])
-                    if str(w).strip()
-                ],
+                waypoints=[],
+                wait_seconds=0,
+                responsible_object_key=responsible_object_key,
+                operator_message=operator_message,
                 rationale=rationale,
                 confidence=confidence,
             )
 
-        self.get_logger().error(
-            f"Invalid recovery action='{action}'."
+        return ParsedRecoveryAction(
+            action="give_up",
+            target="",
+            waypoints=[],
+            wait_seconds=0,
+            responsible_object_key="",
+            operator_message="",
+            rationale=rationale,
+            confidence=confidence,
         )
-        return None
-    
+
     def _validate_recovery_and_fill_response(
         self,
         response,
@@ -1218,7 +1559,7 @@ class NavigatorNode(Node):
         request,
         raw_output: str,
     ):
-        if parsed.action not in {"retry_target", "via_waypoints", "give_up"}:
+        if parsed.action not in self.RECOVERY_ACTIONS:
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
@@ -1253,32 +1594,29 @@ class NavigatorNode(Node):
                 message="Recovery rationale cannot be empty.",
             )
 
-        if parsed.action == "give_up":
-            response.success = True
-            response.action = "give_up"
-            response.target = ""
-            response.waypoints = []
-            response.rationale = parsed.rationale
-            response.confidence_percent = int(parsed.confidence)
-            response.raw_output = raw_output
-            response.message = "LLM recovery chose give_up."
+        validators = {
+            "retry_target": self._validate_retry_target_recovery,
+            "reroute_via_waypoints": self._validate_reroute_waypoints_recovery,
+            "wait_then_replan": self._validate_wait_then_replan_recovery,
+            "open_door_then_replan": self._validate_open_door_then_replan_recovery,
+            "clear_object_then_replan": self._validate_clear_object_then_replan_recovery,
+            "give_up": self._validate_give_up_recovery,
+        }
 
-            self.get_logger().warn(
-                f"[RECOVERY] LLM chose give_up: rationale='{parsed.rationale}', "
-                f"confidence={parsed.confidence}"
-            )
+        return validators[parsed.action](
+            response=response,
+            parsed=parsed,
+            request=request,
+            raw_output=raw_output,
+        )
 
-            return response
-
-        if parsed.action == "via_waypoints":
-            return self._validate_waypoint_recovery_and_fill_response(
-                response=response,
-                parsed=parsed,
-                request=request,
-                raw_output=raw_output,
-            )
-
-        # retry_target validation
+    def _validate_retry_target_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
         if not parsed.target:
             return self._fill_recovery_failure(
                 response=response,
@@ -1310,7 +1648,7 @@ class NavigatorNode(Node):
                 response=response,
                 raw_output=raw_output,
                 message=(
-                    f"Recovery target='{parsed.target}' is not known in semantic_db.json."
+                    f"Recovery target='{parsed.target}' is not known in the semantic map."
                 ),
             )
 
@@ -1340,17 +1678,18 @@ class NavigatorNode(Node):
                 ),
             )
 
-        response.success = True
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message=(
+                f"Accepted recovery retry_target='{canonical_target}', "
+                f"confidence={parsed.confidence}."
+            ),
+        )
         response.action = "retry_target"
         response.target = canonical_target
         response.waypoints = []
-        response.rationale = parsed.rationale
-        response.confidence_percent = int(parsed.confidence)
-        response.raw_output = raw_output
-        response.message = (
-            f"Accepted recovery retry_target='{canonical_target}', "
-            f"confidence={parsed.confidence}."
-        )
 
         self.get_logger().info(
             f"[RECOVERY] Accepted retry_target: "
@@ -1361,32 +1700,8 @@ class NavigatorNode(Node):
         )
 
         return response
-    
-    def _canonicalize_attempted_values(self, attempted_values) -> Set[str]:
-        canonicals: Set[str] = set()
 
-        for value in attempted_values:
-            if not value:
-                continue
-
-            # Handles retry_target values like "dining".
-            canonical = self._canonicalize_query(str(value))
-            if canonical is not None:
-                canonicals.add(canonical)
-                continue
-
-            # Handles future chain values like "corridor,kitchen".
-            for part in str(value).split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                canonical = self._canonicalize_query(part)
-                if canonical is not None:
-                    canonicals.add(canonical)
-
-        return canonicals
-
-    def _validate_waypoint_recovery_and_fill_response(
+    def _validate_reroute_waypoints_recovery(
         self,
         response,
         parsed: ParsedRecoveryAction,
@@ -1397,14 +1712,17 @@ class NavigatorNode(Node):
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
-                message="via_waypoints requires at least one waypoint.",
+                message="reroute_via_waypoints requires at least one waypoint.",
             )
 
         if len(parsed.waypoints) > 6:
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
-                message=f"via_waypoints supports at most 6 waypoints, got {len(parsed.waypoints)}.",
+                message=(
+                    f"reroute_via_waypoints supports at most 6 waypoints, "
+                    f"got {len(parsed.waypoints)}."
+                ),
             )
 
         canonical_waypoints = []
@@ -1416,7 +1734,7 @@ class NavigatorNode(Node):
                 return self._fill_recovery_failure(
                     response=response,
                     raw_output=raw_output,
-                    message="via_waypoints contains an empty waypoint.",
+                    message="reroute_via_waypoints contains an empty waypoint.",
                 )
 
             if self._target_is_placeholder(waypoint):
@@ -1443,7 +1761,7 @@ class NavigatorNode(Node):
                 return self._fill_recovery_failure(
                     response=response,
                     raw_output=raw_output,
-                    message=f"Waypoint='{waypoint}' is not known in semantic_db.json.",
+                    message=f"Waypoint='{waypoint}' is not known in the semantic map.",
                 )
 
             canonical_waypoints.append(canonical)
@@ -1452,7 +1770,9 @@ class NavigatorNode(Node):
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
-                message=f"Waypoint chain contains internal repeats: {canonical_waypoints}.",
+                message=(
+                    f"Waypoint chain contains internal repeats: {canonical_waypoints}."
+                ),
             )
 
         original_canonical = self._canonicalize_query(request.original_target)
@@ -1479,20 +1799,21 @@ class NavigatorNode(Node):
                 message=f"Waypoint chain was already attempted: {canonical_waypoints}.",
             )
 
-        response.success = True
-        response.action = "via_waypoints"
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message=(
+                f"Accepted recovery reroute_via_waypoints chain={canonical_waypoints}, "
+                f"confidence={parsed.confidence}."
+            ),
+        )
+        response.action = "reroute_via_waypoints"
         response.target = ""
         response.waypoints = canonical_waypoints
-        response.rationale = parsed.rationale
-        response.confidence_percent = int(parsed.confidence)
-        response.raw_output = raw_output
-        response.message = (
-            f"Accepted recovery waypoint chain={canonical_waypoints}, "
-            f"confidence={parsed.confidence}."
-        )
 
         self.get_logger().info(
-            f"[RECOVERY] Accepted via_waypoints: "
+            f"[RECOVERY] Accepted reroute_via_waypoints: "
             f"canonical_waypoints={canonical_waypoints}, "
             f"confidence={parsed.confidence}, "
             f"rationale='{parsed.rationale}'"
@@ -1500,6 +1821,297 @@ class NavigatorNode(Node):
 
         return response
 
+    def _validate_wait_then_replan_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
+        if not (1 <= int(parsed.wait_seconds) <= 30):
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=(
+                    f"wait_then_replan wait_seconds={parsed.wait_seconds} invalid. "
+                    "Expected 1..30."
+                ),
+            )
+
+        waits_used = int(getattr(request, "deterministic_waits_used", 0))
+        wait_cap = int(getattr(request, "deterministic_wait_cap", 0))
+
+        if waits_used < wait_cap:
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=(
+                    "wait_then_replan ineligible: deterministic short-circuit not exhausted."
+                ),
+            )
+
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message=(
+                f"Accepted recovery wait_then_replan wait_seconds={parsed.wait_seconds}, "
+                f"confidence={parsed.confidence}."
+            ),
+        )
+        response.action = "wait_then_replan"
+        response.target = ""
+        response.waypoints = []
+        response.wait_seconds = int(parsed.wait_seconds)
+
+        self.get_logger().info(
+            f"[RECOVERY] Accepted wait_then_replan: "
+            f"wait_seconds={parsed.wait_seconds}, "
+            f"confidence={parsed.confidence}, "
+            f"rationale='{parsed.rationale}'"
+        )
+
+        return response
+
+    def _validate_open_door_then_replan_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
+        object_error = self._validate_operator_object_action_common(
+            parsed=parsed,
+            request=request,
+            action_name="open_door_then_replan",
+        )
+        if object_error is not None:
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=object_error,
+            )
+
+        if not bool(getattr(request, "responsible_openable", False)):
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message="open_door_then_replan ineligible: responsible object is not openable.",
+            )
+
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message=(
+                f"Accepted recovery open_door_then_replan for "
+                f"responsible_object_key='{parsed.responsible_object_key}', "
+                f"confidence={parsed.confidence}."
+            ),
+        )
+        response.action = "open_door_then_replan"
+        response.target = ""
+        response.waypoints = []
+        response.responsible_object_key = parsed.responsible_object_key
+        response.operator_message = parsed.operator_message
+
+        self.get_logger().info(
+            f"[RECOVERY] Accepted open_door_then_replan: "
+            f"responsible_object_key='{parsed.responsible_object_key}', "
+            f"operator_message='{parsed.operator_message}', "
+            f"confidence={parsed.confidence}, "
+            f"rationale='{parsed.rationale}'"
+        )
+
+        return response
+
+    def _validate_clear_object_then_replan_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
+        object_error = self._validate_operator_object_action_common(
+            parsed=parsed,
+            request=request,
+            action_name="clear_object_then_replan",
+        )
+        if object_error is not None:
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=object_error,
+            )
+
+        if not bool(getattr(request, "responsible_clearable", False)):
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message="clear_object_then_replan ineligible: responsible object is not clearable.",
+            )
+
+        object_state = (
+            getattr(request, "responsible_object_state", "") or ""
+        ).strip()
+        if object_state not in {"movable", "semi-static"}:
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=(
+                    "clear_object_then_replan ineligible: "
+                    f"object_state='{object_state}' is not movable or semi-static."
+                ),
+            )
+
+        object_tag = (
+            getattr(request, "responsible_object_tag", "") or ""
+        ).strip()
+        if self._tag_is_door_or_gate(object_tag):
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message="clear_object_then_replan ineligible: door/gate should be opened, not cleared.",
+            )
+
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message=(
+                f"Accepted recovery clear_object_then_replan for "
+                f"responsible_object_key='{parsed.responsible_object_key}', "
+                f"confidence={parsed.confidence}."
+            ),
+        )
+        response.action = "clear_object_then_replan"
+        response.target = ""
+        response.waypoints = []
+        response.responsible_object_key = parsed.responsible_object_key
+        response.operator_message = parsed.operator_message
+
+        self.get_logger().info(
+            f"[RECOVERY] Accepted clear_object_then_replan: "
+            f"responsible_object_key='{parsed.responsible_object_key}', "
+            f"operator_message='{parsed.operator_message}', "
+            f"confidence={parsed.confidence}, "
+            f"rationale='{parsed.rationale}'"
+        )
+
+        return response
+
+    def _validate_operator_object_action_common(
+        self,
+        parsed: ParsedRecoveryAction,
+        request,
+        action_name: str,
+    ) -> Optional[str]:
+        if (getattr(request, "match_type", "") or "").strip() != "verified":
+            return f"{action_name} ineligible: responsible object match is not verified."
+
+        request_object_key = (
+            getattr(request, "responsible_object_key", "") or ""
+        ).strip()
+        if not request_object_key:
+            return f"{action_name} ineligible: request responsible_object_key is empty."
+
+        if parsed.responsible_object_key != request_object_key:
+            return (
+                f"{action_name} ineligible: response responsible_object_key "
+                f"'{parsed.responsible_object_key}' does not match request key "
+                f"'{request_object_key}'."
+            )
+
+        safety_class = (
+            getattr(request, "responsible_safety_class", "") or "none"
+        ).strip()
+        if safety_class != "none":
+            return f"{action_name} ineligible: safety_class='{safety_class}'."
+
+        operator_error = self._validate_operator_message(parsed.operator_message)
+        if operator_error is not None:
+            return f"{action_name} ineligible: {operator_error}"
+
+        return None
+
+    def _validate_operator_message(self, operator_message: str) -> Optional[str]:
+        if not operator_message:
+            return "operator_message cannot be empty."
+
+        if len(operator_message) > 160:
+            return f"operator_message too long: len={len(operator_message)}, max=160."
+
+        if "\n" in operator_message or "\r" in operator_message:
+            return "operator_message must not contain newlines."
+
+        return None
+
+    def _validate_give_up_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message="LLM recovery chose give_up.",
+        )
+        response.action = "give_up"
+        response.target = ""
+        response.waypoints = []
+        response.operator_message = self._make_give_up_operator_message(parsed.rationale)
+
+        self.get_logger().warn(
+            f"[RECOVERY] LLM chose give_up: rationale='{parsed.rationale}', "
+            f"confidence={parsed.confidence}"
+        )
+
+        return response
+
+    def _fill_recovery_success_common(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        raw_output: str,
+        message: str,
+    ):
+        response.success = True
+        response.action = parsed.action
+        response.target = ""
+        response.waypoints = []
+        response.rationale = parsed.rationale
+        response.confidence_percent = int(parsed.confidence)
+        response.raw_output = raw_output
+        response.message = message
+        response.responsible_object_key = ""
+        response.operator_message = ""
+        response.wait_seconds = 0
+        return response
+
+    def _canonicalize_attempted_values(self, attempted_values) -> Set[str]:
+        canonicals: Set[str] = set()
+
+        for value in attempted_values:
+            if not value:
+                continue
+
+            canonical = self._canonicalize_query(str(value))
+            if canonical is not None:
+                canonicals.add(canonical)
+                continue
+
+            for part in str(value).split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                canonical = self._canonicalize_query(part)
+                if canonical is not None:
+                    canonicals.add(canonical)
+
+        return canonicals
 
     def _canonicalize_attempted_chains(self, attempted_values) -> Set[tuple]:
         chains: Set[tuple] = set()
@@ -1535,7 +2147,22 @@ class NavigatorNode(Node):
     @staticmethod
     def _normalize(text: str) -> str:
         return " ".join(text.strip().lower().replace("_", " ").split())
-    
+
+    @staticmethod
+    def _tag_is_door_or_gate(tag: str) -> bool:
+        normalized = " ".join((tag or "").strip().lower().split())
+        return "door" in normalized or "gate" in normalized
+
+    @staticmethod
+    def _make_give_up_operator_message(rationale: str) -> str:
+        base = "No safe semantic recovery was found. Operator intervention required."
+        rationale = " ".join((rationale or "").strip().split())
+        if not rationale:
+            return base
+
+        message = f"{base} Reason: {rationale}"
+        return message[:160]
+
     @staticmethod
     def _extract_json_object(text: str):
         start = text.find("{")
@@ -1561,7 +2188,11 @@ class NavigatorNode(Node):
         response.confidence_percent = 0
         response.raw_output = raw_output
         response.message = message
+        response.responsible_object_key = ""
+        response.operator_message = ""
+        response.wait_seconds = 0
         return response
+
 
 def main(args=None):
     rclpy.init(args=args)

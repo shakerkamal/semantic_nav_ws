@@ -1,23 +1,38 @@
-# Strict semantic recovery intent grammar.
-# The LLM emits exactly one of: retry_target, via_waypoints, give_up.
+# Strict BT-policy semantic recovery intent grammar.
+# The LLM emits exactly one of:
+# retry_target, reroute_via_waypoints, wait_then_replan,
+# open_door_then_replan, clear_object_then_replan, give_up.
 
-root ::= ws (retry-target | via-waypoints | give-up) ws
+root ::= ws (retry-target | reroute-via-waypoints | wait-then-replan | open-door-then-replan | clear-object-then-replan | give-up) ws
 
 retry-target ::= "{" ws action-key ws ":" ws "\"retry_target\"" ws "," ws target-key ws ":" ws short-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
-via-waypoints ::= "{" ws action-key ws ":" ws "\"via_waypoints\"" ws "," ws waypoints-key ws ":" ws string-array ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+
+reroute-via-waypoints ::= "{" ws action-key ws ":" ws "\"reroute_via_waypoints\"" ws "," ws waypoints-key ws ":" ws string-array ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+
+wait-then-replan ::= "{" ws action-key ws ":" ws "\"wait_then_replan\"" ws "," ws wait-seconds-key ws ":" ws wait-seconds ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+
+open-door-then-replan ::= "{" ws action-key ws ":" ws "\"open_door_then_replan\"" ws "," ws responsible-object-key ws ":" ws short-string ws "," ws operator-message-key ws ":" ws operator-message-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+
+clear-object-then-replan ::= "{" ws action-key ws ":" ws "\"clear_object_then_replan\"" ws "," ws responsible-object-key ws ":" ws short-string ws "," ws operator-message-key ws ":" ws operator-message-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+
 give-up ::= "{" ws action-key ws ":" ws "\"give_up\"" ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 
 action-key ::= "\"action\""
 target-key ::= "\"target\""
 waypoints-key ::= "\"waypoints\""
+wait-seconds-key ::= "\"wait_seconds\""
+responsible-object-key ::= "\"responsible_object_key\""
+operator-message-key ::= "\"operator_message\""
 rationale-key ::= "\"rationale\""
 confidence-key ::= "\"confidence\""
 
 string-array ::= "[" ws short-string (ws "," ws short-string){0,5} ws "]"
 
 confidence ::= "100" | [1-9] [0-9]? | "0"
+wait-seconds ::= [1-9] | [1-2] [0-9] | "30"
 
 short-string ::= "\"" char{1,80} "\""
+operator-message-string ::= "\"" char{1,160} "\""
 rationale-string ::= "\"" char{1,220} "\""
 
 char ::= [^"\\\x7F\x00-\x1F] | "\\" escape
