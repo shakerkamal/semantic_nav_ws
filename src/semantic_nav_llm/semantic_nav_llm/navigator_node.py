@@ -25,7 +25,8 @@ class SemanticCatalog:
 @dataclass(frozen=True)
 class LLMIntent:
     action: str
-    target: str
+    object_tag: str
+    intent_hint: str
     confidence: int
 
 @dataclass(frozen=True)
@@ -105,6 +106,12 @@ class NavigatorNode(Node):
             "semantic_db.json",
         )
 
+        default_intent_affordances_path = os.path.join(
+            get_package_share_directory("semantic_nav_semantics"),
+            "config",
+            "object_intent_affordances.json",
+        )
+
         default_grammar_path = os.path.join(
             get_package_share_directory("semantic_nav_llm"),
             "config",
@@ -122,6 +129,7 @@ class NavigatorNode(Node):
         self.declare_parameter("semantic_map_path", default_semantic_map_path)
         self.declare_parameter("semantic_db_path", default_semantic_map_path)
         self.declare_parameter("legacy_semantic_db_path", default_legacy_semantic_db_path)
+        self.declare_parameter("intent_affordances_path", default_intent_affordances_path)
         self.declare_parameter("grammar_path", default_grammar_path)
 
         self.declare_parameter("propose_recovery_service", "/propose_recovery")
@@ -173,6 +181,12 @@ class NavigatorNode(Node):
         )
         self._legacy_semantic_db_path = (
             self.get_parameter("legacy_semantic_db_path")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+        self._intent_affordances_path = (
+            self.get_parameter("intent_affordances_path")
             .get_parameter_value()
             .string_value
             .strip()
@@ -279,6 +293,7 @@ class NavigatorNode(Node):
         self._callback_group = ReentrantCallbackGroup()
 
         self._catalog = self._load_semantic_catalog_with_fallback()
+        self._object_store = self._load_object_store()
         self._gbnf_grammar = self._load_gbnf(self._grammar_path)
         self._recovery_gbnf_grammar = self._load_recovery_gbnf(
             self._recovery_grammar_path
@@ -675,16 +690,17 @@ class NavigatorNode(Node):
         if not isinstance(data, dict):
             return None
 
-        if set(data.keys()) != {"action", "target", "confidence"}:
+        if set(data.keys()) != {"action", "object_tag", "intent_hint", "confidence"}:
             self.get_logger().error(
                 f"Invalid LLM JSON keys: got={sorted(data.keys())}, "
-                "expected=['action', 'confidence', 'target']"
+                "expected=['action', 'confidence', 'intent_hint', 'object_tag']"
             )
             return None
 
         try:
             action = str(data["action"]).strip()
-            target = self._sanitize_target(str(data["target"]))
+            object_tag = self._sanitize_target(str(data["object_tag"]))
+            intent_hint = str(data["intent_hint"]).strip()[:64]
             confidence = int(data["confidence"])
         except Exception as exc:
             self.get_logger().error(
@@ -694,7 +710,8 @@ class NavigatorNode(Node):
 
         return LLMIntent(
             action=action,
-            target=target,
+            object_tag=object_tag,
+            intent_hint=intent_hint,
             confidence=confidence,
         )
 
@@ -733,13 +750,12 @@ class NavigatorNode(Node):
                 raw_output=raw_output,
             )
 
-        if parsed.target:
+        if parsed.object_tag or parsed.intent_hint:
             return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
+                response=response, raw_output=raw_output,
                 message=(
-                    f"Action '{parsed.action}' must use empty target, "
-                    f"but got target='{parsed.target}'."
+                    f"Action '{parsed.action}' must use empty object_tag and intent_hint, "
+                    f"but got object_tag='{parsed.object_tag}', intent_hint='{parsed.intent_hint}'."
                 ),
             )
 
@@ -748,8 +764,12 @@ class NavigatorNode(Node):
             response.intent = "clarify"
             response.location_query = ""
             response.canonical_location_id = ""
-            response.confidence_percent = int(parsed.confidence)
             response.location_known = False
+            response.object_tag = ""
+            response.intent_hint = ""
+            response.target_object_key = ""
+            response.target_known = False
+            response.confidence_percent = int(parsed.confidence)
             response.raw_output = raw_output
             response.message = (
                 "LLM requested clarification because the destination or need is ambiguous."
@@ -765,8 +785,12 @@ class NavigatorNode(Node):
         response.intent = "reject"
         response.location_query = ""
         response.canonical_location_id = ""
-        response.confidence_percent = int(parsed.confidence)
         response.location_known = False
+        response.object_tag = ""
+        response.intent_hint = ""
+        response.target_object_key = ""
+        response.target_known = False
+        response.confidence_percent = int(parsed.confidence)
         response.raw_output = raw_output
         response.message = (
             "LLM rejected the command because it is not a valid semantic "
@@ -785,75 +809,64 @@ class NavigatorNode(Node):
         parsed: LLMIntent,
         raw_output: str,
     ):
-        target = self._sanitize_target(parsed.target)
+        object_tag = self._sanitize_target(parsed.object_tag)
 
         if parsed.confidence < self._min_confidence_percent:
             return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
+                response=response, raw_output=raw_output,
                 message=(
                     f"Rejected low-confidence navigation intent: "
-                    f"confidence={parsed.confidence}, "
-                    f"minimum={self._min_confidence_percent}."
+                    f"confidence={parsed.confidence}, minimum={self._min_confidence_percent}."
                 ),
             )
 
-        if not target:
+        if not object_tag:
             return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
-                message="Navigate action requires non-empty target.",
+                response=response, raw_output=raw_output,
+                message="Navigate action requires non-empty object_tag.",
             )
 
-        if not self._target_length_is_valid(target):
+        if not self._target_length_is_valid(object_tag):
             return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
+                response=response, raw_output=raw_output,
                 message=(
-                    f"Target length invalid: len={len(target)}, "
+                    f"object_tag length invalid: len={len(object_tag)}, "
                     f"allowed={self._target_min_len}..{self._target_max_len}."
                 ),
             )
 
-        if self._target_is_placeholder(target):
+        # Alias resolution + navigability gate in one call
+        resolved_tag = self._object_store.resolve_tag_or_alias(object_tag)
+        if resolved_tag is None:
             return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
-                message=f"Rejected placeholder target='{target}'.",
-            )
-
-        canonical_location_id = self._canonicalize_query(target)
-
-        if canonical_location_id is None:
-            return self._fill_failure(
-                response=response,
-                raw_output=raw_output,
+                response=response, raw_output=raw_output,
                 message=(
-                    f"LLM target='{target}' is not known in the semantic map. "
-                    "Navigation intent rejected before resolution/validation/execution."
+                    f"object_tag='{object_tag}' is not a navigable tag in this scene. "
+                    f"Known navigable tags: {', '.join(self._object_store.navigable_tag_vocabulary)}"
                 ),
             )
 
         response.success = True
-        response.intent = "navigate_to_location"
-        response.location_query = target
-        response.canonical_location_id = canonical_location_id
-        response.confidence_percent = int(parsed.confidence)
+        response.intent = "navigate_to_object"
+        response.object_tag = resolved_tag
+        response.intent_hint = parsed.intent_hint
+        response.target_object_key = ""
+        response.target_known = True
+        # Legacy mirror fields for orchestrator compatibility:
+        response.location_query = resolved_tag
+        response.canonical_location_id = ""
         response.location_known = True
+        response.confidence_percent = int(parsed.confidence)
         response.raw_output = raw_output
         response.message = (
-            f"Accepted navigation intent: target='{target}', "
-            f"canonical_location_id='{canonical_location_id}', "
-            f"confidence={parsed.confidence}."
+            f"Accepted navigation intent: object_tag='{resolved_tag}', "
+            f"intent_hint='{parsed.intent_hint}', confidence={parsed.confidence}."
         )
 
         self.get_logger().info(
-            f"[LLM_INTENT] Accepted navigate: "
-            f"target='{target}', "
-            f"canonical_location_id='{canonical_location_id}', "
-            f"confidence={parsed.confidence}"
+            f"[LLM_INTENT] Accepted navigate: object_tag='{resolved_tag}', "
+            f"intent_hint='{parsed.intent_hint}', confidence={parsed.confidence}"
         )
-
         return response
 
     @staticmethod
@@ -862,42 +875,51 @@ class NavigatorNode(Node):
         response.intent = "reject"
         response.location_query = ""
         response.canonical_location_id = ""
-        response.confidence_percent = 0
         response.location_known = False
+        response.object_tag = ""
+        response.intent_hint = ""
+        response.target_object_key = ""
+        response.target_known = False
+        response.confidence_percent = 0
         response.raw_output = raw_output
         response.message = message
         return response
 
     def _build_prompt(self, command: str) -> str:
-        return f"""You are a robotics navigation agent for a mobile robot using ROS 2 Nav2.
-Return exactly one JSON object matching this schema:
-{{"action":"navigate|clarify|reject","target":"string","confidence":0-100}}
-
-Task:
-Infer the best semantic destination from the user command.
+        navigable_tags = ", ".join(self._object_store.navigable_tag_vocabulary)
+        return f"""You are a semantic-intent parser for a mobile robot in a known indoor scene.
+Return exactly one JSON object:
+{{"action":"navigate|clarify|reject","object_tag":"string","intent_hint":"string","confidence":0-100}}
 
 Rules:
-- Use action "navigate" when the user names a place or expresses a need that implies a place.
-- Use action "clarify" when the user wants navigation but the destination is unclear.
-- Use action "reject" for raw robot motion commands or non-navigation commands.
-- For navigate, target must be a short common place or functional destination.
-- For clarify or reject, target must be "".
-- Do not output coordinates, poses, velocity commands, Nav2 commands, or explanations.
-- Do not use articles such as "the", "a", or "an" in the target.
-- No markdown. No prose.
+- Use "navigate" when the user names an object or states a need that implies an object.
+- object_tag MUST be one of the known navigable object classes for this scene, or a known alias.
+- intent_hint is a short phrase (<= 64 characters) describing WHY the user wants the object,
+  in a form useful for matching against natural-language object descriptions.
+- Use "clarify" when the object class cannot be inferred. object_tag and intent_hint must be "".
+- Use "reject" for raw motion commands or non-navigation commands. object_tag and intent_hint must be "".
+- Do not output object instance IDs.
+- Do not output coordinates, poses, velocity commands, planner IDs, or behavior tree commands.
+- No prose outside JSON. No markdown. No articles in object_tag.
+
+Known navigable object tags:
+{navigable_tags}
 
 Examples:
 User: I am hungry
-Output: {{"action":"navigate","target":"kitchen","confidence":95}}
+Output: {{"action":"navigate","object_tag":"refrigerator","intent_hint":"food storage and eating","confidence":90}}
+
+User: I need somewhere to sit and eat
+Output: {{"action":"navigate","object_tag":"chair","intent_hint":"dining or kitchen seating","confidence":85}}
 
 User: I am tired
-Output: {{"action":"navigate","target":"bedroom","confidence":90}}
+Output: {{"action":"navigate","object_tag":"bed","intent_hint":"sleeping or resting","confidence":90}}
 
-User: Drive forward two meters
-Output: {{"action":"reject","target":"","confidence":95}}
+User: drive forward two meters
+Output: {{"action":"reject","object_tag":"","intent_hint":"","confidence":95}}
 
-User: Take me there
-Output: {{"action":"clarify","target":"","confidence":85}}
+User: take me there
+Output: {{"action":"clarify","object_tag":"","intent_hint":"","confidence":85}}
 
 User:
 {command}
@@ -1094,6 +1116,21 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         lines.append("  give_up: ELIGIBLE — safe terminal fallback")
 
         return "\n".join(lines)
+
+    def _load_object_store(self):
+        from semantic_nav_semantics.semantic_store import load_semantic_store
+        store = load_semantic_store(
+            self._semantic_map_path,
+            affordances_path=self._intent_affordances_path,
+            legacy_db_path=self._legacy_semantic_db_path,
+            allow_legacy_fallback=False,
+        )
+        self.get_logger().info(
+            f"[LLM_INTENT] Loaded SemanticStore: tags={len(store.tag_vocabulary)}, "
+            f"navigable={len(store.navigable_tag_vocabulary)}, "
+            f"objects={len(store.by_object_key)}, db_version={store.db_version}"
+        )
+        return store
 
     def _load_semantic_catalog_with_fallback(self) -> SemanticCatalog:
         candidate_paths = []

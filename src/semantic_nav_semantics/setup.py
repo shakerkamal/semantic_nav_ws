@@ -12,7 +12,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*.json')),
-
+        ('share/' + package_name + '/eval', glob('semantic_nav_semantics/eval/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +28,8 @@ setup(
     entry_points={
         'console_scripts': [
             'resolver_node = semantic_nav_semantics.resolver_node:main',
+            'ranker_eval = semantic_nav_semantics.eval.run_ranker_eval:main',
+            'plot_ranker_eval = semantic_nav_semantics.eval.plot_results:main',
         ],
     },
 )

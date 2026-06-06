@@ -1,5 +1,6 @@
 import os
 import math
+import re
 import sys
 import json
 import uuid
@@ -27,6 +28,13 @@ from nav2_msgs.srv import ClearEntireCostmap
 from semantic_nav_interfaces.action import ExecutePose
 from semantic_nav_interfaces.srv import ResolveLocation, ValidatePose, ParseSemanticCommand, ProposeRecovery, RequestRecovery
 from semantic_nav_interfaces.msg import RecoveryTrigger
+
+
+_OBJECT_KEY_RE = re.compile(r"[a-z][a-z0-9 _]*:\d+")
+
+
+def _looks_like_object_key(s: str) -> bool:
+    return bool(_OBJECT_KEY_RE.fullmatch((s or "").strip().lower()))
 
 
 @dataclass(frozen=True)
@@ -82,6 +90,10 @@ class ParsedCommand:
     intent: str
     location_query: str
     canonical_location_id: str
+    # New object-centric fields (OC-M7)
+    object_tag: str
+    intent_hint: str
+    target_object_key: str
     confidence_percent: int
     raw_output: str
 
@@ -494,10 +506,16 @@ class NavigationOrchestrator(Node):
                     ),
                 )
 
-            self._log_stage_info(
-                "INTENT",
-                f"Using direct semantic query: '{self._query}'",
-            )
+            if _looks_like_object_key(self._query):
+                self._log_stage_info(
+                    "INTENT",
+                    f"[LLM_INTENT] Skipped: CLI query '{self._query}' looks like an object key.",
+                )
+            else:
+                self._log_stage_info(
+                    "INTENT",
+                    f"Using direct semantic query: '{self._query}'",
+                )
             return self._query
 
         if not self._command:
@@ -516,7 +534,10 @@ class NavigationOrchestrator(Node):
 
         self._parsed_command = parsed
 
-        semantic_query = parsed.canonical_location_id or parsed.location_query
+        if parsed.intent == "navigate_to_object":
+            semantic_query = parsed.object_tag
+        else:
+            semantic_query = parsed.canonical_location_id or parsed.location_query
 
         self._log_stage_info(
             "INTENT",
@@ -526,6 +547,8 @@ class NavigationOrchestrator(Node):
                 f"intent='{parsed.intent}', "
                 f"location_query='{parsed.location_query}', "
                 f"canonical_location_id='{parsed.canonical_location_id}', "
+                f"object_tag='{parsed.object_tag}', "
+                f"intent_hint='{parsed.intent_hint}', "
                 f"semantic_query='{semantic_query}', "
                 f"confidence={parsed.confidence_percent}"
             ),
@@ -601,7 +624,8 @@ class NavigationOrchestrator(Node):
             )
             return None
 
-        if response.intent != "navigate_to_location":
+        valid_nav_intents = {"navigate_to_location", "navigate_to_object"}
+        if response.intent not in valid_nav_intents:
             self._log_stage_error(
                 "INTENT",
                 (
@@ -611,18 +635,23 @@ class NavigationOrchestrator(Node):
             )
             return None
 
-        if not response.location_known:
+        if not getattr(response, "target_known", response.location_known):
             self._log_stage_error(
                 "INTENT",
                 (
-                    f"Parsed location is not known: "
+                    f"Parsed target is not known: "
+                    f"intent='{response.intent}', "
+                    f"object_tag='{getattr(response, 'object_tag', '')}', "
                     f"location_query='{response.location_query}', "
                     f"message='{response.message}'"
                 ),
             )
             return None
 
-        if not response.location_query and not response.canonical_location_id:
+        # For navigate_to_location, require a usable query.
+        if (response.intent == "navigate_to_location"
+                and not response.location_query
+                and not response.canonical_location_id):
             self._log_stage_error(
                 "INTENT",
                 "Parser returned navigate_to_location but no usable location query.",
@@ -634,6 +663,9 @@ class NavigationOrchestrator(Node):
             intent=response.intent,
             location_query=response.location_query,
             canonical_location_id=response.canonical_location_id,
+            object_tag=getattr(response, "object_tag", "") or "",
+            intent_hint=getattr(response, "intent_hint", "") or "",
+            target_object_key=getattr(response, "target_object_key", "") or "",
             confidence_percent=int(response.confidence_percent),
             raw_output=response.raw_output,
         )
@@ -2169,7 +2201,15 @@ class NavigationOrchestrator(Node):
             return None
 
         req = ResolveLocation.Request()
-        req.query = query
+
+        # OC-M7: prefer object-centric routing when navigate_to_object
+        parsed = getattr(self, "_parsed_command", None)
+        if parsed is not None and getattr(parsed, "intent", "") == "navigate_to_object":
+            req.object_tag = getattr(parsed, "object_tag", "") or ""
+            req.intent_hint = getattr(parsed, "intent_hint", "") or ""
+            req.target_object_key = getattr(parsed, "target_object_key", "") or ""
+        else:
+            req.query = query
 
         future = self._resolve_location_client.call_async(req)
 
@@ -2231,6 +2271,15 @@ class NavigationOrchestrator(Node):
                 f"y={target.pose.pose.position.y:.3f}"
             ),
         )
+
+        if getattr(response, "object_key", ""):
+            self.get_logger().info(
+                f"[RETRIEVAL] object_tag='{response.object_tag}' "
+                f"candidates={response.candidates_considered} "
+                f"selected_object_key='{response.object_key}' "
+                f"top_score={response.top_score:.3f} "
+                f"db_version={response.db_version}"
+            )
 
         return target
     

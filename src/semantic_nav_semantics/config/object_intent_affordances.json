@@ -66,7 +66,7 @@
     },
     "bucket": {
       "navigable": true,
-      "affordances": ["waste", "container"],
+      "affordances": ["disposal", "waste", "container"],
       "query_hints": ["trash", "waste", "garbage", "bucket", "bin"],
       "caption_boost_terms": ["waste", "trash", "container", "bin"]
     },
@@ -94,54 +94,30 @@
       "query_hints": ["bench", "sit", "seat"],
       "caption_boost_terms": ["bench", "seat", "wooden"]
     },
-    "lamp": {
-      "navigable": true,
-      "affordances": ["lighting"],
-      "query_hints": ["lamp", "light", "lighting"],
-      "caption_boost_terms": ["lamp", "lighting", "shade"]
-    },
+    "lamp": { "navigable": false },
     "ladder": {
       "navigable": true,
       "affordances": ["climbing", "tool"],
       "query_hints": ["ladder", "climb", "reach high"],
       "caption_boost_terms": ["ladder", "steps", "folding"]
     },
-    "bottle": {
-      "navigable": true,
-      "affordances": ["container", "drink"],
-      "query_hints": ["bottle", "drink", "liquid"],
-      "caption_boost_terms": ["bottle", "liquid", "container"]
-    },
+    "bottle": { "navigable": false },
     "end table": {
       "navigable": true,
       "affordances": ["table", "surface"],
       "query_hints": ["table", "surface", "end table"],
       "caption_boost_terms": ["table", "surface"]
     },
-    "speaker": {
-      "navigable": true,
-      "affordances": ["audio", "electronics"],
-      "query_hints": ["speaker", "audio", "music"],
-      "caption_boost_terms": ["speaker", "audio"]
-    },
-    "candle": {
-      "navigable": true,
-      "affordances": ["decoration", "lighting"],
-      "query_hints": ["candle", "light", "decoration"],
-      "caption_boost_terms": ["candle", "holder"]
-    },
-    "pillow": {
-      "navigable": true,
-      "affordances": ["comfort", "rest"],
-      "query_hints": ["pillow", "rest", "comfort"],
-      "caption_boost_terms": ["pillow", "cushion"]
-    },
+    "speaker": { "navigable": false },
+    "candle": { "navigable": false },
+    "pillow": { "navigable": false },
 
     "floor": {"navigable": false},
     "vent": {"navigable": false},
     "picture": {"navigable": false},
     "closet wall": {"navigable": false},
     "blinds": {"navigable": false},
+    "wall": {"navigable": false},
     "range hood": {"navigable": false},
     "stair rail": {"navigable": false},
     "person": {"navigable": false}

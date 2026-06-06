@@ -1,7 +1,25 @@
 string query
+
+# New object-centric request fields
+string object_tag
+string intent_hint
+string target_object_key
 ---
 bool success
+
+# Legacy field retained during migration
 string location_id
+
+# New object-centric response fields
+string object_key
+string source_key
+string object_tag
+string selected_caption
+geometry_msgs/Point  bbox_center
+geometry_msgs/Vector3 bbox_extent
+uint32 candidates_considered
+float32 top_score
+
 geometry_msgs/PoseStamped pose
 uint32 db_version
 builtin_interfaces/Time db_stamp

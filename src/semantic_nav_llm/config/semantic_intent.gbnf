@@ -1,21 +1,10 @@
-# Strict semantic navigation intent grammar.
-
-root ::= ws (navigate | clarify | reject) ws
-
-navigate ::= "{" ws action-key ws ":" ws "\"navigate\"" ws "," ws target-key ws ":" ws string ws "," ws confidence-key ws ":" ws confidence ws "}"
-clarify ::= "{" ws action-key ws ":" ws "\"clarify\"" ws "," ws target-key ws ":" ws "\"\"" ws "," ws confidence-key ws ":" ws confidence ws "}"
-reject ::= "{" ws action-key ws ":" ws "\"reject\"" ws "," ws target-key ws ":" ws "\"\"" ws "," ws confidence-key ws ":" ws confidence ws "}"
-
-action-key ::= "\"action\""
-target-key ::= "\"target\""
-confidence-key ::= "\"confidence\""
-
-confidence ::= "100" | [1-9] [0-9]? | "0"
-
-string ::= "\"" char{1,80} "\""
-
-char ::= [^"\\\x7F\x00-\x1F] | "\\" escape
-escape ::= ["\\/bfnrt] | "u" hex hex hex hex
-hex ::= [0-9a-fA-F]
-
-ws ::= [ \t\n\r]*
+root ::= "{" ws action-pair "," ws tag-pair "," ws hint-pair "," ws conf-pair ws "}"
+action-pair ::= "\"action\"" ws ":" ws action-value
+tag-pair ::= "\"object_tag\"" ws ":" ws string
+hint-pair ::= "\"intent_hint\"" ws ":" ws string
+conf-pair ::= "\"confidence\"" ws ":" ws integer
+action-value ::= "\"navigate\"" | "\"clarify\"" | "\"reject\""
+string ::= "\"" char* "\""
+char ::= [a-zA-Z0-9 ,._-]
+integer ::= "0" | [1-9] [0-9]*
+ws ::= ([ \t\n])*

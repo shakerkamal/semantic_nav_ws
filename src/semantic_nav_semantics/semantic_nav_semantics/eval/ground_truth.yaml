@@ -1,0 +1,338 @@
+# Ground-truth fixture set for semantic navigation ranker evaluation.
+# Schema: id, utterance, intent_hint, tag_class, expected_object_keys, notes (optional)
+
+# ── refrigerator (4) ──────────────────────────────────────────────────────────
+- id: gt-refrigerator-001
+  utterance: "Take me to the refrigerator."
+  intent_hint: food storage appliance
+  tag_class: refrigerator
+  expected_object_keys: [refrigerator:9]
+
+- id: gt-refrigerator-002
+  utterance: "I need something cold to drink — where is the fridge?"
+  intent_hint: cold beverage retrieval
+  tag_class: refrigerator
+  expected_object_keys: [refrigerator:9]
+
+- id: gt-refrigerator-003
+  utterance: "Go to the white refrigeration unit in the kitchen."
+  intent_hint: kitchen appliance navigation
+  tag_class: refrigerator
+  expected_object_keys: [refrigerator:9]
+
+- id: gt-refrigerator-004
+  utterance: "Navigate to where the food is stored."
+  intent_hint: food storage location
+  tag_class: refrigerator
+  expected_object_keys: [refrigerator:9]
+
+# ── chair (5) ─────────────────────────────────────────────────────────────────
+- id: gt-chair-001
+  utterance: "Go to the dining chair near the kitchen."
+  intent_hint: dining seating
+  tag_class: chair
+  expected_object_keys: [chair:2]
+  notes: chair:2 is described as padded wooden dining/kitchen chair
+
+- id: gt-chair-002
+  utterance: "Take me to the office chair with wheels."
+  intent_hint: wheeled office seating
+  tag_class: chair
+  expected_object_keys: [chair:3]
+  notes: chair:3 is a dark upholstered office chair with wheels
+
+- id: gt-chair-003
+  utterance: "Navigate to the blue folding chair."
+  intent_hint: blue patterned folding chair
+  tag_class: chair
+  expected_object_keys: [chair:39]
+  notes: chair:39 is described as a blue patterned folding chair
+
+- id: gt-chair-004
+  utterance: "Go to a chair in the living area."
+  intent_hint: general seating in living area
+  tag_class: chair
+  expected_object_keys: [chair:267, chair:292, chair:296]
+
+- id: gt-chair-005
+  utterance: "Find me somewhere to sit down."
+  intent_hint: any available seating
+  tag_class: chair
+  expected_object_keys: [chair:2, chair:3, chair:39, chair:267, chair:292, chair:296]
+
+# ── cabinet (4) ───────────────────────────────────────────────────────────────
+- id: gt-cabinet-001
+  utterance: "Go to the nearest storage cabinet."
+  intent_hint: general storage cabinet
+  tag_class: cabinet
+  expected_object_keys: [cabinet:24, cabinet:31, cabinet:47, cabinet:109, cabinet:148, cabinet:170, cabinet:502, cabinet:518]
+
+- id: gt-cabinet-002
+  utterance: "Navigate to a cabinet where I can store items."
+  intent_hint: item storage container
+  tag_class: cabinet
+  expected_object_keys: [cabinet:31, cabinet:109, cabinet:148, cabinet:170]
+  notes: cabinet:31 explicitly described as container for storing items
+
+- id: gt-cabinet-003
+  utterance: "Take me to a kitchen cabinet."
+  intent_hint: kitchen storage cabinet
+  tag_class: cabinet
+  expected_object_keys: [cabinet:24, cabinet:47, cabinet:502, cabinet:518]
+
+- id: gt-cabinet-004
+  utterance: "Where is the large cabinet for clothes or supplies?"
+  intent_hint: storage cabinet for clothes or supplies
+  tag_class: cabinet
+  expected_object_keys: [cabinet:148, cabinet:170, cabinet:502, cabinet:518]
+
+# ── bed (4) ───────────────────────────────────────────────────────────────────
+- id: gt-bed-001
+  utterance: "Navigate to the bedroom and show me the bed."
+  intent_hint: bedroom bed
+  tag_class: bed
+  expected_object_keys: [bed:438, bed:523]
+
+- id: gt-bed-002
+  utterance: "Go to the bed frame against the wall."
+  intent_hint: bed frame against wall
+  tag_class: bed
+  expected_object_keys: [bed:438]
+  notes: bed:438 is described as simple rectangular bed frame against the wall
+
+- id: gt-bed-003
+  utterance: "Take me to the unmade bed."
+  intent_hint: unmade sleeping surface
+  tag_class: bed
+  expected_object_keys: [bed:523]
+  notes: bed:523 is described as unmade bed
+
+- id: gt-bed-004
+  utterance: "I need to rest — navigate to a sleeping area."
+  intent_hint: sleeping or resting area
+  tag_class: bed
+  expected_object_keys: [bed:438, bed:523]
+
+# ── desk (4) ──────────────────────────────────────────────────────────────────
+- id: gt-desk-001
+  utterance: "Take me to the writing desk."
+  intent_hint: work surface for writing
+  tag_class: desk
+  expected_object_keys: [desk:12]
+  notes: desk:12 is described as rectangular work surface for writing/reading
+
+- id: gt-desk-002
+  utterance: "Navigate to the low wide unit that holds electronics."
+  intent_hint: electronics storage desk unit
+  tag_class: desk
+  expected_object_keys: [desk:402]
+  notes: desk:402 is low and wide, described as storing electronics
+
+- id: gt-desk-003
+  utterance: "Go to a desk where I can work."
+  intent_hint: general work desk
+  tag_class: desk
+  expected_object_keys: [desk:12, desk:332, desk:428, desk:532]
+
+- id: gt-desk-004
+  utterance: "Find a desk in the study area."
+  intent_hint: study or office desk
+  tag_class: desk
+  expected_object_keys: [desk:332, desk:402, desk:428, desk:532]
+
+# ── sofa chair (3) ────────────────────────────────────────────────────────────
+- id: gt-sofa-chair-001
+  utterance: "Navigate to the sofa along the wall."
+  intent_hint: sofa positioned along wall
+  tag_class: sofa chair
+  expected_object_keys: [sofa chair:577]
+  notes: sofa chair:577 is described as sofa positioned along a wall
+
+- id: gt-sofa-chair-002
+  utterance: "Take me to a comfortable sofa chair to relax."
+  intent_hint: comfortable lounge seating
+  tag_class: sofa chair
+  expected_object_keys: [sofa chair:550, sofa chair:577]
+
+- id: gt-sofa-chair-003
+  utterance: "Go to the living room seating area."
+  intent_hint: living room upholstered seating
+  tag_class: sofa chair
+  expected_object_keys: [sofa chair:550, sofa chair:577]
+
+# ── closet door (3) ───────────────────────────────────────────────────────────
+- id: gt-closet-door-001
+  utterance: "Navigate to the closet door."
+  intent_hint: closet entry door
+  tag_class: closet door
+  expected_object_keys: [closet door:321, closet door:322, closet door:330, closet door:412, closet door:526, closet door:527, closet door:537, closet door:547]
+
+- id: gt-closet-door-002
+  utterance: "Take me to the entrance of the bedroom closet."
+  intent_hint: bedroom closet access
+  tag_class: closet door
+  expected_object_keys: [closet door:526, closet door:527, closet door:537, closet door:547]
+
+- id: gt-closet-door-003
+  utterance: "Go to a storage closet door."
+  intent_hint: storage closet door
+  tag_class: closet door
+  expected_object_keys: [closet door:321, closet door:322, closet door:330, closet door:412]
+
+# ── bucket (2) ────────────────────────────────────────────────────────────────
+- id: gt-bucket-001
+  utterance: "Navigate to the bucket."
+  intent_hint: general utility bucket
+  tag_class: bucket
+  expected_object_keys: [bucket:5, bucket:348]
+
+- id: gt-bucket-002
+  utterance: "Take me to where the cleaning bucket is kept."
+  intent_hint: cleaning bucket location
+  tag_class: bucket
+  expected_object_keys: [bucket:5, bucket:348]
+
+# ── potted plant (2) ──────────────────────────────────────────────────────────
+- id: gt-potted-plant-001
+  utterance: "Go to the potted plant in the living room."
+  intent_hint: decorative indoor plant
+  tag_class: potted plant
+  expected_object_keys: [potted plant:381, potted plant:392, potted plant:432, potted plant:536, potted plant:546]
+
+- id: gt-potted-plant-002
+  utterance: "Navigate to the plant near the window."
+  intent_hint: indoor potted plant near window
+  tag_class: potted plant
+  expected_object_keys: [potted plant:381, potted plant:392, potted plant:432, potted plant:536, potted plant:546]
+
+# ── shelf (2) ─────────────────────────────────────────────────────────────────
+- id: gt-shelf-001
+  utterance: "Take me to the nearest shelf."
+  intent_hint: storage shelf
+  tag_class: shelf
+  expected_object_keys: [shelf:81, shelf:338, shelf:352, shelf:551]
+
+- id: gt-shelf-002
+  utterance: "Navigate to a shelf where books or items are stored."
+  intent_hint: book or item storage shelf
+  tag_class: shelf
+  expected_object_keys: [shelf:81, shelf:338, shelf:352, shelf:551]
+
+# ── ladder (2) ────────────────────────────────────────────────────────────────
+- id: gt-ladder-001
+  utterance: "Go to the foldable ladder hanging from the ceiling."
+  intent_hint: ceiling-hung foldable ladder
+  tag_class: ladder
+  expected_object_keys: [ladder:342]
+  notes: ladder:342 described as foldable ladder hanging from ceiling
+
+- id: gt-ladder-002
+  utterance: "Navigate to the ladder with steps and braces."
+  intent_hint: step ladder with braces
+  tag_class: ladder
+  expected_object_keys: [ladder:393]
+  notes: ladder:393 described as ladder with steps and supporting braces
+
+# ── end table (2) ─────────────────────────────────────────────────────────────
+- id: gt-end-table-001
+  utterance: "Take me to the end table."
+  intent_hint: small side or end table
+  tag_class: end table
+  expected_object_keys: [end table:567]
+
+- id: gt-end-table-002
+  utterance: "Navigate to the small table beside the sofa."
+  intent_hint: side table next to sofa
+  tag_class: end table
+  expected_object_keys: [end table:567]
+
+# ── bench (2) ─────────────────────────────────────────────────────────────────
+- id: gt-bench-001
+  utterance: "Go to the bench."
+  intent_hint: general bench seating
+  tag_class: bench
+  expected_object_keys: [bench:323, bench:524]
+
+- id: gt-bench-002
+  utterance: "Navigate to a bench where I can sit."
+  intent_hint: outdoor or indoor bench seating
+  tag_class: bench
+  expected_object_keys: [bench:323, bench:524]
+
+# ── storage bin (1) ───────────────────────────────────────────────────────────
+- id: gt-storage-bin-001
+  utterance: "Take me to the storage bin."
+  intent_hint: general storage bin or container
+  tag_class: storage bin
+  expected_object_keys: [storage bin:328]
+
+# ── ambiguous (10) ────────────────────────────────────────────────────────────
+- id: gt-ambiguous-001
+  utterance: "Find something to sit on."
+  intent_hint: any seating surface
+  tag_class: ambiguous
+  expected_object_keys: [chair:2, chair:3, chair:39, chair:267, chair:292, chair:296, sofa chair:550, sofa chair:577, bench:323, bench:524]
+  notes: could resolve to chair, sofa chair, or bench
+
+- id: gt-ambiguous-002
+  utterance: "Navigate to some storage furniture."
+  intent_hint: general storage furniture
+  tag_class: ambiguous
+  expected_object_keys: [cabinet:24, cabinet:31, cabinet:47, cabinet:109, cabinet:148, cabinet:170, cabinet:502, cabinet:518, shelf:81, shelf:338, shelf:352, shelf:551, storage bin:328]
+  notes: could resolve to cabinet, shelf, or storage bin
+
+- id: gt-ambiguous-003
+  utterance: "Go to a place where I can lie down."
+  intent_hint: resting surface
+  tag_class: ambiguous
+  expected_object_keys: [bed:438, bed:523, sofa chair:550, sofa chair:577]
+  notes: could resolve to bed or sofa chair
+
+- id: gt-ambiguous-004
+  utterance: "Take me to something tall in the garage area."
+  intent_hint: tall object in utility area
+  tag_class: ambiguous
+  expected_object_keys: [ladder:342, ladder:393, ladder:433, ladder:476, ladder:497, shelf:81, shelf:338, shelf:352, shelf:551]
+  notes: tall objects could be ladder or shelf
+
+- id: gt-ambiguous-005
+  utterance: "Go to the furniture in the corner."
+  intent_hint: corner furniture
+  tag_class: ambiguous
+  expected_object_keys: [desk:12, desk:332, desk:402, desk:428, desk:532, cabinet:24, cabinet:31, cabinet:47, cabinet:109]
+  notes: corner furniture could be desk or cabinet
+
+- id: gt-ambiguous-006
+  utterance: "Take me to a container I can put things in."
+  intent_hint: container for storing items
+  tag_class: ambiguous
+  expected_object_keys: [cabinet:24, cabinet:31, cabinet:47, cabinet:109, cabinet:148, cabinet:170, cabinet:502, cabinet:518, storage bin:328, bucket:5, bucket:348]
+  notes: container could be cabinet, storage bin, or bucket
+
+- id: gt-ambiguous-007
+  utterance: "Find me some greenery."
+  intent_hint: indoor plant or greenery
+  tag_class: ambiguous
+  expected_object_keys: [potted plant:381, potted plant:392, potted plant:432, potted plant:536, potted plant:546]
+  notes: single unambiguous class but phrased ambiguously
+
+- id: gt-ambiguous-008
+  utterance: "Navigate to the work area."
+  intent_hint: work or study area
+  tag_class: ambiguous
+  expected_object_keys: [desk:12, desk:332, desk:402, desk:428, desk:532, chair:3]
+  notes: work area could contain desk or office chair
+
+- id: gt-ambiguous-009
+  utterance: "Show me the entry to the bedroom storage."
+  intent_hint: bedroom storage access
+  tag_class: ambiguous
+  expected_object_keys: [closet door:526, closet door:527, closet door:537, closet door:547, cabinet:148, cabinet:170]
+  notes: bedroom storage could be closet door or cabinet
+
+- id: gt-ambiguous-010
+  utterance: "Go to the utility area."
+  intent_hint: utility or utility-adjacent objects
+  tag_class: ambiguous
+  expected_object_keys: [bucket:5, bucket:348, storage bin:328, ladder:342, ladder:393, ladder:433, ladder:476, ladder:497]
+  notes: utility area likely has bucket, storage bin, or ladder
