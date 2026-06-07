@@ -14,9 +14,61 @@ string debounce_key
 string responsible_object_key
 string responsible_object_tag
 string responsible_object_state
+
+# Sidecar-derived eligibility.
+string responsible_safety_class
+bool responsible_openable
+bool responsible_clearable
+
 geometry_msgs/Point blockage_centroid
 float32 blockage_extent_m
+
+# BT-side attempt observation. Orchestrator ledger is authoritative.
+uint16 bt_attempt_index
+
+# Object-centric original/current target context.
+string original_object_tag
+string original_intent_hint
+string current_target_object_key
+
+# Local semantic context snapshot identity, echoed back in logs.
+uint32 local_db_version
+builtin_interfaces/Time local_db_stamp
+string local_db_source
 ---
-# "accepted" | "duplicate" | "already_in_recovery" | "rejected"
+# Arbitration outcome.
+# "accepted" | "duplicate" | "already_in_recovery" | "rejected" | "terminal_fail"
 string status
 string message
+
+# Normalized BT directive.
+# Empty unless status == "accepted" or status == "terminal_fail".
+# Valid when populated:
+# "retry_target" | "wait_then_replan" | "open_door_then_replan"
+# | "clear_object_then_replan" | "give_up"
+string action
+
+# retry_target directive.
+geometry_msgs/PoseStamped target_pose
+string target_object_key
+string target_object_tag
+string target_intent_hint
+
+# wait_then_replan directive.
+uint8 wait_seconds
+bool emit_signal_during_wait
+uint8 signal_attempts
+
+# operator-policy directive.
+string responsible_object_key
+string operator_message
+
+# LLM metadata.
+string rationale
+uint8 confidence_percent
+
+# Orchestrator-owned ledger state.
+uint16 attempts_used
+uint16 retry_cap
+bool escalate_to_operator
+string recovery_event_id

@@ -1,0 +1,15 @@
+geometry_msgs/Point blockage_centroid
+float32 blockage_extent_m
+semantic_nav_interfaces/ObjectInstance[] objects
+---
+bool success
+string match_type
+string responsible_object_key
+string responsible_object_tag
+string responsible_object_state
+string safety_class
+bool openable
+bool clearable
+geometry_msgs/Point bbox_center
+geometry_msgs/Vector3 bbox_extent
+string message

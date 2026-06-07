@@ -1,0 +1,11 @@
+string object_key
+string source_key
+string object_tag
+string object_caption
+string object_state
+string safety_class
+bool openable
+bool clearable
+geometry_msgs/Point bbox_center
+geometry_msgs/Vector3 bbox_extent
+float32 bbox_volume

@@ -11,12 +11,15 @@ find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SemanticDB.msg"
   "msg/RecoveryTrigger.msg"
+  "msg/ObjectInstance.msg"
 
   "srv/ResolveLocation.srv"
   "srv/ValidatePose.srv"
   "srv/ParseSemanticCommand.srv"
   "srv/ProposeRecovery.srv"
   "srv/RequestRecovery.srv"
+  "srv/RefreshLocalObjects.srv"
+  "srv/MatchResponsibleObject.srv"
 
   "action/ExecutePose.action"
 

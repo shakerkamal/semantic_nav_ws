@@ -1,0 +1,9 @@
+geometry_msgs/PoseStamped robot_pose
+geometry_msgs/Point blockage_centroid
+float32 radius_m
+---
+semantic_nav_interfaces/ObjectInstance[] objects
+uint32 db_version
+builtin_interfaces/Time db_stamp
+string source
+string message

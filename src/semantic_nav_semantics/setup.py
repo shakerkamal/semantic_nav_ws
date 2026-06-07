@@ -30,6 +30,7 @@ setup(
             'resolver_node = semantic_nav_semantics.resolver_node:main',
             'ranker_eval = semantic_nav_semantics.eval.run_ranker_eval:main',
             'plot_ranker_eval = semantic_nav_semantics.eval.plot_results:main',
+            'local_object_query_node = semantic_nav_semantics.local_object_query_node:main',
         ],
     },
 )

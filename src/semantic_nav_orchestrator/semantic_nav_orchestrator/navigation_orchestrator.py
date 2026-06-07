@@ -16,6 +16,7 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Point, PoseStamped, Vector3
@@ -26,7 +27,26 @@ from tf2_ros import TransformException, Buffer, TransformListener
 from nav2_msgs.srv import ClearEntireCostmap
 
 from semantic_nav_interfaces.action import ExecutePose
-from semantic_nav_interfaces.srv import ResolveLocation, ValidatePose, ParseSemanticCommand, ProposeRecovery, RequestRecovery
+from semantic_nav_interfaces.srv import (
+    MatchResponsibleObject,
+    ParseSemanticCommand,
+    ProposeRecovery,
+    RequestRecovery,
+    ResolveLocation,
+    ValidatePose,
+)
+from semantic_nav_orchestrator.responsible_object_matcher import (
+    ObjectCandidate,
+    match_responsible_object,
+)
+from semantic_nav_orchestrator.recovery_directives import (
+    LLMProposal as DirectiveLLMProposal,
+    OverrideConfig,
+    ProposalContext,
+    build_give_up_directive,
+    build_retry_target_directive,
+    build_wait_then_replan_directive,
+)
 from semantic_nav_interfaces.msg import RecoveryTrigger
 
 
@@ -171,6 +191,8 @@ class RecoveryProposal:
 class NavigationOrchestrator(Node):
     def __init__(self):
         super().__init__('navigation_orchestrator')
+        
+        self._callback_group = ReentrantCallbackGroup()
 
         self.declare_parameter('query', '')
 
@@ -235,6 +257,12 @@ class NavigationOrchestrator(Node):
         self.declare_parameter("nearest_fallback_radius_m", 0.90)
         self.declare_parameter("start_idle", False)
 
+        self.declare_parameter("orchestration_mode", "standalone") # allowed values: "standalone", "bt_led"
+        self.declare_parameter("signal_attempts_default", 3)
+        self.declare_parameter("short_signal_wait_seconds", 2)
+        self.declare_parameter("passive_wait_seconds_default", 5)
+        self.declare_parameter("max_wait_seconds", 30)
+
         default_semantic_object_db_path = default_semantic_map_path
         default_object_action_attributes_path = os.path.join(
             get_package_share_directory("semantic_nav_semantics"),
@@ -262,6 +290,46 @@ class NavigationOrchestrator(Node):
         self._bbox_inflation_m = self.get_parameter("bbox_inflation_m").get_parameter_value().double_value
         self._nearest_fallback_radius_m = self.get_parameter("nearest_fallback_radius_m").get_parameter_value().double_value
         self._start_idle = self.get_parameter("start_idle").get_parameter_value().bool_value
+
+        self._orchestration_mode = (
+            self.get_parameter("orchestration_mode")
+            .get_parameter_value()
+            .string_value
+            .strip()
+            .lower()
+        )
+
+        if self._orchestration_mode not in {"standalone", "bt_led"}:
+            self._log_stage_warn(
+                "RECOVERY",
+                (
+                    f"Invalid orchestration_mode='{self._orchestration_mode}'. "
+                    "Falling back to 'standalone'."
+                ),
+            )
+            self._orchestration_mode = "standalone"
+
+        self._signal_attempts_default = (
+            self.get_parameter("signal_attempts_default")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._short_signal_wait_seconds = (
+            self.get_parameter("short_signal_wait_seconds")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._passive_wait_seconds_default = (
+            self.get_parameter("passive_wait_seconds_default")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._max_wait_seconds = (
+            self.get_parameter("max_wait_seconds")
+            .get_parameter_value()
+            .integer_value
+        )
+
         self._recovery_trigger_topic = self.get_parameter("recovery_trigger_topic").get_parameter_value().string_value
         self._enable_plan_intersection_trigger = self.get_parameter("enable_plan_intersection_trigger").get_parameter_value().bool_value
         self._enable_stall_watchdog = self.get_parameter("enable_stall_watchdog").get_parameter_value().bool_value
@@ -303,16 +371,38 @@ class NavigationOrchestrator(Node):
 
         self._fsm_state = RecoveryFSMState.IDLE
         self._active_recovery = False
+        self._bt_directive_in_progress = False
         self._last_trigger: Optional[TriggerInfo] = None
         self._last_trigger_by_key = {}
 
         self._attempt_records: List[AttemptRecord] = []
 
-        self._parse_command_client = self.create_client(ParseSemanticCommand, self._parse_service_name)
-        self._propose_recovery_client = self.create_client(ProposeRecovery, self._propose_recovery_service_name)
-        self._resolve_location_client = self.create_client(ResolveLocation, self._resolve_service_name)
-        self._validate_pose_client = self.create_client(ValidatePose, self._validate_service_name)
-        self._execute_pose_client = ActionClient(self, ExecutePose, self._execute_action_name)
+        self._parse_command_client = self.create_client(
+            ParseSemanticCommand,
+            self._parse_service_name,
+            callback_group=self._callback_group,
+        )
+        self._propose_recovery_client = self.create_client(
+            ProposeRecovery,
+            self._propose_recovery_service_name,
+            callback_group=self._callback_group,
+        )
+        self._resolve_location_client = self.create_client(
+            ResolveLocation,
+            self._resolve_service_name,
+            callback_group=self._callback_group,
+        )
+        self._validate_pose_client = self.create_client(
+            ValidatePose,
+            self._validate_service_name,
+            callback_group=self._callback_group,
+        )
+        self._execute_pose_client = ActionClient(
+            self,
+            ExecutePose,
+            self._execute_action_name,
+            callback_group=self._callback_group,
+        )
 
         self._recovery_status_pub = self.create_publisher(
             String,
@@ -326,7 +416,15 @@ class NavigationOrchestrator(Node):
                 RequestRecovery,
                 self.get_parameter("request_recovery_service").get_parameter_value().string_value,
                 self._handle_request_recovery,
+                callback_group=self._callback_group,
             )
+
+        self._match_responsible_object_service = self.create_service(
+            MatchResponsibleObject,
+            "/match_responsible_object",
+            self._handle_match_responsible_object,
+            callback_group=self._callback_group,
+        )
 
         self._recovery_trigger_sub = None
         if self._enable_plan_intersection_trigger:
@@ -335,6 +433,7 @@ class NavigationOrchestrator(Node):
                 self._recovery_trigger_topic,
                 self._handle_recovery_trigger_msg,
                 10,
+                callback_group=self._callback_group,
             )
             self._log_stage_info(
                 "RECOVERY/MONITOR",
@@ -372,7 +471,8 @@ class NavigationOrchestrator(Node):
             f"allow_stdin_intervention={self._allow_stdin_intervention}, "
             f"recovery_trigger_topic='{self._recovery_trigger_topic}', "
             f"enable_plan_intersection_trigger={self._enable_plan_intersection_trigger}, "
-            f"enable_stall_watchdog={self._enable_stall_watchdog}"
+            f"enable_stall_watchdog={self._enable_stall_watchdog}, "
+            f"orchestration_mode='{self._orchestration_mode}', "
         )
 
     def _log_stage_info(self, stage: str, message: str):
@@ -1313,7 +1413,6 @@ class NavigationOrchestrator(Node):
 
         return None
         
-    
     def _load_recovery_locations_from_sources(self, db_paths: List[str]):
         for db_path in db_paths:
             locations = self._load_recovery_locations(db_path)
@@ -2624,6 +2723,9 @@ class NavigationOrchestrator(Node):
     def _maybe_fire_stall_watchdog(self, fb) -> None:
         if not self._enable_stall_watchdog:
             return
+        
+        if self._orchestration_mode == "bt_led":
+            return
 
         if self._stall_watchdog_triggered:
             return
@@ -2936,6 +3038,27 @@ class NavigationOrchestrator(Node):
             stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
         )
 
+        if self._orchestration_mode == "bt_led":
+            if not self._validate_trigger(trigger):
+                status = "rejected"
+            else:
+                self._augment_trigger_with_responsible_object(trigger)
+                self._last_trigger = trigger
+                status = "cached_for_bt"
+
+            self._log_stage_info(
+                "RECOVERY/MONITOR",
+                (
+                    f"BT-led mode cached RecoveryTrigger: status={status}, "
+                    f"source='{trigger.trigger_source}', match_type='{trigger.match_type}', "
+                    f"key='{self._trigger_bucket_key(trigger)}', "
+                    f"blocked_indices=[{trigger.blocked_plan_index_lo}, {trigger.blocked_plan_index_hi}], "
+                    f"extent={trigger.blockage_extent_m:.3f}. "
+                    "No external Nav2 cancel performed."
+                ),
+            )
+            return
+
         status = self._on_trigger(trigger)
 
         self._log_stage_info(
@@ -3008,11 +3131,10 @@ class NavigationOrchestrator(Node):
 
         return self._accept_trigger(trigger)
 
-    def _handle_request_recovery(
+    def _build_trigger_from_request(
         self,
         request: RequestRecovery.Request,
-        response: RequestRecovery.Response,
-    ) -> RequestRecovery.Response:
+    ) -> TriggerInfo:
         trigger = TriggerInfo(
             trigger_source=request.trigger_source or "bt_recovery_plugin",
             failure_stage=request.failure_stage or "execution",
@@ -3021,25 +3143,768 @@ class NavigationOrchestrator(Node):
             responsible_object_key=request.responsible_object_key,
             responsible_object_tag=request.responsible_object_tag,
             responsible_object_state=request.responsible_object_state,
+            responsible_safety_class=request.responsible_safety_class or "none",
+            responsible_openable=bool(request.responsible_openable),
+            responsible_clearable=bool(request.responsible_clearable),
             blockage_centroid=request.blockage_centroid,
             blockage_extent_m=float(request.blockage_extent_m),
             debounce_key=request.debounce_key,
             stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
         )
 
-        status = self._on_trigger(trigger)
-        response.status = status
+        trigger.match_type = (
+            "inferred"
+            if trigger.responsible_object_key
+            else "unknown"
+        )
 
-        if status == "accepted":
-            response.message = "Recovery trigger accepted by orchestrator."
-        elif status == "duplicate":
-            response.message = "Duplicate recovery trigger absorbed."
-        elif status == "already_in_recovery":
-            response.message = "Recovery already in progress."
+        return trigger
+
+    def _arbitrate_bt_recovery_request(
+        self,
+        trigger: TriggerInfo,
+    ) -> str:
+        """BT-led request arbitration only.
+
+        This path must not:
+          - cancel Nav2
+          - enter the legacy RecoveryFSM
+          - call _accept_trigger()
+          - call _on_trigger()
+        """
+        if not self._validate_trigger(trigger):
+            return "rejected"
+
+        self._augment_trigger_with_responsible_object(trigger)
+
+        if self._bt_directive_in_progress:
+            return "already_in_recovery"
+
+        if self._is_duplicate_trigger(trigger):
+            return "duplicate"
+
+        if not trigger.trigger_source:
+            return "rejected"
+
+        self._last_trigger = trigger
+        return "accepted"
+
+    def _remaining_bt_retry_budget(self) -> int:
+        return max(
+            0,
+            int(self._recovery_cap) - len(self._attempt_records),
+        )
+
+    def _call_propose_recovery_for_bt_request(
+        self,
+        request: RequestRecovery.Request,
+        trigger: TriggerInfo,
+    ) -> Optional[RecoveryProposal]:
+        if not self._propose_recovery_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_error(
+                "RECOVERY/BT",
+                (
+                    f"Propose recovery service "
+                    f"'{self._propose_recovery_service_name}' not available."
+                ),
+            )
+            return None
+
+        req = ProposeRecovery.Request()
+
+        req.original_nl_command = ""
+        req.original_target = (
+            request.current_target_object_key
+            or request.original_object_tag
+            or ""
+        )
+        req.failure_stage = trigger.failure_stage
+        req.nav2_message = trigger.nav2_message
+
+        req.original_object_tag = request.original_object_tag or ""
+        req.original_intent_hint = request.original_intent_hint or ""
+        req.current_target_object_key = request.current_target_object_key or ""
+
+        req.attempted_actions = [a.action for a in self._attempt_records]
+        req.attempted_values = [a.value for a in self._attempt_records]
+        req.attempt_outcomes = [a.outcome for a in self._attempt_records]
+        req.attempt_rationales = [a.rationale for a in self._attempt_records]
+
+        req.robot_pose_at_failure = request.robot_pose
+        req.nearest_locations_summary = self._build_nearest_locations_summary(
+            robot_pose=request.robot_pose,
+            original_target=None,
+        )
+
+        req.distance_remaining_at_abort = 0.0
+        req.nav2_recoveries_attempted = 0
+        req.remaining_retry_budget = int(self._remaining_bt_retry_budget())
+
+        req.trigger_source = trigger.trigger_source
+        req.responsible_object_key = trigger.responsible_object_key
+        req.match_type = trigger.match_type or "unknown"
+        req.responsible_object_tag = trigger.responsible_object_tag
+        req.responsible_object_state = trigger.responsible_object_state
+        req.responsible_bbox_center = trigger.responsible_bbox_center
+        req.responsible_bbox_extent = trigger.responsible_bbox_extent
+        req.responsible_safety_class = trigger.responsible_safety_class or "none"
+        req.responsible_openable = bool(trigger.responsible_openable)
+        req.responsible_clearable = bool(trigger.responsible_clearable)
+
+        req.blockage_centroid = trigger.blockage_centroid
+        req.blockage_extent_m = float(trigger.blockage_extent_m)
+
+        req.deterministic_waits_used = 0
+        req.deterministic_wait_cap = 0
+        req.total_seconds_blocked = 0.0
+
+        req.db_version = int(request.local_db_version or self._db_version)
+
+        if request.local_db_stamp.sec != 0 or request.local_db_stamp.nanosec != 0:
+            req.db_stamp = request.local_db_stamp
+        elif self._db_stamp is not None:
+            req.db_stamp = self._db_stamp
+
+        future = self._propose_recovery_client.call_async(req)
+
+        if not self._wait_for_future(future, self._service_call_timeout_sec):
+            self._log_stage_error(
+                "RECOVERY/BT",
+                (
+                    f"Service call to propose recovery timed out after "
+                    f"{self._service_call_timeout_sec:.1f}s."
+                ),
+            )
+            return None
+
+        if future.exception() is not None:
+            self._log_stage_error(
+                "RECOVERY/BT",
+                f"Propose recovery service call failed: {future.exception()}",
+            )
+            return None
+
+        response = future.result()
+        if response is None:
+            self._log_stage_error(
+                "RECOVERY/BT",
+                "Propose recovery service returned no response.",
+            )
+            return None
+
+        self._log_stage_info(
+            "RECOVERY/BT",
+            (
+                f"BT proposal response: success={response.success}, "
+                f"action='{response.action}', "
+                f"target_object_tag='{getattr(response, 'target_object_tag', '')}', "
+                f"target_intent_hint='{getattr(response, 'target_intent_hint', '')}', "
+                f"confidence={response.confidence_percent}, "
+                f"message='{response.message}'"
+            ),
+        )
+
+        return RecoveryProposal(
+            success=bool(response.success),
+            action=response.action,
+            target=response.target,
+            waypoints=list(response.waypoints),
+            rationale=response.rationale,
+            confidence_percent=int(response.confidence_percent),
+            raw_output=response.raw_output,
+            message=response.message,
+            responsible_object_key=getattr(response, "responsible_object_key", ""),
+            operator_message=getattr(response, "operator_message", ""),
+            wait_seconds=int(getattr(response, "wait_seconds", 0)),
+            target_object_tag=getattr(response, "target_object_tag", "") or "",
+            target_intent_hint=getattr(response, "target_intent_hint", "") or "",
+        )
+
+    def _proposal_to_directive_llm_proposal(
+        self,
+        proposal: RecoveryProposal,
+        request: RequestRecovery.Request,
+    ) -> DirectiveLLMProposal:
+        return DirectiveLLMProposal(
+            action=proposal.action,
+            rationale=proposal.rationale,
+            confidence_percent=int(proposal.confidence_percent),
+            target_object_tag=(
+                proposal.target_object_tag
+                or proposal.target
+                or ""
+            ),
+            target_intent_hint=(
+                proposal.target_intent_hint
+                or request.original_intent_hint
+                or ""
+            ),
+            wait_seconds=int(proposal.wait_seconds),
+            operator_message=proposal.operator_message,
+            responsible_object_key=proposal.responsible_object_key,
+        )
+
+    def _build_bt_proposal_context(
+        self,
+        trigger: TriggerInfo,
+        recovery_event_id: str,
+    ) -> ProposalContext:
+        return ProposalContext(
+            attempts_used=len(self._attempt_records),
+            retry_cap=int(self._recovery_cap),
+            responsible_safety_class=trigger.responsible_safety_class or "none",
+            responsible_object_state=trigger.responsible_object_state or "",
+            recovery_event_id=recovery_event_id,
+        )
+
+    def _resolve_target_for_directive(
+        self,
+        object_tag: str,
+        intent_hint: str,
+    ):
+        """Resolve object_tag + intent_hint to a PoseStamped and object key.
+
+        Returns:
+          (PoseStamped or None, object_key)
+        """
+        if not object_tag:
+            return None, ""
+
+        if not self._resolve_location_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_error(
+                "RECOVERY/BT",
+                (
+                    f"Resolve location service '{self._resolve_service_name}' "
+                    "not available while building retry_target directive."
+                ),
+            )
+            return None, ""
+
+        req = ResolveLocation.Request()
+        req.query = ""
+        req.object_tag = object_tag
+        req.intent_hint = intent_hint or ""
+        req.target_object_key = ""
+
+        future = self._resolve_location_client.call_async(req)
+
+        if not self._wait_for_future(future, self._service_call_timeout_sec):
+            self._log_stage_error(
+                "RECOVERY/BT",
+                (
+                    f"Service call to resolve retry_target timed out after "
+                    f"{self._service_call_timeout_sec:.1f}s."
+                ),
+            )
+            return None, ""
+
+        if future.exception() is not None:
+            self._log_stage_error(
+                "RECOVERY/BT",
+                f"Resolve retry_target service call failed: {future.exception()}",
+            )
+            return None, ""
+
+        response = future.result()
+        if response is None or not response.success:
+            message = response.message if response is not None else "no response"
+            self._log_stage_error(
+                "RECOVERY/BT",
+                f"Retry target resolution failed: {message}",
+            )
+            return None, ""
+
+        if not self._pose_is_valid_for_navigation(response.pose):
+            return None, ""
+
+        object_key = (
+            getattr(response, "object_key", "")
+            or response.location_id
+            or ""
+        )
+
+        return response.pose, object_key
+
+    def _build_directive_from_bt_proposal(
+        self,
+        proposal: RecoveryProposal,
+        request: RequestRecovery.Request,
+        trigger: TriggerInfo,
+        recovery_event_id: str,
+    ):
+        directive_proposal = self._proposal_to_directive_llm_proposal(
+            proposal,
+            request,
+        )
+        context = self._build_bt_proposal_context(
+            trigger=trigger,
+            recovery_event_id=recovery_event_id,
+        )
+
+        if not proposal.success:
+            return build_give_up_directive(
+                directive_proposal,
+                context,
+                overrides=OverrideConfig(
+                    signal_attempts_default=self._signal_attempts_default,
+                    short_signal_wait_seconds=self._short_signal_wait_seconds,
+                    passive_wait_seconds_default=self._passive_wait_seconds_default,
+                ),
+            )
+
+        if proposal.action == "retry_target":
+            return build_retry_target_directive(
+                directive_proposal,
+                context,
+                resolver=self._resolve_target_for_directive,
+            )
+
+        if proposal.action == "wait_then_replan":
+            return build_wait_then_replan_directive(
+                directive_proposal,
+                context,
+                signal_attempts_default=self._signal_attempts_default,
+                max_wait_seconds=self._max_wait_seconds,
+            )
+
+        if proposal.action == "give_up":
+            return build_give_up_directive(
+                directive_proposal,
+                context,
+                overrides=OverrideConfig(
+                    signal_attempts_default=self._signal_attempts_default,
+                    short_signal_wait_seconds=self._short_signal_wait_seconds,
+                    passive_wait_seconds_default=self._passive_wait_seconds_default,
+                ),
+            )
+
+        self._log_stage_warn(
+            "RECOVERY/BT",
+            (
+                f"Unsupported BT-led proposal action='{proposal.action}'. "
+                "Returning terminal give_up directive."
+            ),
+        )
+
+        unsupported = DirectiveLLMProposal(
+            action="give_up",
+            rationale=(
+                f"Unsupported BT-led recovery action='{proposal.action}' in M1D."
+            ),
+            confidence_percent=int(proposal.confidence_percent),
+        )
+
+        return build_give_up_directive(
+            unsupported,
+            context,
+            overrides=OverrideConfig(
+                signal_attempts_default=self._signal_attempts_default,
+                short_signal_wait_seconds=self._short_signal_wait_seconds,
+                passive_wait_seconds_default=self._passive_wait_seconds_default,
+            ),
+        )
+
+    def _record_bt_directive_attempt(
+        self,
+        directive,
+        proposal: Optional[RecoveryProposal],
+        trigger: TriggerInfo,
+    ) -> None:
+        if directive.action == "retry_target":
+            value = directive.target_object_key or directive.target_object_tag
+            outcome = "bt_directive_retry_target"
+        elif directive.action == "wait_then_replan":
+            value = str(int(directive.wait_seconds))
+            outcome = "bt_directive_wait_then_replan"
+        elif directive.action == "give_up":
+            value = ""
+            outcome = "bt_directive_give_up"
         else:
-            response.message = "Recovery trigger rejected in current orchestrator mode."
+            value = ""
+            outcome = "bt_directive_unsupported"
+
+        self._attempt_records.append(
+            AttemptRecord(
+                action=directive.action,
+                value=value,
+                outcome=outcome,
+                rationale=directive.rationale,
+                failure_stage=trigger.failure_stage,
+                message=proposal.message if proposal is not None else "",
+            )
+        )
+
+    def _fill_request_recovery_response_from_directive(
+        self,
+        response: RequestRecovery.Response,
+        status: str,
+        message: str,
+        directive,
+    ) -> RequestRecovery.Response:
+        response.status = status
+        response.message = message
+        response.action = directive.action or ""
+
+        pose = directive.target_pose
+        if isinstance(pose, PoseStamped):
+            response.target_pose = pose
+        elif pose is not None:
+            # Backward-compatible pure-test tuple shape:
+            # (frame_id, x, y, yaw). Orientation is identity here because
+            # production path returns a full PoseStamped from ResolveLocation.
+            frame_id, x, y, _yaw = pose
+            response.target_pose.header.frame_id = str(frame_id)
+            response.target_pose.header.stamp = self.get_clock().now().to_msg()
+            response.target_pose.pose.position.x = float(x)
+            response.target_pose.pose.position.y = float(y)
+            response.target_pose.pose.orientation.w = 1.0
+
+        response.target_object_key = directive.target_object_key
+        response.target_object_tag = directive.target_object_tag
+        response.target_intent_hint = directive.target_intent_hint
+
+        response.wait_seconds = max(
+            0,
+            min(255, int(directive.wait_seconds)),
+        )
+        response.emit_signal_during_wait = bool(
+            directive.emit_signal_during_wait
+        )
+        response.signal_attempts = max(
+            0,
+            min(255, int(directive.signal_attempts)),
+        )
+
+        response.responsible_object_key = directive.responsible_object_key
+        response.operator_message = directive.operator_message
+
+        response.rationale = directive.rationale
+        response.confidence_percent = max(
+            0,
+            min(100, int(directive.confidence_percent)),
+        )
+
+        response.attempts_used = max(
+            0,
+            min(65535, len(self._attempt_records)),
+        )
+        response.retry_cap = max(
+            0,
+            min(65535, int(self._recovery_cap)),
+        )
+        response.escalate_to_operator = bool(directive.escalate_to_operator)
+        response.recovery_event_id = directive.recovery_event_id
 
         return response
+
+    def _fill_empty_request_recovery_response(
+        self,
+        response: RequestRecovery.Response,
+        status: str,
+        message: str,
+        recovery_event_id: str = "",
+    ) -> RequestRecovery.Response:
+        response.status = status
+        response.message = message
+        response.action = ""
+        response.attempts_used = max(
+            0,
+            min(65535, len(self._attempt_records)),
+        )
+        response.retry_cap = max(
+            0,
+            min(65535, int(self._recovery_cap)),
+        )
+        response.recovery_event_id = recovery_event_id
+        response.escalate_to_operator = False
+        return response
+    
+    def _handle_request_recovery(
+        self,
+        request: RequestRecovery.Request,
+        response: RequestRecovery.Response,
+    ) -> RequestRecovery.Response:
+        trigger = self._build_trigger_from_request(request)
+
+        if self._orchestration_mode != "bt_led":
+            status = self._on_trigger(trigger)
+
+            if status == "accepted":
+                message = "Recovery trigger accepted by standalone orchestrator."
+            elif status == "duplicate":
+                message = "Duplicate recovery trigger absorbed."
+            elif status == "already_in_recovery":
+                message = "Recovery already in progress."
+            else:
+                message = "Recovery trigger rejected in current standalone state."
+
+            return self._fill_empty_request_recovery_response(
+                response=response,
+                status=status,
+                message=message,
+            )
+
+        recovery_event_id = str(uuid.uuid4())
+
+        if len(self._attempt_records) >= int(self._recovery_cap):
+            terminal = build_give_up_directive(
+                DirectiveLLMProposal(
+                    action="give_up",
+                    rationale="BT-led recovery retry cap reached.",
+                    confidence_percent=100,
+                ),
+                ProposalContext(
+                    attempts_used=len(self._attempt_records),
+                    retry_cap=int(self._recovery_cap),
+                    responsible_safety_class=(
+                        trigger.responsible_safety_class or "none"
+                    ),
+                    responsible_object_state=(
+                        trigger.responsible_object_state or ""
+                    ),
+                    recovery_event_id=recovery_event_id,
+                ),
+                overrides=OverrideConfig(
+                    signal_attempts_default=self._signal_attempts_default,
+                    short_signal_wait_seconds=self._short_signal_wait_seconds,
+                    passive_wait_seconds_default=self._passive_wait_seconds_default,
+                ),
+            )
+
+            self._record_bt_directive_attempt(
+                directive=terminal,
+                proposal=None,
+                trigger=trigger,
+            )
+
+            return self._fill_request_recovery_response_from_directive(
+                response=response,
+                status="terminal_fail",
+                message="BT-led recovery retry cap reached.",
+                directive=terminal,
+            )
+
+        status = self._arbitrate_bt_recovery_request(trigger)
+
+        if status != "accepted":
+            if status == "duplicate":
+                message = "Duplicate BT-led recovery request absorbed."
+            elif status == "already_in_recovery":
+                message = "BT-led recovery directive already in progress."
+            elif status == "rejected":
+                message = "BT-led recovery request rejected."
+            else:
+                message = f"BT-led recovery request status='{status}'."
+
+            return self._fill_empty_request_recovery_response(
+                response=response,
+                status=status,
+                message=message,
+                recovery_event_id=recovery_event_id,
+            )
+
+        self._bt_directive_in_progress = True
+        self._publish_recovery_status(
+            "BT_RECOVERY_DIRECTIVE_IN_PROGRESS",
+            reason=trigger.trigger_source,
+        )
+
+        try:
+            proposal = self._call_propose_recovery_for_bt_request(
+                request=request,
+                trigger=trigger,
+            )
+
+            if proposal is None:
+                fallback = build_give_up_directive(
+                    DirectiveLLMProposal(
+                        action="give_up",
+                        rationale="ProposeRecovery service call failed.",
+                        confidence_percent=0,
+                    ),
+                    self._build_bt_proposal_context(
+                        trigger=trigger,
+                        recovery_event_id=recovery_event_id,
+                    ),
+                    overrides=OverrideConfig(
+                        signal_attempts_default=self._signal_attempts_default,
+                        short_signal_wait_seconds=self._short_signal_wait_seconds,
+                        passive_wait_seconds_default=self._passive_wait_seconds_default,
+                    ),
+                )
+
+                self._record_bt_directive_attempt(
+                    directive=fallback,
+                    proposal=None,
+                    trigger=trigger,
+                )
+
+                return self._fill_request_recovery_response_from_directive(
+                    response=response,
+                    status="terminal_fail",
+                    message="ProposeRecovery service call failed.",
+                    directive=fallback,
+                )
+
+            directive = self._build_directive_from_bt_proposal(
+                proposal=proposal,
+                request=request,
+                trigger=trigger,
+                recovery_event_id=recovery_event_id,
+            )
+
+            self._record_bt_directive_attempt(
+                directive=directive,
+                proposal=proposal,
+                trigger=trigger,
+            )
+
+            response_status = (
+                "terminal_fail"
+                if directive.action == "give_up"
+                else "accepted"
+            )
+
+            message = (
+                f"BT-led recovery directive issued: action='{directive.action}'."
+            )
+
+            self._log_stage_info(
+                "RECOVERY/BT",
+                (
+                    f"{message} "
+                    f"attempts_used={len(self._attempt_records)}, "
+                    f"retry_cap={self._recovery_cap}, "
+                    f"event_id='{recovery_event_id}'"
+                ),
+            )
+
+            return self._fill_request_recovery_response_from_directive(
+                response=response,
+                status=response_status,
+                message=message,
+                directive=directive,
+            )
+
+        finally:
+            self._bt_directive_in_progress = False
+            self._publish_recovery_status(
+                "BT_RECOVERY_DIRECTIVE_READY",
+                reason=recovery_event_id,
+            )
+
+    @staticmethod
+    def _object_instance_to_candidate(msg) -> ObjectCandidate:
+        return ObjectCandidate(
+            object_key=str(msg.object_key or ""),
+            object_tag=str(msg.object_tag or ""),
+            object_state=str(msg.object_state or ""),
+            safety_class=str(msg.safety_class or "none"),
+            openable=bool(msg.openable),
+            clearable=bool(msg.clearable),
+            bbox_center=(
+                float(msg.bbox_center.x),
+                float(msg.bbox_center.y),
+                float(msg.bbox_center.z),
+            ),
+            bbox_extent=(
+                float(msg.bbox_extent.x),
+                float(msg.bbox_extent.y),
+                float(msg.bbox_extent.z),
+            ),
+        )
+
+    @staticmethod
+    def _point_tuple_from_msg(point: Point) -> Tuple[float, float, float]:
+        return (
+            float(point.x),
+            float(point.y),
+            float(point.z),
+        )
+
+    def _handle_match_responsible_object(
+        self,
+        request: MatchResponsibleObject.Request,
+        response: MatchResponsibleObject.Response,
+    ) -> MatchResponsibleObject.Response:
+        candidates = []
+
+        for obj_msg in request.objects:
+            try:
+                candidate = self._object_instance_to_candidate(obj_msg)
+            except Exception as exc:
+                self._log_stage_warn(
+                    "RECOVERY/OBJECT",
+                    (
+                        "Skipping malformed ObjectInstance in "
+                        f"/match_responsible_object request: {exc}"
+                    ),
+                )
+                continue
+
+            if not candidate.object_key:
+                self._log_stage_warn(
+                    "RECOVERY/OBJECT",
+                    (
+                        "Skipping ObjectInstance with empty object_key in "
+                        "/match_responsible_object request."
+                    ),
+                )
+                continue
+
+            candidates.append(candidate)
+
+        result = match_responsible_object(
+            blockage_centroid=self._point_tuple_from_msg(
+                request.blockage_centroid
+            ),
+            blockage_extent_m=float(request.blockage_extent_m),
+            candidates=candidates,
+            inferred_fallback_radius_m=float(self._nearest_fallback_radius_m),
+        )
+
+        response.success = bool(result.success)
+        response.match_type = result.match_type
+        response.responsible_object_key = result.responsible_object_key
+        response.responsible_object_tag = result.responsible_object_tag
+        response.responsible_object_state = result.responsible_object_state
+        response.safety_class = result.safety_class
+        response.openable = bool(result.openable)
+        response.clearable = bool(result.clearable)
+
+        response.bbox_center.x = float(result.bbox_center[0])
+        response.bbox_center.y = float(result.bbox_center[1])
+        response.bbox_center.z = float(result.bbox_center[2])
+
+        response.bbox_extent.x = float(result.bbox_extent[0])
+        response.bbox_extent.y = float(result.bbox_extent[1])
+        response.bbox_extent.z = float(result.bbox_extent[2])
+
+        response.message = result.message
+
+        self._log_stage_info(
+            "RECOVERY/OBJECT",
+            (
+                f"/match_responsible_object: "
+                f"candidates={len(candidates)}, "
+                f"success={response.success}, "
+                f"match_type='{response.match_type}', "
+                f"responsible_object_key='{response.responsible_object_key}', "
+                f"tag='{response.responsible_object_tag}', "
+                f"state='{response.responsible_object_state}', "
+                f"safety_class='{response.safety_class}', "
+                f"openable={response.openable}, "
+                f"clearable={response.clearable}, "
+                f"message='{response.message}'"
+            ),
+        )
+
+        return response
+    
 
 def extract_query_from_argv() -> Optional[str]:
     """
@@ -3083,7 +3948,7 @@ def main(args=None):
         ])
         node._query = cli_query.strip()
 
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
 
     exit_code = 1

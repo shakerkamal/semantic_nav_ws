@@ -129,6 +129,37 @@ class SemanticStore:
         if normalized is None:
             return ()
         return tuple(self.by_object_key[k] for k in self.by_tag.get(normalized, ()))
+    
+    def query_window(
+        self,
+        center_xy: Tuple[float, float],
+        radius_m: float,
+    ) -> Tuple[ObjectRow, ...]:
+        """Return object rows whose bbox center is within radius_m of center_xy.
+
+        Uses plannar distance only; z is ignored. This supports local semantic
+        context queries without exposing the full object database.
+        """
+        if radius_m <= 0.0:
+            return ()
+
+        cx, cy = float(center_xy[0]), float(center_xy[1])
+        radius_sq = float(radius_m) * float(radius_m)
+
+        hits = []
+        for row in self.by_object_key.values():
+            dx = float(row.bbox_center[0]) - cx
+            dy = float(row.bbox_center[1]) - cy
+
+            if dx * dx + dy * dy <= radius_sq:
+                hits.append(row)
+
+        return tuple(
+            sorted(
+                hits,
+                key=lambda row: row.object_key,
+            )
+        )
 
 
 class SemanticStoreError(ValueError):
