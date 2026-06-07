@@ -165,6 +165,8 @@ class RecoveryProposal:
     responsible_object_key: str = ""
     operator_message: str = ""
     wait_seconds: int = 0
+    target_object_tag: str = ""
+    target_intent_hint: str = ""
 
 class NavigationOrchestrator(Node):
     def __init__(self):
@@ -671,7 +673,9 @@ class NavigationOrchestrator(Node):
         )
     
     def _run_pipeline_once(self, query: str) -> PipelineOutcome:
-        target = self._resolve_query(query)
+        recovery_ctx = getattr(self, "_recovery_resolve_context", {})
+        self._recovery_resolve_context = {}
+        target = self._resolve_query(query, recovery_context=recovery_ctx)
         if target is None:
             return PipelineOutcome(
                 success=False,
@@ -970,7 +974,7 @@ class NavigationOrchestrator(Node):
                 attempts.append(
                     AttemptRecord(
                         action="retry_target",
-                        value=proposal.target,
+                        value=proposal.target_object_tag,
                         outcome="dispatching_retry_target",
                         rationale=proposal.rationale,
                         failure_stage=outcome.stage,
@@ -983,7 +987,12 @@ class NavigationOrchestrator(Node):
                     reason="dispatching_retry_target",
                 )
                 chain_queue = []
-                current_query = proposal.target
+                current_query = proposal.target_object_tag
+                # Store object-centric context consumed by the next _resolve_query call.
+                self._recovery_resolve_context = {
+                    "object_tag": proposal.target_object_tag,
+                    "intent_hint": proposal.target_intent_hint,
+                }
                 continue
 
             if proposal.action == "via_waypoints":
@@ -1093,6 +1102,11 @@ class NavigationOrchestrator(Node):
         req.failure_stage = failure_stage
         req.nav2_message = nav2_message
 
+        parsed = getattr(self, "_parsed_command", None)
+        req.original_object_tag = getattr(parsed, "object_tag", "") or "" if parsed else ""
+        req.original_intent_hint = getattr(parsed, "intent_hint", "") or "" if parsed else ""
+        req.current_target_object_key = target.location_id if target else ""
+
         req.attempted_actions = [a.action for a in attempts]
         req.attempted_values = [a.value for a in attempts]
         req.attempt_outcomes = [a.outcome for a in attempts]
@@ -1150,7 +1164,8 @@ class NavigationOrchestrator(Node):
             (
                 f"Proposal response: success={response.success}, "
                 f"action='{response.action}', "
-                f"target='{response.target}', "
+                f"target_object_tag='{getattr(response, 'target_object_tag', '')}', "
+                f"target_intent_hint='{getattr(response, 'target_intent_hint', '')}', "
                 f"waypoints={list(response.waypoints)}, "
                 f"confidence={response.confidence_percent}, "
                 f"message='{response.message}'"
@@ -1169,6 +1184,8 @@ class NavigationOrchestrator(Node):
             responsible_object_key=getattr(response, "responsible_object_key", ""),
             operator_message=getattr(response, "operator_message", ""),
             wait_seconds=int(getattr(response, "wait_seconds", 0)),
+            target_object_tag=getattr(response, "target_object_tag", "") or "",
+            target_intent_hint=getattr(response, "target_intent_hint", "") or "",
         )
 
     def _populate_bt_recovery_request_defaults(
@@ -2182,7 +2199,11 @@ class NavigationOrchestrator(Node):
                 f"Failed to write recovery log '{self._recovery_log_path}': {exc}",
             )
 
-    def _resolve_query(self, query: str) -> Optional[ResolvedTarget]:
+    def _resolve_query(
+        self,
+        query: str,
+        recovery_context: dict = None,
+    ) -> Optional[ResolvedTarget]:
         self._log_stage_info(
             "RESOLUTION",
             f'Resolving location for query: "{query}"',
@@ -2202,9 +2223,13 @@ class NavigationOrchestrator(Node):
 
         req = ResolveLocation.Request()
 
-        # OC-M7: prefer object-centric routing when navigate_to_object
-        parsed = getattr(self, "_parsed_command", None)
-        if parsed is not None and getattr(parsed, "intent", "") == "navigate_to_object":
+        # Priority 1: object-centric recovery context (retry_target dispatch).
+        if recovery_context and recovery_context.get("object_tag"):
+            req.object_tag = recovery_context["object_tag"]
+            req.intent_hint = recovery_context.get("intent_hint", "")
+        # Priority 2: initial navigate_to_object intent from LLM parser.
+        elif (parsed := getattr(self, "_parsed_command", None)) is not None \
+                and getattr(parsed, "intent", "") == "navigate_to_object":
             req.object_tag = getattr(parsed, "object_tag", "") or ""
             req.intent_hint = getattr(parsed, "intent_hint", "") or ""
             req.target_object_key = getattr(parsed, "target_object_key", "") or ""

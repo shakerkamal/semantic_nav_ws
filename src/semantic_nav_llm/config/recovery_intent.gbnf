@@ -1,13 +1,14 @@
-# Strict BT-policy semantic recovery intent grammar.
-# The LLM emits exactly one of:
-# retry_target, reroute_via_waypoints, wait_then_replan,
-# open_door_then_replan, clear_object_then_replan, give_up.
+# Object-centric BT-policy semantic recovery intent grammar.
+# reroute_via_waypoints is disabled in object-centric v1 (no stable waypoint
+# catalogue in map_v001.json). Re-enable once a landmark layer exists.
+#
+# retry_target now emits target_object_tag + target_intent_hint instead of a
+# legacy location string. The orchestrator resolves the tag into a concrete
+# object instance and standoff pose.
 
-root ::= ws (retry-target | reroute-via-waypoints | wait-then-replan | open-door-then-replan | clear-object-then-replan | give-up) ws
+root ::= ws (retry-target | wait-then-replan | open-door-then-replan | clear-object-then-replan | give-up) ws
 
-retry-target ::= "{" ws action-key ws ":" ws "\"retry_target\"" ws "," ws target-key ws ":" ws short-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
-
-reroute-via-waypoints ::= "{" ws action-key ws ":" ws "\"reroute_via_waypoints\"" ws "," ws waypoints-key ws ":" ws string-array ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
+retry-target ::= "{" ws action-key ws ":" ws "\"retry_target\"" ws "," ws target-object-tag-key ws ":" ws short-string ws "," ws target-intent-hint-key ws ":" ws short-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 
 wait-then-replan ::= "{" ws action-key ws ":" ws "\"wait_then_replan\"" ws "," ws wait-seconds-key ws ":" ws wait-seconds ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 
@@ -18,15 +19,13 @@ clear-object-then-replan ::= "{" ws action-key ws ":" ws "\"clear_object_then_re
 give-up ::= "{" ws action-key ws ":" ws "\"give_up\"" ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 
 action-key ::= "\"action\""
-target-key ::= "\"target\""
-waypoints-key ::= "\"waypoints\""
+target-object-tag-key ::= "\"target_object_tag\""
+target-intent-hint-key ::= "\"target_intent_hint\""
 wait-seconds-key ::= "\"wait_seconds\""
 responsible-object-key ::= "\"responsible_object_key\""
 operator-message-key ::= "\"operator_message\""
 rationale-key ::= "\"rationale\""
 confidence-key ::= "\"confidence\""
-
-string-array ::= "[" ws short-string (ws "," ws short-string){0,5} ws "]"
 
 confidence ::= "100" | [1-9] [0-9]? | "0"
 wait-seconds ::= [1-9] | [1-2] [0-9] | "30"

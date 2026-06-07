@@ -44,6 +44,11 @@ float32 total_seconds_blocked
 # --- Semantic DB version snapshot ---
 uint32 db_version
 builtin_interfaces/Time db_stamp
+
+# --- Object-centric recovery context (OC-M8) ---
+string original_object_tag
+string original_intent_hint
+string current_target_object_key
 ---
 bool success
 string action
@@ -58,3 +63,8 @@ string message
 string responsible_object_key
 string operator_message
 uint8 wait_seconds
+
+# --- Object-centric retry_target fields (OC-M8) ---
+string target_object_tag
+string target_intent_hint
+string target_object_key

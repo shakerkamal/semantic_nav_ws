@@ -32,7 +32,8 @@ class LLMIntent:
 @dataclass(frozen=True)
 class ParsedRecoveryAction:
     action: str
-    target: str
+    target_object_tag: str
+    target_intent_hint: str
     waypoints: List[str]
     wait_seconds: int
     responsible_object_key: str
@@ -63,7 +64,6 @@ class NavigatorNode(Node):
 
     RECOVERY_ACTIONS = {
         "retry_target",
-        "reroute_via_waypoints",
         "wait_then_replan",
         "open_door_then_replan",
         "clear_object_then_replan",
@@ -71,8 +71,7 @@ class NavigatorNode(Node):
     }
 
     RECOVERY_EXPECTED_KEYS = {
-        "retry_target": {"action", "target", "rationale", "confidence"},
-        "reroute_via_waypoints": {"action", "waypoints", "rationale", "confidence"},
+        "retry_target": {"action", "target_object_tag", "target_intent_hint", "rationale", "confidence"},
         "wait_then_replan": {"action", "wait_seconds", "rationale", "confidence"},
         "open_door_then_replan": {
             "action",
@@ -926,7 +925,7 @@ User:
 """
 
     def _build_recovery_prompt(self, request) -> str:
-        available_locations = ", ".join(self._catalog.canonical_locations)
+        navigable_tags = ", ".join(sorted(self._object_store.navigable_tag_vocabulary))
 
         attempts_text = self._render_recovery_attempts(request)
         user_command = request.original_nl_command.strip() or "(none)"
@@ -937,6 +936,10 @@ User:
         responsible_object_text = self._render_responsible_object_context(request)
         eligibility_text = self._render_action_eligibility(request)
 
+        original_object_tag = (getattr(request, "original_object_tag", "") or "").strip()
+        original_intent_hint = (getattr(request, "original_intent_hint", "") or "").strip()
+        current_target_object_key = (getattr(request, "current_target_object_key", "") or "").strip()
+
         return f"""You are a BT-aware semantic recovery policy planner for a mobile robot using ROS 2 Nav2.
 
 Nav2 has failed or is about to fail. Choose exactly ONE constrained recovery policy.
@@ -944,41 +947,40 @@ The orchestrator will validate your proposal and Nav2 remains the geometric auth
 You do not compute paths, poses, velocities, planner IDs, or behavior-tree XML.
 
 Return ONLY one JSON object in exactly one of these forms:
-{{"action":"retry_target","target":"...","rationale":"...","confidence":0-100}}
-{{"action":"reroute_via_waypoints","waypoints":["..."],"rationale":"...","confidence":0-100}}
+{{"action":"retry_target","target_object_tag":"...","target_intent_hint":"...","rationale":"...","confidence":0-100}}
 {{"action":"wait_then_replan","wait_seconds":3,"rationale":"...","confidence":0-100}}
 {{"action":"open_door_then_replan","responsible_object_key":"...","operator_message":"...","rationale":"...","confidence":0-100}}
 {{"action":"clear_object_then_replan","responsible_object_key":"...","operator_message":"...","rationale":"...","confidence":0-100}}
 {{"action":"give_up","rationale":"...","confidence":0-100}}
 
 Action meanings:
-- retry_target: choose a substitute semantic destination that partially satisfies the original user intent.
-- reroute_via_waypoints: preserve the original final target and route through semantic waypoints.
-- wait_then_replan: wait briefly for a transient blockage, then the orchestrator clears costmaps and replans.
+- retry_target: navigate to a different object instance that partially satisfies the original user intent.
+- wait_then_replan: wait briefly for a transient blockage, then replan.
 - open_door_then_replan: ask the operator to open a verified openable door/gate, then replan.
 - clear_object_then_replan: ask the operator to clear a verified clearable non-human/non-animal object, then replan.
 - give_up: concede when there is no safe semantic recovery.
 
 Rules:
-- Pick retry targets and waypoints ONLY from the available semantic locations list.
-- Do not propose anything listed in Already tried.
-- For reroute_via_waypoints, the final waypoint MUST be the original canonical target.
-- For reroute_via_waypoints, use 1 to 6 total waypoints and avoid internal repeats.
+- For retry_target, target_object_tag MUST be one of the navigable object tag vocabulary entries.
+- target_intent_hint is a short phrase (<= 80 chars) explaining why this object satisfies the original need.
+- Do not propose anything already listed in Already tried.
 - Use open_door_then_replan only if the Action eligibility block says it is ELIGIBLE.
 - Use clear_object_then_replan only if the Action eligibility block says it is ELIGIBLE.
 - Use wait_then_replan only if the Action eligibility block says it is ELIGIBLE.
 - For operator actions, responsible_object_key must exactly match the verified object key shown below.
 - operator_message must be short, imperative, and contain no newline.
-- Human or animal blockages must never be cleared; use wait, reroute, retry, or give_up.
+- Human or animal blockages must never be cleared; use wait or give_up.
 - JSON only. No markdown. No prose outside JSON.
 - rationale must briefly explain why the proposal is semantically safe and useful.
 
-Available semantic locations:
-{available_locations}
+Navigable object tag vocabulary (use one of these for target_object_tag):
+{navigable_tags}
 
 Original goal:
 user command: "{user_command}"
-canonical target: {request.original_target}
+original object_tag: {original_object_tag or 'unknown'}
+original intent_hint: {original_intent_hint or '(none)'}
+current target object_key: {current_target_object_key or 'unresolved'}
 
 Failure:
 trigger source: {getattr(request, 'trigger_source', '') or 'unknown'}
@@ -1337,7 +1339,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
         required_tokens = [
             "retry_target",
-            "reroute_via_waypoints",
+            "target_object_tag",
+            "target_intent_hint",
             "wait_then_replan",
             "open_door_then_replan",
             "clear_object_then_replan",
@@ -1461,10 +1464,10 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             )
             return None
 
-        if action == "via_waypoints":
+        if action in {"via_waypoints", "reroute_via_waypoints"}:
             self.get_logger().warn(
-                "Legacy recovery action 'via_waypoints' received. "
-                "Rejecting because M3A uses 'reroute_via_waypoints'."
+                f"Recovery action '{action}' is disabled in object-centric v1: "
+                "no stable waypoint catalogue in map_v001.json."
             )
             return None
 
@@ -1493,7 +1496,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
         if action == "retry_target":
             try:
-                target = self._sanitize_target(str(data["target"]))
+                target_object_tag = self._sanitize_target(str(data["target_object_tag"]))
+                target_intent_hint = str(data.get("target_intent_hint", "")).strip()[:80]
             except Exception as exc:
                 self.get_logger().error(
                     f"Invalid retry_target fields in LLM output: {exc}"
@@ -1502,32 +1506,9 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
             return ParsedRecoveryAction(
                 action=action,
-                target=target,
+                target_object_tag=target_object_tag,
+                target_intent_hint=target_intent_hint,
                 waypoints=[],
-                wait_seconds=0,
-                responsible_object_key="",
-                operator_message="",
-                rationale=rationale,
-                confidence=confidence,
-            )
-
-        if action == "reroute_via_waypoints":
-            try:
-                waypoints = [
-                    self._sanitize_target(str(w))
-                    for w in data["waypoints"]
-                    if str(w).strip()
-                ]
-            except Exception as exc:
-                self.get_logger().error(
-                    f"Invalid reroute_via_waypoints fields in LLM output: {exc}"
-                )
-                return None
-
-            return ParsedRecoveryAction(
-                action=action,
-                target="",
-                waypoints=waypoints,
                 wait_seconds=0,
                 responsible_object_key="",
                 operator_message="",
@@ -1546,7 +1527,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
             return ParsedRecoveryAction(
                 action=action,
-                target="",
+                target_object_tag="",
+                target_intent_hint="",
                 waypoints=[],
                 wait_seconds=wait_seconds,
                 responsible_object_key="",
@@ -1569,7 +1551,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
             return ParsedRecoveryAction(
                 action=action,
-                target="",
+                target_object_tag="",
+                target_intent_hint="",
                 waypoints=[],
                 wait_seconds=0,
                 responsible_object_key=responsible_object_key,
@@ -1580,7 +1563,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
         return ParsedRecoveryAction(
             action="give_up",
-            target="",
+            target_object_tag="",
+            target_intent_hint="",
             waypoints=[],
             wait_seconds=0,
             responsible_object_key="",
@@ -1633,7 +1617,6 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
         validators = {
             "retry_target": self._validate_retry_target_recovery,
-            "reroute_via_waypoints": self._validate_reroute_waypoints_recovery,
             "wait_then_replan": self._validate_wait_then_replan_recovery,
             "open_door_then_replan": self._validate_open_door_then_replan_recovery,
             "clear_object_then_replan": self._validate_clear_object_then_replan_recovery,
@@ -1654,64 +1637,52 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         request,
         raw_output: str,
     ):
-        if not parsed.target:
+        if not parsed.target_object_tag:
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
-                message="retry_target requires non-empty target.",
+                message="retry_target requires non-empty target_object_tag.",
             )
 
-        if self._target_is_placeholder(parsed.target):
+        if self._target_is_placeholder(parsed.target_object_tag):
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
-                message=f"Rejected placeholder recovery target='{parsed.target}'.",
+                message=f"Rejected placeholder target_object_tag='{parsed.target_object_tag}'.",
             )
 
-        if not self._target_length_is_valid(parsed.target):
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"Recovery target length invalid: len={len(parsed.target)}, "
-                    f"allowed={self._target_min_len}..{self._target_max_len}."
-                ),
-            )
-
-        canonical_target = self._canonicalize_query(parsed.target)
-
-        if canonical_target is None:
+        resolved_tag = self._object_store.resolve_tag_or_alias(parsed.target_object_tag)
+        if resolved_tag is None:
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
                 message=(
-                    f"Recovery target='{parsed.target}' is not known in the semantic map."
+                    f"target_object_tag='{parsed.target_object_tag}' is not a navigable "
+                    f"tag in this scene. Known: {', '.join(self._object_store.navigable_tag_vocabulary)}"
                 ),
             )
 
-        original_canonical = self._canonicalize_query(request.original_target)
-        if original_canonical is None:
-            original_canonical = self._normalize(request.original_target)
-
-        if self._normalize(canonical_target) == self._normalize(original_canonical):
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"Recovery target='{canonical_target}' repeats the original failed target."
-                ),
-            )
-
-        attempted_canonicals = self._canonicalize_attempted_values(
-            request.attempted_values
+        original_tag = self._normalize(
+            getattr(request, "original_object_tag", "") or request.original_target or ""
         )
-
-        if canonical_target in attempted_canonicals:
+        if self._normalize(resolved_tag) == original_tag:
             return self._fill_recovery_failure(
                 response=response,
                 raw_output=raw_output,
                 message=(
-                    f"Recovery target='{canonical_target}' was already attempted."
+                    f"Recovery target_object_tag='{resolved_tag}' repeats the original failed target."
+                ),
+            )
+
+        attempted_tags = {
+            self._normalize(v) for v in request.attempted_values if v
+        }
+        if self._normalize(resolved_tag) in attempted_tags:
+            return self._fill_recovery_failure(
+                response=response,
+                raw_output=raw_output,
+                message=(
+                    f"Recovery target_object_tag='{resolved_tag}' was already attempted."
                 ),
             )
 
@@ -1720,143 +1691,27 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             parsed=parsed,
             raw_output=raw_output,
             message=(
-                f"Accepted recovery retry_target='{canonical_target}', "
-                f"confidence={parsed.confidence}."
+                f"Accepted recovery retry_target: object_tag='{resolved_tag}', "
+                f"intent_hint='{parsed.target_intent_hint}', confidence={parsed.confidence}."
             ),
         )
         response.action = "retry_target"
-        response.target = canonical_target
+        response.target = ""
+        response.target_object_tag = resolved_tag
+        response.target_intent_hint = parsed.target_intent_hint
+        response.target_object_key = ""
         response.waypoints = []
 
         self.get_logger().info(
             f"[RECOVERY] Accepted retry_target: "
-            f"raw_target='{parsed.target}', "
-            f"canonical_target='{canonical_target}', "
+            f"target_object_tag='{resolved_tag}', "
+            f"target_intent_hint='{parsed.target_intent_hint}', "
             f"confidence={parsed.confidence}, "
             f"rationale='{parsed.rationale}'"
         )
 
         return response
 
-    def _validate_reroute_waypoints_recovery(
-        self,
-        response,
-        parsed: ParsedRecoveryAction,
-        request,
-        raw_output: str,
-    ):
-        if not parsed.waypoints:
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message="reroute_via_waypoints requires at least one waypoint.",
-            )
-
-        if len(parsed.waypoints) > 6:
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"reroute_via_waypoints supports at most 6 waypoints, "
-                    f"got {len(parsed.waypoints)}."
-                ),
-            )
-
-        canonical_waypoints = []
-
-        for raw_waypoint in parsed.waypoints:
-            waypoint = self._sanitize_target(raw_waypoint)
-
-            if not waypoint:
-                return self._fill_recovery_failure(
-                    response=response,
-                    raw_output=raw_output,
-                    message="reroute_via_waypoints contains an empty waypoint.",
-                )
-
-            if self._target_is_placeholder(waypoint):
-                return self._fill_recovery_failure(
-                    response=response,
-                    raw_output=raw_output,
-                    message=f"Rejected placeholder waypoint='{waypoint}'.",
-                )
-
-            if not self._target_length_is_valid(waypoint):
-                return self._fill_recovery_failure(
-                    response=response,
-                    raw_output=raw_output,
-                    message=(
-                        f"Waypoint length invalid: waypoint='{waypoint}', "
-                        f"len={len(waypoint)}, "
-                        f"allowed={self._target_min_len}..{self._target_max_len}."
-                    ),
-                )
-
-            canonical = self._canonicalize_query(waypoint)
-
-            if canonical is None:
-                return self._fill_recovery_failure(
-                    response=response,
-                    raw_output=raw_output,
-                    message=f"Waypoint='{waypoint}' is not known in the semantic map.",
-                )
-
-            canonical_waypoints.append(canonical)
-
-        if len(set(canonical_waypoints)) != len(canonical_waypoints):
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"Waypoint chain contains internal repeats: {canonical_waypoints}."
-                ),
-            )
-
-        original_canonical = self._canonicalize_query(request.original_target)
-        if original_canonical is None:
-            original_canonical = self._normalize(request.original_target)
-
-        if self._normalize(canonical_waypoints[-1]) != self._normalize(original_canonical):
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"Waypoint chain must end at original target='{request.original_target}', "
-                    f"but ended at '{canonical_waypoints[-1]}'."
-                ),
-            )
-
-        attempted_chains = self._canonicalize_attempted_chains(request.attempted_values)
-
-        chain_key = tuple(canonical_waypoints)
-        if chain_key in attempted_chains:
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=f"Waypoint chain was already attempted: {canonical_waypoints}.",
-            )
-
-        self._fill_recovery_success_common(
-            response=response,
-            parsed=parsed,
-            raw_output=raw_output,
-            message=(
-                f"Accepted recovery reroute_via_waypoints chain={canonical_waypoints}, "
-                f"confidence={parsed.confidence}."
-            ),
-        )
-        response.action = "reroute_via_waypoints"
-        response.target = ""
-        response.waypoints = canonical_waypoints
-
-        self.get_logger().info(
-            f"[RECOVERY] Accepted reroute_via_waypoints: "
-            f"canonical_waypoints={canonical_waypoints}, "
-            f"confidence={parsed.confidence}, "
-            f"rationale='{parsed.rationale}'"
-        )
-
-        return response
 
     def _validate_wait_then_replan_recovery(
         self,
@@ -2126,6 +1981,9 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         response.responsible_object_key = ""
         response.operator_message = ""
         response.wait_seconds = 0
+        response.target_object_tag = ""
+        response.target_intent_hint = ""
+        response.target_object_key = ""
         return response
 
     def _canonicalize_attempted_values(self, attempted_values) -> Set[str]:
@@ -2228,6 +2086,9 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         response.responsible_object_key = ""
         response.operator_message = ""
         response.wait_seconds = 0
+        response.target_object_tag = ""
+        response.target_intent_hint = ""
+        response.target_object_key = ""
         return response
 
 
