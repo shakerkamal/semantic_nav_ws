@@ -1,0 +1,113 @@
+<!--
+  BT-LR M2: minimal semantic recovery BT.
+
+  M2 intentionally omits PathClearCondition, RefreshLocalObjects,
+  MatchResponsibleObject, and EmitObstacleSignal. Those are M3/M4.
+
+  Primary child uses ValidateSemantic + ComputePathToPose + FollowPath.
+  Recovery child calls /request_recovery through EscalateToLLMRecovery and
+  branches on directive_action.
+-->
+<root main_tree_to_execute="SemanticNavigateWithRecovery">
+
+  <BehaviorTree ID="SemanticNavigateWithRecovery">
+
+    <RecoveryNode number_of_retries="3" name="SemanticRecovery">
+
+      <PipelineSequence name="NavigateWithValidation">
+
+        <ValidateSemantic
+            service_name="/validate_pose_goal"
+            server_timeout="10000"
+            goal_pose="{goal}"
+            validation_reason="{validation_reason}"/>
+
+        <ComputePathToPose
+            goal="{goal}"
+            path="{path}"
+            planner_id="GridBased"/>
+
+        <FollowPath
+            path="{path}"
+            controller_id="FollowPath"/>
+
+      </PipelineSequence>
+
+      <Sequence name="SemanticRecoveryBranch">
+
+        <EscalateToLLMRecovery
+            service_name="/request_recovery"
+            server_timeout="300000"
+            failure_stage="execution"
+            nav2_message="{validation_reason}"
+            original_object_tag="{original_object_tag}"
+            original_intent_hint="{original_intent_hint}"
+            current_target_object_key="{current_target_object_key}"
+            responsible_object_key="{responsible_object_key}"
+            responsible_object_tag="{responsible_object_tag}"
+            responsible_object_state="{responsible_object_state}"
+            responsible_safety_class="{responsible_safety_class}"
+            responsible_openable="{responsible_openable}"
+            responsible_clearable="{responsible_clearable}"
+            blockage_centroid="{blockage_centroid}"
+            blockage_extent_m="{blockage_extent_m}"
+            local_db_version="0"
+            local_db_source="static_snapshot"
+            directive_action="{directive_action}"
+            directive_target_pose="{directive_target_pose}"
+            directive_target_object_key="{directive_target_object_key}"
+            directive_target_object_tag="{directive_target_object_tag}"
+            directive_target_intent_hint="{directive_target_intent_hint}"
+            directive_wait_seconds="{directive_wait_seconds}"
+            directive_emit_signal_during_wait="{directive_emit_signal_during_wait}"
+            directive_signal_attempts="{directive_signal_attempts}"
+            directive_operator_message="{directive_operator_message}"
+            directive_rationale="{directive_rationale}"
+            directive_confidence_percent="{directive_confidence_percent}"
+            directive_escalate_to_operator="{directive_escalate_to_operator}"
+            recovery_event_id="{recovery_event_id}"/>
+
+        <Switch3
+            variable="{directive_action}"
+            case_1="retry_target"
+            case_2="wait_then_replan"
+            case_3="give_up">
+
+          <Sequence name="RetryTargetBranch">
+            <ClearEntireCostmap
+                name="ClearGlobalRetry"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap
+                name="ClearLocalRetry"
+                service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+
+          <Sequence name="WaitThenReplanBranch">
+            <Wait wait_duration="5"/>
+            <ClearEntireCostmap
+                name="ClearGlobalWait"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap
+                name="ClearLocalWait"
+                service_name="local_costmap/clear_entirely_local_costmap"/>
+          </Sequence>
+
+          <!-- give_up -->
+          <ForceFailure name="GiveUpTerminal">
+            <AlwaysSuccess/>
+          </ForceFailure>
+
+          <!-- default: unexpected directive value → treat as give_up -->
+          <ForceFailure name="UnexpectedDirective">
+            <AlwaysSuccess/>
+          </ForceFailure>
+
+        </Switch3>
+
+      </Sequence>
+
+    </RecoveryNode>
+
+  </BehaviorTree>
+
+</root>

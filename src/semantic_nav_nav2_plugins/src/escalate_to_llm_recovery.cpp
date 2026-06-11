@@ -1,0 +1,233 @@
+// Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
+#include "semantic_nav_nav2_plugins/escalate_to_llm_recovery.hpp"
+
+#include <algorithm>
+#include <string>
+
+namespace semantic_nav_nav2_plugins
+{
+
+EscalateToLLMRecovery::EscalateToLLMRecovery(
+  const std::string & service_node_name,
+  const BT::NodeConfiguration & conf)
+: Base(service_node_name, conf)
+{}
+
+BT::NodeStatus EscalateToLLMRecovery::tick()
+{
+  // If a service request is already in flight, let BtServiceNode complete it.
+  if (status() == BT::NodeStatus::RUNNING) {
+    return Base::tick();
+  }
+
+  if (!readRobotPoseOrGoal(pending_robot_pose_)) {
+    setOutput("directive_action", std::string("give_up"));
+    setOutput("directive_operator_message", std::string("missing_robot_pose_and_goal"));
+    return BT::NodeStatus::FAILURE;
+  }
+
+  return Base::tick();
+}
+
+void EscalateToLLMRecovery::on_tick()
+{
+  request_->header.stamp = node_->now();
+  request_->header.frame_id = pending_robot_pose_.header.frame_id;
+  request_->trigger_source = "bt_recovery_plugin";
+
+  std::string failure_stage;
+  getInput("failure_stage", failure_stage);
+  request_->failure_stage = failure_stage.empty() ? "execution" : failure_stage;
+
+  std::string nav2_message;
+  getInput("nav2_message", nav2_message);
+  request_->nav2_message = nav2_message;
+
+  request_->robot_pose = pending_robot_pose_;
+
+  std::string responsible_object_key;
+  std::string responsible_object_tag;
+  std::string responsible_object_state;
+  std::string responsible_safety_class;
+  bool responsible_openable{false};
+  bool responsible_clearable{false};
+
+  getInput("responsible_object_key", responsible_object_key);
+  getInput("responsible_object_tag", responsible_object_tag);
+  getInput("responsible_object_state", responsible_object_state);
+  getInput("responsible_safety_class", responsible_safety_class);
+  getInput("responsible_openable", responsible_openable);
+  getInput("responsible_clearable", responsible_clearable);
+
+  request_->responsible_object_key = responsible_object_key;
+  request_->responsible_object_tag = responsible_object_tag;
+  request_->responsible_object_state = responsible_object_state;
+  request_->responsible_safety_class =
+    responsible_safety_class.empty() ? "none" : responsible_safety_class;
+  request_->responsible_openable = responsible_openable;
+  request_->responsible_clearable = responsible_clearable;
+
+  geometry_msgs::msg::Point blockage_centroid;
+  getInput("blockage_centroid", blockage_centroid);
+  request_->blockage_centroid = blockage_centroid;
+
+  float blockage_extent_m{0.0f};
+  getInput("blockage_extent_m", blockage_extent_m);
+  request_->blockage_extent_m = blockage_extent_m;
+
+  // Diagnostic BT-side attempt counter only. The orchestrator ledger remains
+  // authoritative and is returned as attempts_used/retry_cap in the response.
+  int semantic_attempt_index{0};
+  if (config().blackboard) {
+    config().blackboard->get<int>(
+      "semantic_recovery_attempt_index", semantic_attempt_index);
+    semantic_attempt_index = std::max(0, semantic_attempt_index);
+    config().blackboard->set<int>(
+      "semantic_recovery_attempt_index", semantic_attempt_index + 1);
+  }
+  request_->bt_attempt_index = static_cast<uint16_t>(semantic_attempt_index);
+
+  std::string original_object_tag;
+  std::string original_intent_hint;
+  std::string current_target_object_key;
+  getInput("original_object_tag", original_object_tag);
+  getInput("original_intent_hint", original_intent_hint);
+  getInput("current_target_object_key", current_target_object_key);
+  request_->original_object_tag = original_object_tag;
+  request_->original_intent_hint = original_intent_hint;
+  request_->current_target_object_key = current_target_object_key;
+
+  uint32_t local_db_version{0};
+  getInput("local_db_version", local_db_version);
+  request_->local_db_version = local_db_version;
+  request_->local_db_stamp = node_->now();
+
+  std::string local_db_source;
+  getInput("local_db_source", local_db_source);
+  request_->local_db_source = local_db_source.empty() ? "static_snapshot" : local_db_source;
+
+  // M2 has no PathClearCondition debounce source yet. Keep explicit but empty.
+  request_->debounce_key = "";
+}
+
+BT::NodeStatus EscalateToLLMRecovery::on_completion(
+  std::shared_ptr<ServiceT::Response> response)
+{
+  if (!response) {
+    setOutput("directive_action", std::string("give_up"));
+    setOutput("directive_operator_message", std::string("no_response"));
+    return BT::NodeStatus::FAILURE;
+  }
+
+  const std::string & action = response->action;
+  const std::string & status_text = response->status;
+
+  setOutput("directive_action", action);
+  setOutput("directive_target_object_key", response->target_object_key);
+  setOutput("directive_target_object_tag", response->target_object_tag);
+  setOutput("directive_target_intent_hint", response->target_intent_hint);
+  setOutput("directive_wait_seconds", static_cast<int>(response->wait_seconds));
+  setOutput("directive_emit_signal_during_wait", response->emit_signal_during_wait);
+  setOutput("directive_signal_attempts", static_cast<int>(response->signal_attempts));
+  setOutput("directive_operator_message", response->operator_message);
+  setOutput("directive_rationale", response->rationale);
+  setOutput("directive_confidence_percent", static_cast<int>(response->confidence_percent));
+  setOutput("directive_escalate_to_operator", response->escalate_to_operator);
+  setOutput("recovery_event_id", response->recovery_event_id);
+
+  if (status_text == "terminal_fail" || status_text == "rejected" ||
+    status_text == "duplicate" || action.empty())
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+
+  if (action == "retry_target") {
+    if (config().blackboard) {
+      config().blackboard->set<geometry_msgs::msg::PoseStamped>(
+        "goal", response->target_pose);
+      // Optional compatibility key for design-doc wording; Nav2 XML below uses "goal".
+      config().blackboard->set<geometry_msgs::msg::PoseStamped>(
+        "goal_pose", response->target_pose);
+      config().blackboard->set<std::string>(
+        "current_target_object_key", response->target_object_key);
+    }
+    setOutput("directive_target_pose", response->target_pose);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  if (action == "wait_then_replan" || action == "give_up") {
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  setOutput("directive_operator_message", std::string("unknown_recovery_action:" + action));
+  return BT::NodeStatus::FAILURE;
+}
+
+BT::PortsList EscalateToLLMRecovery::providedPorts()
+{
+  return providedBasicPorts({
+    // ---- Inputs ----
+    BT::InputPort<std::string>(
+      "failure_stage", "execution", "execution | validation | bt_recovery"),
+    BT::InputPort<std::string>(
+      "nav2_message", "", "Nav2 error or validation reason"),
+
+    BT::InputPort<std::string>("responsible_object_key", "", ""),
+    BT::InputPort<std::string>("responsible_object_tag", "", ""),
+    BT::InputPort<std::string>("responsible_object_state", "", ""),
+    BT::InputPort<std::string>("responsible_safety_class", "none", ""),
+    BT::InputPort<bool>("responsible_openable", false, ""),
+    BT::InputPort<bool>("responsible_clearable", false, ""),
+
+    BT::InputPort<geometry_msgs::msg::Point>("blockage_centroid", ""),
+    BT::InputPort<float>("blockage_extent_m", 0.0f, ""),
+
+    BT::InputPort<std::string>("original_object_tag", "", ""),
+    BT::InputPort<std::string>("original_intent_hint", "", ""),
+    BT::InputPort<std::string>("current_target_object_key", "", ""),
+    BT::InputPort<uint32_t>("local_db_version", 0u, ""),
+    BT::InputPort<std::string>("local_db_source", "static_snapshot", ""),
+
+    // ---- Outputs ----
+    BT::OutputPort<std::string>(
+      "directive_action", "retry_target | wait_then_replan | give_up"),
+    BT::OutputPort<geometry_msgs::msg::PoseStamped>(
+      "directive_target_pose", "New standoff pose for retry_target"),
+    BT::OutputPort<std::string>("directive_target_object_key", ""),
+    BT::OutputPort<std::string>("directive_target_object_tag", ""),
+    BT::OutputPort<std::string>("directive_target_intent_hint", ""),
+    BT::OutputPort<int>("directive_wait_seconds", ""),
+    BT::OutputPort<bool>("directive_emit_signal_during_wait", ""),
+    BT::OutputPort<int>("directive_signal_attempts", ""),
+    BT::OutputPort<std::string>("directive_operator_message", ""),
+    BT::OutputPort<std::string>("directive_rationale", ""),
+    BT::OutputPort<int>("directive_confidence_percent", ""),
+    BT::OutputPort<bool>("directive_escalate_to_operator", ""),
+    BT::OutputPort<std::string>("recovery_event_id", ""),
+  });
+}
+
+bool EscalateToLLMRecovery::readPoseFromBlackboard(
+  const std::string & key,
+  geometry_msgs::msg::PoseStamped & pose) const
+{
+  return config().blackboard &&
+         config().blackboard->get<geometry_msgs::msg::PoseStamped>(key, pose);
+}
+
+bool EscalateToLLMRecovery::readRobotPoseOrGoal(
+  geometry_msgs::msg::PoseStamped & robot_pose) const
+{
+  if (readPoseFromBlackboard("robot_pose", robot_pose)) {
+    return true;
+  }
+  if (readPoseFromBlackboard("goal", robot_pose)) {
+    return true;
+  }
+  if (readPoseFromBlackboard("goal_pose", robot_pose)) {
+    return true;
+  }
+  return false;
+}
+
+}  // namespace semantic_nav_nav2_plugins

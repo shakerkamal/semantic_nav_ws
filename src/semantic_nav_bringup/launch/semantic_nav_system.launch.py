@@ -23,6 +23,7 @@ def generate_launch_description():
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     aws_small_house_path = LaunchConfiguration('aws_small_house_path')
+    nav2_params_file = LaunchConfiguration('nav2_params_file')
 
     # LLM intent parser options.
     enable_llm = LaunchConfiguration('enable_llm')
@@ -96,6 +97,16 @@ def generate_launch_description():
             '/home/shaker/Thesis/Implementation/demo_bringup/aws-robomaker-small-house-world'
         ),
         description='Absolute path to aws-robomaker-small-house-world'
+    )
+    
+    nav2_params_file_arg = DeclareLaunchArgument(
+    'nav2_params_file',
+    default_value=os.path.join(
+        bringup_dir,
+        'config',
+        'nav2_semantic_params.yaml'
+    ),
+    description='Absolute path to the Nav2 params file'
     )
 
     enable_llm_arg = DeclareLaunchArgument(
@@ -230,6 +241,25 @@ def generate_launch_description():
         description='Monitor-side debounce window for repeated plan/costmap intersection triggers'
     )
 
+    bt_xml_path_arg = DeclareLaunchArgument(
+        'bt_xml_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_nav2_plugins'),
+            'config', 'semantic_recovery_bt.xml',
+        ),
+        description='Installed path to semantic_recovery_bt.xml; pass to orchestrator via -p behavior_tree:=...',
+    )
+    query_arg = DeclareLaunchArgument(
+        'query',
+        default_value='',
+        description='One-shot navigation query for manual orchestrator run (e.g. "chair").',
+    )
+    orchestration_mode_arg = DeclareLaunchArgument(
+        'orchestration_mode',
+        default_value='pipeline',
+        description='Orchestration mode for manual orchestrator run: pipeline | bt_led.',
+    )
+
     aws_small_house_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -261,11 +291,11 @@ def generate_launch_description():
         }.items()
     )
 
-    nav2_params_file = os.path.join(
-        rtabmap_demos_dir,
-        'params',
-        'turtlebot3_rgbd_scan_nav2_params.yaml'
-    )
+    # nav2_params_file = os.path.join(
+    #     rtabmap_demos_dir,
+    #     'params',
+    #     'turtlebot3_rgbd_scan_nav2_params.yaml'
+    # )
 
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -361,6 +391,7 @@ def generate_launch_description():
         x_pose_arg,
         y_pose_arg,
         aws_small_house_path_arg,
+        nav2_params_file_arg,
 
         enable_llm_arg,
         llm_semantic_db_path_arg,
@@ -383,6 +414,9 @@ def generate_launch_description():
         occupied_threshold_arg,
         sample_radius_m_arg,
         recovery_trigger_debounce_sec_arg,
+        bt_xml_path_arg,
+        query_arg,
+        orchestration_mode_arg,
 
         aws_small_house_sim_launch,
 

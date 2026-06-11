@@ -64,6 +64,9 @@ class ResolvedTarget:
     pose: PoseStamped
     db_version: int
     db_stamp: Time
+    object_key: str = ""
+    object_tag: str = ""
+    intent_hint: str = ""
 
 @dataclass(frozen=True)
 class ObjectActionAttributes:
@@ -450,6 +453,14 @@ class NavigationOrchestrator(Node):
 
         self._resolved_target: Optional[ResolvedTarget] = None
         self._parsed_command: Optional[ParsedCommand] = None
+        
+        # Active semantic target context used as a fallback for BT-led
+        # /request_recovery calls. ExecutePose/NavigateToPose carries only
+        # pose + behavior_tree, so these object-centric fields are not naturally
+        # available on the Nav2 BT blackboard in M2.
+        self._active_original_object_tag = ""
+        self._active_original_intent_hint = ""
+        self._active_current_target_object_key = ""
 
         self._db_version: int = 0
         self._db_stamp: Optional[Time] = None
@@ -578,6 +589,12 @@ class NavigationOrchestrator(Node):
             return False
 
         original_nl_command = self._command if self._command else ""
+        
+        if self._orchestration_mode == "bt_led":
+            return self._run_bt_led_once(
+                initial_query=semantic_query,
+                original_nl_command=original_nl_command,
+            )
 
         return self._run_with_recovery(
             initial_query=semantic_query,
@@ -835,6 +852,123 @@ class NavigationOrchestrator(Node):
             message="Navigation succeeded.",
             target=target,
         )
+    
+    def _record_active_bt_target_context(
+    self,
+    target: ResolvedTarget,
+    semantic_query: str,
+    ) -> None:
+        parsed = getattr(self, "_parsed_command", None)
+
+        original_object_tag = ""
+        original_intent_hint = ""
+
+        if parsed is not None and getattr(parsed, "intent", "") == "navigate_to_object":
+            original_object_tag = getattr(parsed, "object_tag", "") or ""
+            original_intent_hint = getattr(parsed, "intent_hint", "") or ""
+
+        if not original_object_tag:
+            original_object_tag = (
+                getattr(target, "object_tag", "")
+                or (semantic_query if not _looks_like_object_key(semantic_query) else "")
+                or ""
+            )
+
+        if not original_intent_hint:
+            original_intent_hint = getattr(target, "intent_hint", "") or ""
+
+        current_target_object_key = (
+            getattr(target, "object_key", "")
+            or getattr(target, "location_id", "")
+            or ""
+        )
+
+        self._active_original_object_tag = original_object_tag
+        self._active_original_intent_hint = original_intent_hint
+        self._active_current_target_object_key = current_target_object_key
+
+        self._log_stage_info(
+            "BT_LED",
+            (
+                "Active target context recorded: "
+                f"original_object_tag='{self._active_original_object_tag}', "
+                f"original_intent_hint='{self._active_original_intent_hint}', "
+                f"current_target_object_key='{self._active_current_target_object_key}'."
+            ),
+        )
+
+    def _run_bt_led_once(
+        self,
+        initial_query: str,
+        original_nl_command: str = "",
+    ) -> bool:
+        self._attempt_records = []
+        self._active_recovery = False
+        self._bt_directive_in_progress = False
+        self._last_trigger = None
+
+        self._transition_recovery_fsm(
+            RecoveryFSMState.EXECUTING,
+            reason="bt_led_initial_dispatch",
+        )
+
+        self._log_stage_info(
+            "BT_LED",
+            (
+                "BT-led mode enabled. The orchestrator will resolve and dispatch "
+                "one ExecutePose goal; validation, planning/control failure, "
+                "costmap clearing, and recovery retries are owned by the Nav2 BT."
+            ),
+        )
+
+        target = self._resolve_query(initial_query)
+        if target is None:
+            self._transition_recovery_fsm(
+                RecoveryFSMState.TERMINAL_FAIL,
+                reason="bt_led_resolution_failed",
+            )
+            return False
+
+        self._record_active_bt_target_context(
+            target=target,
+            semantic_query=initial_query,
+        )
+
+        if not self._behavior_tree:
+            self._log_stage_warn(
+                "BT_LED",
+                (
+                    "behavior_tree parameter is empty. Nav2 will use its default "
+                    "BT XML; semantic BT-led recovery will not run."
+                ),
+            )
+        else:
+            self._log_stage_info(
+                "BT_LED",
+                f"Dispatching ExecutePose with behavior_tree='{self._behavior_tree}'.",
+            )
+
+        self._log_stage_info(
+            "BT_LED",
+            (
+                "Skipping orchestrator pre-dispatch planner validation. "
+                "ValidateSemantic and ComputePathToPose inside semantic_recovery_bt.xml "
+                "will perform the geometric veto."
+            ),
+        )
+
+        if not self._execute_pose(target):
+            self._transition_recovery_fsm(
+                RecoveryFSMState.TERMINAL_FAIL,
+                reason="bt_led_execute_pose_failed",
+            )
+            return False
+
+        self._transition_recovery_fsm(
+            RecoveryFSMState.TERMINAL_SUCCESS,
+            reason="bt_led_goal_reached",
+        )
+        return True
     
     def _run_with_recovery(
         self,
@@ -2373,12 +2507,30 @@ class NavigationOrchestrator(Node):
         if not self._pose_is_valid_for_navigation(pose):
             return None
 
+        resolved_object_key = (
+            getattr(response, "object_key", "")
+            or ""
+        )
+        resolved_object_tag = (
+            getattr(response, "object_tag", "")
+            or ""
+        )
+
+        resolved_intent_hint = ""
+        if recovery_context and recovery_context.get("intent_hint"):
+            resolved_intent_hint = recovery_context.get("intent_hint", "") or ""
+        elif (parsed := getattr(self, "_parsed_command", None)) is not None:
+            resolved_intent_hint = getattr(parsed, "intent_hint", "") or ""
+
         target = ResolvedTarget(
             query=query,
             location_id=response.location_id,
             pose=pose,
             db_version=int(response.db_version),
             db_stamp=response.db_stamp,
+            object_key=resolved_object_key,
+            object_tag=resolved_object_tag,
+            intent_hint=resolved_intent_hint,
         )
 
         self._resolved_target = target
@@ -3180,7 +3332,7 @@ class NavigationOrchestrator(Node):
         if self._bt_directive_in_progress:
             return "already_in_recovery"
 
-        if self._is_duplicate_trigger(trigger):
+        if trigger.trigger_source != "bt_recovery_plugin" and self._is_duplicate_trigger(trigger):
             return "duplicate"
 
         if not trigger.trigger_source:
@@ -3193,6 +3345,59 @@ class NavigationOrchestrator(Node):
         return max(
             0,
             int(self._recovery_cap) - len(self._attempt_records),
+        )
+
+    def _bt_request_object_context(
+    self,
+    request: RequestRecovery.Request,
+    ) -> Tuple[str, str, str]:
+        original_object_tag = (
+            request.original_object_tag
+            or self._active_original_object_tag
+            or ""
+        )
+        original_intent_hint = (
+            request.original_intent_hint
+            or self._active_original_intent_hint
+            or ""
+        )
+        current_target_object_key = (
+            request.current_target_object_key
+            or self._active_current_target_object_key
+            or ""
+        )
+
+        if not request.original_object_tag and original_object_tag:
+            self._log_stage_info(
+                "RECOVERY/BT",
+                (
+                    "Filled original_object_tag from active target context: "
+                    f"'{original_object_tag}'."
+                ),
+            )
+
+        if not request.original_intent_hint and original_intent_hint:
+            self._log_stage_info(
+                "RECOVERY/BT",
+                (
+                    "Filled original_intent_hint from active target context: "
+                    f"'{original_intent_hint}'."
+                ),
+            )
+
+        if not request.current_target_object_key and current_target_object_key:
+            self._log_stage_info(
+                "RECOVERY/BT",
+                (
+                    "Filled current_target_object_key from active target context: "
+                    f"'{current_target_object_key}'."
+                ),
+            )
+
+        return (
+            original_object_tag,
+            original_intent_hint,
+            current_target_object_key,
         )
 
     def _call_propose_recovery_for_bt_request(
@@ -3214,18 +3419,24 @@ class NavigationOrchestrator(Node):
 
         req = ProposeRecovery.Request()
 
-        req.original_nl_command = ""
+        (
+            original_object_tag,
+            original_intent_hint,
+            current_target_object_key,
+        ) = self._bt_request_object_context(request)
+
+        req.original_nl_command = self._command if self._command else ""
         req.original_target = (
-            request.current_target_object_key
-            or request.original_object_tag
+            current_target_object_key
+            or original_object_tag
             or ""
         )
         req.failure_stage = trigger.failure_stage
         req.nav2_message = trigger.nav2_message
 
-        req.original_object_tag = request.original_object_tag or ""
-        req.original_intent_hint = request.original_intent_hint or ""
-        req.current_target_object_key = request.current_target_object_key or ""
+        req.original_object_tag = original_object_tag
+        req.original_intent_hint = original_intent_hint
+        req.current_target_object_key = current_target_object_key
 
         req.attempted_actions = [a.action for a in self._attempt_records]
         req.attempted_values = [a.value for a in self._attempt_records]
@@ -3339,6 +3550,7 @@ class NavigationOrchestrator(Node):
             target_intent_hint=(
                 proposal.target_intent_hint
                 or request.original_intent_hint
+                or self._active_original_intent_hint
                 or ""
             ),
             wait_seconds=int(proposal.wait_seconds),
@@ -3763,11 +3975,11 @@ class NavigationOrchestrator(Node):
                 trigger=trigger,
             )
 
-            response_status = (
-                "terminal_fail"
-                if directive.action == "give_up"
-                else "accepted"
-            )
+             # An accepted give_up is still an accepted directive. The BT plugin
+            # returns SUCCESS for accepted give_up so the XML Switch3 reaches the
+            # visible ForceFailure branch. terminal_fail is reserved for service
+            # failure/cap exhaustion paths above.
+            response_status = "accepted"
 
             message = (
                 f"BT-led recovery directive issued: action='{directive.action}'."
