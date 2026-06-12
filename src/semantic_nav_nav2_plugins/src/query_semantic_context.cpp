@@ -179,14 +179,6 @@ BT::NodeStatus QuerySemanticContext::onRunning()
         setOutput("responsible_openable", response->openable);
         setOutput("responsible_clearable", response->clearable);
 
-        const double max_bbox_extent = std::max(
-          {response->bbox_extent.x, response->bbox_extent.y, response->bbox_extent.z});
-
-        const float extent_out =
-          max_bbox_extent > 0.0 ? static_cast<float>(max_bbox_extent) : 0.5f;
-
-        setOutput("blockage_extent_m_out", extent_out);
-
         RCLCPP_DEBUG(
           node_->get_logger(),
           "[QuerySemanticContext] match_type='%s' key='%s' tag='%s' safety='%s'",
@@ -305,7 +297,6 @@ void QuerySemanticContext::writeDefaultObjectOutputs()
   setOutput("responsible_safety_class", std::string("none"));
   setOutput("responsible_openable", false);
   setOutput("responsible_clearable", false);
-  setOutput("blockage_extent_m_out", 0.5f);
 }
 
 void QuerySemanticContext::writeDbOutputsFromRefresh()
@@ -379,9 +370,6 @@ BT::PortsList QuerySemanticContext::providedPorts()
     BT::OutputPort<std::string>("responsible_safety_class", ""),
     BT::OutputPort<bool>("responsible_openable", ""),
     BT::OutputPort<bool>("responsible_clearable", ""),
-    BT::OutputPort<float>(
-      "blockage_extent_m_out",
-      "Matched-object extent, or conservative default"),
     BT::OutputPort<int>("local_db_version", ""),
     BT::OutputPort<std::string>("local_db_source", ""),
   };

@@ -1,12 +1,12 @@
 <!--
-  BT-LR M2: minimal semantic recovery BT.
+  BT-LR M3: PathClearCondition early preempt + QuerySemanticContext responsible-object context.
 
-  M2 intentionally omits PathClearCondition, RefreshLocalObjects,
-  MatchResponsibleObject, and EmitObstacleSignal. Those are M3/M4.
+  Placement:
+    ComputePathToPose runs before PathClearCondition so PathClearCondition can
+    inspect the fresh BT blackboard path="{path}". The /plan topic is fallback only.
 
-  Primary child uses ValidateSemantic + ComputePathToPose + FollowPath.
-  Recovery child calls /request_recovery through EscalateToLLMRecovery and
-  branches on directive_action.
+  M4 additions:
+    EmitObstacleSignal in wait_then_replan branch.
 -->
 <root main_tree_to_execute="SemanticNavigateWithRecovery">
 
@@ -14,6 +14,7 @@
 
     <RecoveryNode number_of_retries="3" name="SemanticRecovery">
 
+      <!-- ===== Primary child: validate, plan, check corridor, follow ===== -->
       <PipelineSequence name="NavigateWithValidation">
 
         <ValidateSemantic
@@ -27,13 +28,42 @@
             path="{path}"
             planner_id="GridBased"/>
 
+        <PathClearCondition
+            path="{path}"
+            lookahead_m="1.5"
+            lethal_threshold="90"
+            debounce_ticks="2"
+            sample_radius_m="0.05"
+            plan_topic="/plan"
+            local_costmap_topic="/local_costmap/costmap"
+            blockage_centroid="{blockage_centroid}"
+            blockage_extent_m="{blockage_extent_m}"/>
+
         <FollowPath
             path="{path}"
             controller_id="FollowPath"/>
 
       </PipelineSequence>
 
+      <!-- ===== Recovery child: context → escalate → directive branch ===== -->
       <Sequence name="SemanticRecoveryBranch">
+
+        <QuerySemanticContext
+            blockage_centroid="{blockage_centroid}"
+            blockage_extent_m="{blockage_extent_m}"
+            radius_m="4.0"
+            service_ready_timeout_ms="2000"
+            response_timeout_ms="5000"
+            refresh_service="/refresh_local_objects"
+            match_service="/match_responsible_object"
+            responsible_object_key="{responsible_object_key}"
+            responsible_object_tag="{responsible_object_tag}"
+            responsible_object_state="{responsible_object_state}"
+            responsible_safety_class="{responsible_safety_class}"
+            responsible_openable="{responsible_openable}"
+            responsible_clearable="{responsible_clearable}"
+            local_db_version="{local_db_version}"
+            local_db_source="{local_db_source}"/>
 
         <EscalateToLLMRecovery
             service_name="/request_recovery"
@@ -51,8 +81,8 @@
             responsible_clearable="{responsible_clearable}"
             blockage_centroid="{blockage_centroid}"
             blockage_extent_m="{blockage_extent_m}"
-            local_db_version="0"
-            local_db_source="static_snapshot"
+            local_db_version="{local_db_version}"
+            local_db_source="{local_db_source}"
             directive_action="{directive_action}"
             directive_target_pose="{directive_target_pose}"
             directive_target_object_key="{directive_target_object_key}"
@@ -73,6 +103,7 @@
             case_2="wait_then_replan"
             case_3="give_up">
 
+          <!-- retry_target: goal is already updated by EscalateToLLMRecovery -->
           <Sequence name="RetryTargetBranch">
             <ClearEntireCostmap
                 name="ClearGlobalRetry"
@@ -82,6 +113,7 @@
                 service_name="local_costmap/clear_entirely_local_costmap"/>
           </Sequence>
 
+          <!-- wait_then_replan: fixed wait in M3; M4 wires directive_wait_seconds + signal branch -->
           <Sequence name="WaitThenReplanBranch">
             <Wait wait_duration="5"/>
             <ClearEntireCostmap
@@ -92,12 +124,12 @@
                 service_name="local_costmap/clear_entirely_local_costmap"/>
           </Sequence>
 
-          <!-- give_up -->
+          <!-- give_up: visible terminal failure branch -->
           <ForceFailure name="GiveUpTerminal">
             <AlwaysSuccess/>
           </ForceFailure>
 
-          <!-- default: unexpected directive value → treat as give_up -->
+          <!-- default: unexpected directive -->
           <ForceFailure name="UnexpectedDirective">
             <AlwaysSuccess/>
           </ForceFailure>

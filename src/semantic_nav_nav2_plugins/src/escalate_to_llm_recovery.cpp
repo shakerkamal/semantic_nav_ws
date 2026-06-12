@@ -97,16 +97,16 @@ void EscalateToLLMRecovery::on_tick()
   request_->original_intent_hint = original_intent_hint;
   request_->current_target_object_key = current_target_object_key;
 
-  uint32_t local_db_version{0};
+  int local_db_version{0};
   getInput("local_db_version", local_db_version);
-  request_->local_db_version = local_db_version;
+  request_->local_db_version = static_cast<uint32_t>(std::max(0, local_db_version));
   request_->local_db_stamp = node_->now();
 
   std::string local_db_source;
   getInput("local_db_source", local_db_source);
   request_->local_db_source = local_db_source.empty() ? "static_snapshot" : local_db_source;
 
-  // M2 has no PathClearCondition debounce source yet. Keep explicit but empty.
+  // M3 does not yet generate a stable debounce key. Keep explicit but empty.
   request_->debounce_key = "";
 }
 
@@ -185,7 +185,7 @@ BT::PortsList EscalateToLLMRecovery::providedPorts()
     BT::InputPort<std::string>("original_object_tag", "", ""),
     BT::InputPort<std::string>("original_intent_hint", "", ""),
     BT::InputPort<std::string>("current_target_object_key", "", ""),
-    BT::InputPort<uint32_t>("local_db_version", 0u, ""),
+    BT::InputPort<int>("local_db_version", 0, ""),
     BT::InputPort<std::string>("local_db_source", "static_snapshot", ""),
 
     // ---- Outputs ----

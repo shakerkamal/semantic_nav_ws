@@ -290,15 +290,6 @@ TEST(QuerySemanticContextTest, hasResponsibleSafetyClassOutputPort)
     BT::PortDirection::OUTPUT);
 }
 
-TEST(QuerySemanticContextTest, hasBlockageExtentMOutOutputPort)
-{
-  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
-  ASSERT_GT(ports.count("blockage_extent_m_out"), 0u);
-  EXPECT_EQ(
-    ports.at("blockage_extent_m_out").direction(),
-    BT::PortDirection::OUTPUT);
-}
-
 TEST(QuerySemanticContextTest, hasLocalDbVersionOutputPort)
 {
   const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
