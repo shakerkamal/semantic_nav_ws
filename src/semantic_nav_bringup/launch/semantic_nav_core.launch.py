@@ -59,6 +59,17 @@ def generate_launch_description():
         }]
     )
 
+    local_object_query_node = Node(
+        package='semantic_nav_semantics',
+        executable='local_object_query_node',
+        name='local_object_query_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'semantic_db_path': LaunchConfiguration('semantic_db_path'),
+        }]
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         semantic_db_path_arg,
@@ -66,5 +77,6 @@ def generate_launch_description():
         execute_action_arg,
         semantic_node,
         validator_node,
-        executor_node
+        executor_node,
+        local_object_query_node,
     ])

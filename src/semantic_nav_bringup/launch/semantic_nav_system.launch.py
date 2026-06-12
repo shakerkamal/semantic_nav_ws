@@ -7,6 +7,7 @@ from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, Time
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -39,6 +40,9 @@ def generate_launch_description():
     llm_result_timeout_sec = LaunchConfiguration('llm_result_timeout_sec')
     debug_prompt = LaunchConfiguration('debug_prompt')
     debug_grammar = LaunchConfiguration('debug_grammar')
+
+    bt_xml_path = LaunchConfiguration('bt_xml_path')
+    orchestration_mode = LaunchConfiguration('orchestration_mode')
 
     # Recovery trigger layer options.
     use_recovery_trigger_layer = LaunchConfiguration('use_recovery_trigger_layer')
@@ -201,8 +205,8 @@ def generate_launch_description():
 
     use_recovery_trigger_layer_arg = DeclareLaunchArgument(
         'use_recovery_trigger_layer',
-        default_value='true',
-        description='Launch the semantic recovery trigger layer plan_intersection_monitor'
+        default_value='false',
+        description='Launch the legacy plan_intersection_monitor (redundant with BT PathClearCondition; disabled by default)'
     )
 
     plan_topic_arg = DeclareLaunchArgument(
@@ -256,8 +260,8 @@ def generate_launch_description():
     )
     orchestration_mode_arg = DeclareLaunchArgument(
         'orchestration_mode',
-        default_value='pipeline',
-        description='Orchestration mode for manual orchestrator run: pipeline | bt_led.',
+        default_value='bt_led',
+        description='Orchestration mode: pipeline | bt_led.',
     )
 
     aws_small_house_sim_launch = IncludeLaunchDescription(
@@ -382,6 +386,18 @@ def generate_launch_description():
         }.items()
     )
 
+    orchestrator_node = Node(
+        package='semantic_nav_orchestrator',
+        executable='navigation_orchestrator',
+        name='navigation_orchestrator',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'orchestration_mode': orchestration_mode,
+            'behavior_tree': bt_xml_path,
+        }]
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         semantic_db_path_arg,
@@ -437,4 +453,11 @@ def generate_launch_description():
 
         semantic_core_launch,
         semantic_llm_launch,
+
+        # Orchestrator starts after Nav2 is up (10 s) so bt_navigator is ready
+        # to accept NavigateToPose goals before any query arrives.
+        TimerAction(
+            period=10.0,
+            actions=[orchestrator_node]
+        ),
     ])
