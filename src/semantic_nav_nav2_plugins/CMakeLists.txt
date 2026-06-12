@@ -12,6 +12,7 @@ find_package(behaviortree_cpp_v3 REQUIRED)
 find_package(semantic_nav_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(nav_msgs REQUIRED)
 
 set(library_name ${PROJECT_NAME})
 
@@ -19,6 +20,7 @@ add_library(${library_name} SHARED
   src/validate_semantic.cpp
   src/escalate_to_llm_recovery.cpp
   src/register_nodes.cpp
+  src/path_clear_condition.cpp
 )
 
 target_include_directories(${library_name} PUBLIC
@@ -33,6 +35,7 @@ ament_target_dependencies(${library_name}
   semantic_nav_interfaces
   geometry_msgs
   builtin_interfaces
+  nav_msgs
 )
 
 install(TARGETS ${library_name}
@@ -55,6 +58,7 @@ if(BUILD_TESTING)
     semantic_nav_interfaces
     geometry_msgs
     builtin_interfaces
+    nav_msgs
   )
 endif()
 
