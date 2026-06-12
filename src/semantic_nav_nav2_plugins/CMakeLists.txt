@@ -13,6 +13,7 @@ find_package(semantic_nav_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 set(library_name ${PROJECT_NAME})
 
@@ -22,6 +23,7 @@ add_library(${library_name} SHARED
   src/path_clear_condition.cpp
   src/query_semantic_context.cpp
   src/register_nodes.cpp
+  src/emit_obstacle_signal.cpp
 )
 
 target_include_directories(${library_name} PUBLIC
@@ -37,6 +39,7 @@ ament_target_dependencies(${library_name}
   geometry_msgs
   builtin_interfaces
   nav_msgs
+  std_msgs
 )
 
 install(TARGETS ${library_name}
@@ -60,6 +63,7 @@ if(BUILD_TESTING)
     geometry_msgs
     builtin_interfaces
     nav_msgs
+    std_msgs
   )
 endif()
 

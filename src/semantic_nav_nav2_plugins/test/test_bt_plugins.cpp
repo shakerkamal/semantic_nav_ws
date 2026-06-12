@@ -8,6 +8,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
+#include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 
 TEST(ValidateSemanticTest, hasGoalPoseInputPort)
 {
@@ -55,10 +56,17 @@ TEST(EscalateToLLMRecoveryTest, hasDirectiveTargetPoseOutputPort)
   EXPECT_GT(ports.count("directive_target_pose"), 0u);
 }
 
-TEST(EscalateToLLMRecoveryTest, hasDirectiveWaitSecondsOutputPort)
+TEST(EscalateToLLMRecoveryTest, directiveWaitSecondsPortTypeIsInt)
 {
-  auto ports = semantic_nav_nav2_plugins::EscalateToLLMRecovery::providedPorts();
-  EXPECT_GT(ports.count("directive_wait_seconds"), 0u);
+  const auto ports = semantic_nav_nav2_plugins::EscalateToLLMRecovery::providedPorts();
+
+  ASSERT_GT(ports.count("directive_wait_seconds"), 0u);
+  EXPECT_EQ(
+    ports.at("directive_wait_seconds").direction(),
+    BT::PortDirection::OUTPUT);
+
+  ASSERT_NE(ports.at("directive_wait_seconds").type(), nullptr);
+  EXPECT_EQ(*ports.at("directive_wait_seconds").type(), typeid(int));
 }
 
 TEST(EscalateToLLMRecoveryTest, hasRecoveryEventIdOutputPort)
@@ -93,6 +101,10 @@ TEST(PluginRegistrationTest, currentNodesRegisterWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::QuerySemanticContext>(
       "QuerySemanticContext"));
+    
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(
+      "EmitObstacleSignal"));
 }
 
 // ---- PathClearCondition -------------------------------------------------
@@ -306,6 +318,44 @@ TEST(QuerySemanticContextTest, hasLocalDbSourceOutputPort)
   EXPECT_EQ(
     ports.at("local_db_source").direction(),
     BT::PortDirection::OUTPUT);
+}
+
+// ---- EmitObstacleSignal -------------------------------------------------
+
+TEST(EmitObstacleSignalTest, hasEmitEnabledInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::EmitObstacleSignal::providedPorts();
+  ASSERT_GT(ports.count("emit_enabled"), 0u);
+  EXPECT_EQ(ports.at("emit_enabled").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(EmitObstacleSignalTest, hasPublishSignalInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::EmitObstacleSignal::providedPorts();
+  ASSERT_GT(ports.count("publish_signal"), 0u);
+  EXPECT_EQ(ports.at("publish_signal").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(EmitObstacleSignalTest, hasSignalClassInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::EmitObstacleSignal::providedPorts();
+  ASSERT_GT(ports.count("signal_class"), 0u);
+  EXPECT_EQ(ports.at("signal_class").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(EmitObstacleSignalTest, hasSignalTopicInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::EmitObstacleSignal::providedPorts();
+  ASSERT_GT(ports.count("signal_topic"), 0u);
+  EXPECT_EQ(ports.at("signal_topic").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(EmitObstacleSignalTest, registersWithoutError)
+{
+  BT::BehaviorTreeFactory factory;
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(
+      "EmitObstacleSignal"));
 }
 
 int main(int argc, char ** argv)

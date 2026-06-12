@@ -126,9 +126,19 @@ BT::NodeStatus EscalateToLLMRecovery::on_completion(
   setOutput("directive_target_object_key", response->target_object_key);
   setOutput("directive_target_object_tag", response->target_object_tag);
   setOutput("directive_target_intent_hint", response->target_intent_hint);
-  setOutput("directive_wait_seconds", static_cast<int>(response->wait_seconds));
+  const int wait_seconds = std::clamp(
+    static_cast<int>(response->wait_seconds),
+    0,
+    60);
+
+  const int signal_attempts = std::clamp(
+    static_cast<int>(response->signal_attempts),
+    1,
+    5);
+
+  setOutput("directive_wait_seconds", wait_seconds);
   setOutput("directive_emit_signal_during_wait", response->emit_signal_during_wait);
-  setOutput("directive_signal_attempts", static_cast<int>(response->signal_attempts));
+  setOutput("directive_signal_attempts", signal_attempts);
   setOutput("directive_operator_message", response->operator_message);
   setOutput("directive_rationale", response->rationale);
   setOutput("directive_confidence_percent", static_cast<int>(response->confidence_percent));

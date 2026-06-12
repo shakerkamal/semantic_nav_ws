@@ -1,12 +1,10 @@
 <!--
-  BT-LR M3: PathClearCondition early preempt + QuerySemanticContext responsible-object context.
+  BT-LR M4: EmitObstacleSignal + signal-wait-recheck branch.
 
-  Placement:
-    ComputePathToPose runs before PathClearCondition so PathClearCondition can
-    inspect the fresh BT blackboard path="{path}". The /plan topic is fallback only.
-
-  M4 additions:
-    EmitObstacleSignal in wait_then_replan branch.
+  wait_then_replan is now Fallback(SignalWaitRecheck, PassiveWait).
+  EmitObstacleSignal gates on directive_emit_signal_during_wait and
+  re-emits "polite_clear:<signal_class>" on every SignalCycle iteration.
+  directive_wait_seconds remains int (matches Nav2 Humble Wait InputPort<int>).
 -->
 <root main_tree_to_execute="SemanticNavigateWithRecovery">
 
@@ -113,16 +111,69 @@
                 service_name="local_costmap/clear_entirely_local_costmap"/>
           </Sequence>
 
-          <!-- wait_then_replan: fixed wait in M3; M4 wires directive_wait_seconds + signal branch -->
-          <Sequence name="WaitThenReplanBranch">
-            <Wait wait_duration="5"/>
-            <ClearEntireCostmap
-                name="ClearGlobalWait"
-                service_name="global_costmap/clear_entirely_global_costmap"/>
-            <ClearEntireCostmap
-                name="ClearLocalWait"
-                service_name="local_costmap/clear_entirely_local_costmap"/>
-          </Sequence>
+          <!-- wait_then_replan: M4 signal-wait-recheck or passive-wait -->
+          <Fallback name="WaitThenReplanBranch">
+
+            <!-- Branch A: signal-wait-recheck for animate obstacles.
+                Gate EmitObstacleSignal returns FAILURE when emit_enabled=false
+                so this Sequence fails and Fallback tries Branch B. -->
+            <Sequence name="SignalWaitRecheck">
+              <!-- Gate: emit_enabled controls entry; publish_signal="false" avoids
+                  a redundant first-cycle signal before the retry loop begins. -->
+              <EmitObstacleSignal
+                  emit_enabled="{directive_emit_signal_during_wait}"
+                  publish_signal="false"
+                  signal_class="{responsible_safety_class}"
+                  signal_topic="/robot_obstacle_signal"/>
+
+              <RetryUntilSuccessful num_attempts="{directive_signal_attempts}">
+                <Sequence name="SignalCycle">
+                  <!-- Per-attempt publisher: emits once on each signal-wait-recheck cycle. -->
+                  <EmitObstacleSignal
+                      emit_enabled="true"
+                      publish_signal="true"
+                      signal_class="{responsible_safety_class}"
+                      signal_topic="/robot_obstacle_signal"/>
+
+                  <Wait wait_duration="2"/>
+
+                  <PathClearCondition
+                      path="{path}"
+                      lookahead_m="1.5"
+                      lethal_threshold="90"
+                      debounce_ticks="1"
+                      sample_radius_m="0.05"
+                      plan_topic="/plan"
+                      local_costmap_topic="/local_costmap/costmap"
+                      blockage_centroid="{blockage_centroid}"
+                      blockage_extent_m="{blockage_extent_m}"/>
+
+                </Sequence>
+              </RetryUntilSuccessful>
+
+              <ClearEntireCostmap
+                  name="ClearLocalSignal"
+                  service_name="local_costmap/clear_entirely_local_costmap"/>
+
+            </Sequence>
+
+            <!-- Branch B: passive wait for non-animate obstacles or after
+                signal retries are exhausted. -->
+            <Sequence name="PassiveWait">
+
+              <Wait wait_duration="{directive_wait_seconds}"/>
+
+              <ClearEntireCostmap
+                  name="ClearGlobalPassive"
+                  service_name="global_costmap/clear_entirely_global_costmap"/>
+
+              <ClearEntireCostmap
+                  name="ClearLocalPassive"
+                  service_name="local_costmap/clear_entirely_local_costmap"/>
+
+            </Sequence>
+
+          </Fallback>
 
           <!-- give_up: visible terminal failure branch -->
           <ForceFailure name="GiveUpTerminal">
