@@ -7,6 +7,7 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
+#include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 
 TEST(ValidateSemanticTest, hasGoalPoseInputPort)
 {
@@ -88,6 +89,10 @@ TEST(PluginRegistrationTest, currentNodesRegisterWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::PathClearCondition>(
       "PathClearCondition"));
+
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::QuerySemanticContext>(
+      "QuerySemanticContext"));
 }
 
 // ---- PathClearCondition -------------------------------------------------
@@ -238,6 +243,78 @@ TEST(PathClearConditionTest, malformedCostmapReturnsFalse)
       path, costmap, 90, 1.0, 0.08, centroid, extent);
 
   EXPECT_FALSE(blocked);
+}
+
+// ---- QuerySemanticContext -----------------------------------------------
+
+TEST(QuerySemanticContextTest, hasBlockageCentroidInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("blockage_centroid"), 0u);
+  EXPECT_EQ(ports.at("blockage_centroid").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(QuerySemanticContextTest, hasServiceReadyTimeoutInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("service_ready_timeout_ms"), 0u);
+  EXPECT_EQ(
+    ports.at("service_ready_timeout_ms").direction(),
+    BT::PortDirection::INPUT);
+}
+
+TEST(QuerySemanticContextTest, hasResponseTimeoutInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("response_timeout_ms"), 0u);
+  EXPECT_EQ(
+    ports.at("response_timeout_ms").direction(),
+    BT::PortDirection::INPUT);
+}
+
+TEST(QuerySemanticContextTest, hasResponsibleObjectKeyOutputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("responsible_object_key"), 0u);
+  EXPECT_EQ(
+    ports.at("responsible_object_key").direction(),
+    BT::PortDirection::OUTPUT);
+}
+
+TEST(QuerySemanticContextTest, hasResponsibleSafetyClassOutputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("responsible_safety_class"), 0u);
+  EXPECT_EQ(
+    ports.at("responsible_safety_class").direction(),
+    BT::PortDirection::OUTPUT);
+}
+
+TEST(QuerySemanticContextTest, hasBlockageExtentMOutOutputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("blockage_extent_m_out"), 0u);
+  EXPECT_EQ(
+    ports.at("blockage_extent_m_out").direction(),
+    BT::PortDirection::OUTPUT);
+}
+
+TEST(QuerySemanticContextTest, hasLocalDbVersionOutputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("local_db_version"), 0u);
+  EXPECT_EQ(
+    ports.at("local_db_version").direction(),
+    BT::PortDirection::OUTPUT);
+}
+
+TEST(QuerySemanticContextTest, hasLocalDbSourceOutputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("local_db_source"), 0u);
+  EXPECT_EQ(
+    ports.at("local_db_source").direction(),
+    BT::PortDirection::OUTPUT);
 }
 
 int main(int argc, char ** argv)

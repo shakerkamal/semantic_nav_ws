@@ -19,8 +19,9 @@ set(library_name ${PROJECT_NAME})
 add_library(${library_name} SHARED
   src/validate_semantic.cpp
   src/escalate_to_llm_recovery.cpp
-  src/register_nodes.cpp
   src/path_clear_condition.cpp
+  src/query_semantic_context.cpp
+  src/register_nodes.cpp
 )
 
 target_include_directories(${library_name} PUBLIC
