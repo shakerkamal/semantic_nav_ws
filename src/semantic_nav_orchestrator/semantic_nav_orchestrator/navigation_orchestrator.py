@@ -60,7 +60,6 @@ def _looks_like_object_key(s: str) -> bool:
 @dataclass(frozen=True)
 class ResolvedTarget:
     query: str
-    location_id: str
     pose: PoseStamped
     db_version: int
     db_stamp: Time
@@ -111,9 +110,6 @@ class ObjectRecoveryContext:
 class ParsedCommand:
     original_command: str
     intent: str
-    location_query: str
-    canonical_location_id: str
-    # New object-centric fields (OC-M7)
     object_tag: str
     intent_hint: str
     target_object_key: str
@@ -211,16 +207,8 @@ class NavigationOrchestrator(Node):
             "config",
             "map_v001.json",
         )
-        default_legacy_semantic_db_path = os.path.join(
-            get_package_share_directory("semantic_nav_semantics"),
-            "config",
-            "semantic_db.json",
-        )
 
-        # map_v001.json is the primary semantic source going forward.
-        # semantic_db.json is kept only as a temporary fallback for older room-level catalogs.
         self.declare_parameter("semantic_map_path", default_semantic_map_path)
-        self.declare_parameter("semantic_db_path", default_legacy_semantic_db_path)
         self.declare_parameter("global_frame", "map")
         self.declare_parameter("robot_base_frame", "base_link")
         self.declare_parameter("nearest_location_count", 5)
@@ -284,7 +272,6 @@ class NavigationOrchestrator(Node):
         self._execute_action_name = self.get_parameter('execute_action').get_parameter_value().string_value
 
         self._semantic_map_path = self.get_parameter("semantic_map_path").get_parameter_value().string_value.strip()
-        self._semantic_db_path = self.get_parameter('semantic_db_path').get_parameter_value().string_value.strip()
         self._global_frame = self.get_parameter('global_frame').get_parameter_value().string_value.strip()
         self._robot_base_frame = self.get_parameter('robot_base_frame').get_parameter_value().string_value.strip()
         self._nearest_location_count = self.get_parameter('nearest_location_count').get_parameter_value().integer_value
@@ -345,13 +332,10 @@ class NavigationOrchestrator(Node):
 
         self._log_stage_info(
             "RECOVERY",
-            (
-                f"Using semantic_map_path='{self._semantic_map_path}' as the primary semantic map; "
-                f"legacy semantic_db_path='{self._semantic_db_path}' remains a fallback."
-            ),
+            f"Loading semantic map from '{self._semantic_map_path}'.",
         )
         self._recovery_locations = self._load_recovery_locations_from_sources(
-            [self._semantic_map_path, self._semantic_db_path]
+            [self._semantic_map_path]
         )
         self._object_action_defaults, self._object_action_by_tag = self._load_object_action_attributes(
             self._object_action_attributes_path,
@@ -573,6 +557,11 @@ class NavigationOrchestrator(Node):
         return True
 
     def run(self) -> bool:
+        # bt_led daemon launched from bringup with no query: stay alive and serve
+        # BT service calls instead of immediately failing on an empty query.
+        if self._orchestration_mode == "bt_led" and not self._query and not self._command:
+            self._start_idle = True
+
         if self._start_idle:
             self._log_stage_info(
                 "RECOVERY",
@@ -589,13 +578,32 @@ class NavigationOrchestrator(Node):
             return False
 
         original_nl_command = self._command if self._command else ""
-        
+
+        # -----------------------------------------------------------------------
+        # BT-LED MODE (thesis primary path)
+        # Recovery ownership has been transferred to the Nav2 behavior tree
+        # defined in semantic_recovery_bt.xml. The BT owns:
+        #   - ValidateSemantic (geometric veto before motion starts)
+        #   - PathClearCondition (corridor monitor during motion)
+        #   - QuerySemanticContext (responsible-object identification)
+        #   - EscalateToLLMRecovery (LLM directive via /request_recovery)
+        #   - RetryTargetBranch / WaitThenReplanBranch / GiveUpTerminal
+        # The orchestrator's role in bt_led mode is limited to:
+        #   - Semantic resolution (query → pose)
+        #   - Single ExecutePose dispatch (with BT XML path)
+        #   - Serving /request_recovery and /propose_recovery to BT plugins
+        # -----------------------------------------------------------------------
         if self._orchestration_mode == "bt_led":
             return self._run_bt_led_once(
                 initial_query=semantic_query,
                 original_nl_command=original_nl_command,
             )
 
+        # -----------------------------------------------------------------------
+        # STANDALONE / PIPELINE MODE
+        # The orchestrator owns the full recovery loop below. This path is NOT
+        # active when orchestration_mode=bt_led.
+        # -----------------------------------------------------------------------
         return self._run_with_recovery(
             initial_query=semantic_query,
             original_nl_command=original_nl_command,
@@ -653,10 +661,7 @@ class NavigationOrchestrator(Node):
 
         self._parsed_command = parsed
 
-        if parsed.intent == "navigate_to_object":
-            semantic_query = parsed.object_tag
-        else:
-            semantic_query = parsed.canonical_location_id or parsed.location_query
+        semantic_query = parsed.object_tag
 
         self._log_stage_info(
             "INTENT",
@@ -664,10 +669,9 @@ class NavigationOrchestrator(Node):
                 f"Natural-language command parsed: "
                 f"command='{parsed.original_command}', "
                 f"intent='{parsed.intent}', "
-                f"location_query='{parsed.location_query}', "
-                f"canonical_location_id='{parsed.canonical_location_id}', "
                 f"object_tag='{parsed.object_tag}', "
                 f"intent_hint='{parsed.intent_hint}', "
+                f"target_object_key='{parsed.target_object_key}', "
                 f"semantic_query='{semantic_query}', "
                 f"confidence={parsed.confidence_percent}"
             ),
@@ -728,10 +732,11 @@ class NavigationOrchestrator(Node):
             (
                 f"Parser response: success={response.success}, "
                 f"intent='{response.intent}', "
-                f"location_query='{response.location_query}', "
-                f"canonical_location_id='{response.canonical_location_id}', "
+                f"object_tag='{response.object_tag}', "
+                f"intent_hint='{response.intent_hint}', "
+                f"target_object_key='{response.target_object_key}', "
                 f"confidence={response.confidence_percent}, "
-                f"location_known={response.location_known}, "
+                f"target_known={response.target_known}, "
                 f"message='{response.message}'"
             ),
         )
@@ -743,8 +748,7 @@ class NavigationOrchestrator(Node):
             )
             return None
 
-        valid_nav_intents = {"navigate_to_location", "navigate_to_object"}
-        if response.intent not in valid_nav_intents:
+        if response.intent != "navigate_to_object":
             self._log_stage_error(
                 "INTENT",
                 (
@@ -754,37 +758,24 @@ class NavigationOrchestrator(Node):
             )
             return None
 
-        if not getattr(response, "target_known", response.location_known):
+        if not response.target_known:
             self._log_stage_error(
                 "INTENT",
                 (
                     f"Parsed target is not known: "
                     f"intent='{response.intent}', "
-                    f"object_tag='{getattr(response, 'object_tag', '')}', "
-                    f"location_query='{response.location_query}', "
+                    f"object_tag='{response.object_tag}', "
                     f"message='{response.message}'"
                 ),
-            )
-            return None
-
-        # For navigate_to_location, require a usable query.
-        if (response.intent == "navigate_to_location"
-                and not response.location_query
-                and not response.canonical_location_id):
-            self._log_stage_error(
-                "INTENT",
-                "Parser returned navigate_to_location but no usable location query.",
             )
             return None
 
         return ParsedCommand(
             original_command=command,
             intent=response.intent,
-            location_query=response.location_query,
-            canonical_location_id=response.canonical_location_id,
-            object_tag=getattr(response, "object_tag", "") or "",
-            intent_hint=getattr(response, "intent_hint", "") or "",
-            target_object_key=getattr(response, "target_object_key", "") or "",
+            object_tag=response.object_tag,
+            intent_hint=response.intent_hint,
+            target_object_key=response.target_object_key,
             confidence_percent=int(response.confidence_percent),
             raw_output=response.raw_output,
         )
@@ -806,7 +797,7 @@ class NavigationOrchestrator(Node):
                 "VALIDATION",
                 (
                     f"Validating resolved pose with planner "
-                    f"(location_id='{target.location_id}', "
+                    f"(object_key='{target.object_key}', "
                     f"db_version={target.db_version}, "
                     f"db_stamp={self._stamp_to_string(target.db_stamp)})..."
                 ),
@@ -824,7 +815,7 @@ class NavigationOrchestrator(Node):
                 "VALIDATION",
                 (
                     f"Pose validation succeeded "
-                    f"(location_id='{target.location_id}', "
+                    f"(object_key='{target.object_key}', "
                     f"db_version={target.db_version})."
                 ),
             )
@@ -833,7 +824,7 @@ class NavigationOrchestrator(Node):
                 "VALIDATION",
                 (
                     f"Validation disabled. Proceeding directly to execution "
-                    f"(location_id='{target.location_id}', "
+                    f"(object_key='{target.object_key}', "
                     f"db_version={target.db_version})."
                 ),
             )
@@ -877,11 +868,7 @@ class NavigationOrchestrator(Node):
         if not original_intent_hint:
             original_intent_hint = getattr(target, "intent_hint", "") or ""
 
-        current_target_object_key = (
-            getattr(target, "object_key", "")
-            or getattr(target, "location_id", "")
-            or ""
-        )
+        current_target_object_key = getattr(target, "object_key", "") or ""
 
         self._active_original_object_tag = original_object_tag
         self._active_original_intent_hint = original_intent_hint
@@ -970,6 +957,12 @@ class NavigationOrchestrator(Node):
         )
         return True
     
+    # ---------------------------------------------------------------------------
+    # STANDALONE / PIPELINE MODE — not active when orchestration_mode=bt_led.
+    # In bt_led mode _run_bt_led_once is used instead and the BT tree owns
+    # every recovery action below (trigger handling, FSM transitions, goal
+    # cancellation, LLM escalation, and retry looping).
+    # ---------------------------------------------------------------------------
     def _run_with_recovery(
         self,
         initial_query: str,
@@ -1006,7 +999,7 @@ class NavigationOrchestrator(Node):
             outcome = self._run_pipeline_once(current_query)
 
             if outcome.target is not None and original_target_id is None:
-                original_target_id = outcome.target.location_id
+                original_target_id = outcome.target.object_key
 
             if outcome.success:
                 self._active_recovery = False
@@ -1051,7 +1044,7 @@ class NavigationOrchestrator(Node):
                 return False
 
             failed_target_id = (
-                outcome.target.location_id if outcome.target else current_query
+                outcome.target.object_key if outcome.target else current_query
             )
 
             stable_original_target = original_target_id or failed_target_id
@@ -1339,7 +1332,7 @@ class NavigationOrchestrator(Node):
         parsed = getattr(self, "_parsed_command", None)
         req.original_object_tag = getattr(parsed, "object_tag", "") or "" if parsed else ""
         req.original_intent_hint = getattr(parsed, "intent_hint", "") or "" if parsed else ""
-        req.current_target_object_key = target.location_id if target else ""
+        req.current_target_object_key = target.object_key if target else ""
 
         req.attempted_actions = [a.action for a in attempts]
         req.attempted_values = [a.value for a in attempts]
@@ -1562,7 +1555,7 @@ class NavigationOrchestrator(Node):
 
         self._log_stage_warn(
             "RECOVERY",
-            "No usable semantic location catalog found in semantic_map_path or legacy semantic_db_path.",
+            "No usable semantic object catalog found in semantic_map_path.",
         )
         return []
 
@@ -1570,42 +1563,9 @@ class NavigationOrchestrator(Node):
         if not isinstance(data, dict):
             return
 
-        # map_v001.json is expected to become the single semantic source, but during
-        # the transition we accept several common room/location containers. The old
-        # semantic_db.json format is still covered by the 'locations' case.
-        candidate_keys = [
-            "locations",
-            "rooms",
-            "places",
-            "semantic_locations",
-            "waypoints",
-            "nodes",
-        ]
-
-        for container_key in candidate_keys:
-            container = data.get(container_key)
-
-            if isinstance(container, dict):
-                for key, record in container.items():
-                    yield key, record
-                return
-
-            if isinstance(container, list):
-                for index, record in enumerate(container):
-                    yield f"{container_key}_{index}", record
-                return
-
-        # Conservative fallback for transitional map files with top-level room-like
-        # records. Deliberately skip object records so object bbox centers do not
-        # pollute nearest-room summaries.
         for key, record in data.items():
-            if not isinstance(record, dict):
-                continue
-            if str(key).startswith("object_"):
-                continue
-            if "object_state" in record or "object-state" in record or "object_tag" in record:
-                continue
-            yield key, record
+            if isinstance(record, dict) and "object_tag" in record:
+                yield key, record
 
     @staticmethod
     def _extract_xy_from_mapping(value):
@@ -1632,7 +1592,6 @@ class NavigationOrchestrator(Node):
             return None
 
     def _extract_location_xy(self, record: dict):
-        # Old semantic_db.json: {"x": ..., "y": ...}
         xy = self._extract_xy_from_mapping(record)
         if xy is not None:
             return xy
@@ -1660,17 +1619,7 @@ class NavigationOrchestrator(Node):
         return None
 
     def _location_id_from_record(self, fallback_key: str, record: dict) -> str:
-        for key in [
-            "location_id",
-            "canonical_location_id",
-            "room_id",
-            "place_id",
-            "id",
-            "name",
-            "room_name",
-            "label",
-            "tag",
-        ]:
+        for key in ["object_tag", "id", "name"]:
             value = record.get(key)
             if value is not None and str(value).strip():
                 return str(value).strip()
@@ -2171,7 +2120,7 @@ class NavigationOrchestrator(Node):
             d_target = math.sqrt((rx - tx) ** 2 + (ry - ty) ** 2)
             suffix = (
                 f"; distance to original target "
-                f"{original_target.location_id}: {d_target:.2f} m"
+                f"{original_target.object_key}: {d_target:.2f} m"
             )
 
         return f"nearest semantic locations: {nearest_text}{suffix}"
@@ -2524,7 +2473,6 @@ class NavigationOrchestrator(Node):
 
         target = ResolvedTarget(
             query=query,
-            location_id=response.location_id,
             pose=pose,
             db_version=int(response.db_version),
             db_stamp=response.db_stamp,
@@ -2539,7 +2487,7 @@ class NavigationOrchestrator(Node):
             "RESOLUTION",
             (
                 f"Resolved '{target.query}' -> "
-                f"location_id='{target.location_id}', "
+                f"object_key='{target.object_key}', "
                 f"db_version={target.db_version}, "
                 f"db_stamp={self._stamp_to_string(target.db_stamp)}, "
                 f"frame='{target.pose.header.frame_id}', "
@@ -2574,7 +2522,7 @@ class NavigationOrchestrator(Node):
             'VALIDATION',
             (
                 f"Validating goal with ComputePathToPose "
-                f"(location_id='{target.location_id}', "
+                f"(object_key='{target.object_key}', "
                 f"db_version={target.db_version}, "
                 f"db_stamp={self._stamp_to_string(target.db_stamp)})..."
             ),
@@ -2630,7 +2578,7 @@ class NavigationOrchestrator(Node):
                 'VALIDATION',
                 (
                     f"Goal validation failed "
-                    f"(location_id='{target.location_id}', "
+                    f"(object_key='{target.object_key}', "
                     f"db_version={target.db_version}): {response.message}"
                 ),
             )
@@ -2640,7 +2588,7 @@ class NavigationOrchestrator(Node):
             'VALIDATION',
             (
                 f"Validation succeeded "
-                f"(location_id='{target.location_id}', "
+                f"(object_key='{target.object_key}', "
                 f"db_version={target.db_version}): "
                 f"{response.message}, "
                 f"path_length={response.path_length:.3f}, "
@@ -2688,7 +2636,7 @@ class NavigationOrchestrator(Node):
             "EXECUTION",
             (
                 f"Sending goal to execute_pose action server "
-                f"(location_id='{target.location_id}', "
+                f"(object_key='{target.object_key}', "
                 f"db_version={target.db_version}, "
                 f"db_stamp={self._stamp_to_string(target.db_stamp)}): "
                 f"frame='{pose.header.frame_id}', "
@@ -2740,7 +2688,7 @@ class NavigationOrchestrator(Node):
         if not self._goal_handle.accepted:
             self._last_execution_message = (
                 f"Goal rejected by action server "
-                f"(location_id='{target.location_id}', db_version={target.db_version})."
+                f"(object_key='{target.object_key}', db_version={target.db_version})."
             )
             self._log_stage_error(
                 "EXECUTION",
@@ -2754,7 +2702,7 @@ class NavigationOrchestrator(Node):
             "EXECUTION",
             (
                 f"Goal accepted, waiting for result "
-                f"(location_id='{target.location_id}', "
+                f"(object_key='{target.object_key}', "
                 f"db_version={target.db_version})."
             ),
         )
@@ -2810,7 +2758,7 @@ class NavigationOrchestrator(Node):
             (
                 f"Executor finished with status={status_name}({status}), "
                 f"success={result.success}, "
-                f"location_id='{target.location_id}', "
+                f"object_key='{target.object_key}', "
                 f"db_version={target.db_version}, "
                 f"db_stamp={self._stamp_to_string(target.db_stamp)}, "
                 f"message='{result.message}'"
@@ -2829,7 +2777,7 @@ class NavigationOrchestrator(Node):
                     f"Execution failed or ended with non-success status: "
                     f"status={status_name}({status}), "
                     f"success={result.success}, "
-                    f"location_id='{target.location_id}', "
+                    f"object_key='{target.object_key}', "
                     f"db_version={target.db_version}, "
                     f"message='{result.message}'"
                 ),
@@ -2845,26 +2793,6 @@ class NavigationOrchestrator(Node):
         self._last_feedback_distance_remaining = float(fb.distance_remaining)
         self._last_feedback_recoveries = int(fb.number_of_recoveries)
 
-        if self._resolved_target is not None:
-            target_context = (
-                f"location_id='{self._resolved_target.location_id}', "
-                f"db_version={self._resolved_target.db_version}, "
-            )
-        else:
-            target_context = ""
-
-        self._log_stage_info(
-            "EXECUTION",
-            (
-                f"Feedback: "
-                f"{target_context}"
-                f"distance_remaining={fb.distance_remaining:.3f}, "
-                f"recoveries={fb.number_of_recoveries}, "
-                f"current_x={fb.current_pose.pose.position.x:.3f}, "
-                f"current_y={fb.current_pose.pose.position.y:.3f}"
-            ),
-        )
-
         self._maybe_fire_stall_watchdog(fb)
 
     def _reset_stall_watchdog(self) -> None:
@@ -2875,7 +2803,11 @@ class NavigationOrchestrator(Node):
     def _maybe_fire_stall_watchdog(self, fb) -> None:
         if not self._enable_stall_watchdog:
             return
-        
+
+        # BT-LED: stall detection is owned by PathClearCondition inside the BT.
+        # PathClearCondition monitors the active plan against the local costmap
+        # on every BT tick and triggers the RecoveryNode when a blockage is
+        # detected. The orchestrator stall watchdog must not run in parallel.
         if self._orchestration_mode == "bt_led":
             return
 
@@ -3211,6 +3143,8 @@ class NavigationOrchestrator(Node):
             )
             return
 
+        # STANDALONE / PIPELINE MODE: orchestrator owns goal cancellation and
+        # the full recovery dispatch. Not active when orchestration_mode=bt_led.
         status = self._on_trigger(trigger)
 
         self._log_stage_info(
@@ -3227,6 +3161,14 @@ class NavigationOrchestrator(Node):
         if status == "accepted":
             self._cancel_active_goal_for_recovery(trigger)
 
+    # ---------------------------------------------------------------------------
+    # STANDALONE / PIPELINE MODE trigger handlers — not active in bt_led mode.
+    # In bt_led mode the BT's RecoveryNode owns all trigger processing:
+    #   PathClearCondition fires → BT preempts FollowPath → EscalateToLLMRecovery
+    #   → orchestrator serves /request_recovery → BT executes directive.
+    # The methods below (_on_trigger, _accept_trigger, _cancel_active_goal_for_recovery)
+    # are never called when orchestration_mode=bt_led.
+    # ---------------------------------------------------------------------------
     def _on_trigger(self, trigger: TriggerInfo) -> str:
         if not self._validate_trigger(trigger):
             return "rejected"
@@ -3575,8 +3517,14 @@ class NavigationOrchestrator(Node):
         self,
         object_tag: str,
         intent_hint: str,
+        exclude_object_key: str = "",
     ):
         """Resolve object_tag + intent_hint to a PoseStamped and object key.
+
+        When exclude_object_key is set and the best-ranked resolution returns
+        that key (i.e. the currently-blocked instance), the method walks through
+        all other instances of the same tag and returns the first valid one,
+        using a direct target_object_key lookup (resolver Precedence 1).
 
         Returns:
           (PoseStamped or None, object_key)
@@ -3596,50 +3544,61 @@ class NavigationOrchestrator(Node):
             )
             return None, ""
 
+        def _call(req_obj):
+            fut = self._resolve_location_client.call_async(req_obj)
+            if not self._wait_for_future(fut, self._service_call_timeout_sec):
+                return None
+            if fut.exception() is not None:
+                return None
+            r = fut.result()
+            return r if (r is not None and r.success and self._pose_is_valid_for_navigation(r.pose)) else None
+
         req = ResolveLocation.Request()
         req.query = ""
         req.object_tag = object_tag
         req.intent_hint = intent_hint or ""
         req.target_object_key = ""
+        result = _call(req)
 
-        future = self._resolve_location_client.call_async(req)
-
-        if not self._wait_for_future(future, self._service_call_timeout_sec):
+        if result is None:
             self._log_stage_error(
                 "RECOVERY/BT",
-                (
-                    f"Service call to resolve retry_target timed out after "
-                    f"{self._service_call_timeout_sec:.1f}s."
-                ),
+                f"Retry target resolution failed for tag='{object_tag}'.",
             )
             return None, ""
 
-        if future.exception() is not None:
-            self._log_stage_error(
+        object_key = result.object_key or ""
+
+        if exclude_object_key and object_key == exclude_object_key:
+            # Best-ranked instance is the blocked one. Walk through other
+            # instances of the same tag and pick the first reachable alternative.
+            tag_norm = object_tag.strip().lower()
+            alt_keys = [
+                obj.key for obj in self._semantic_objects
+                if obj.tag == tag_norm and obj.key != exclude_object_key
+            ]
+            for alt_key in alt_keys:
+                alt_req = ResolveLocation.Request()
+                alt_req.query = ""
+                alt_req.object_tag = ""
+                alt_req.intent_hint = ""
+                alt_req.target_object_key = alt_key
+                alt_result = _call(alt_req)
+                if alt_result is not None:
+                    self._log_stage_info(
+                        "RECOVERY/BT",
+                        f"Retry target redirected from blocked '{exclude_object_key}' "
+                        f"to alternative '{alt_key}' (tag='{object_tag}').",
+                    )
+                    return alt_result.pose, alt_result.object_key or alt_key
+            self._log_stage_warn(
                 "RECOVERY/BT",
-                f"Resolve retry_target service call failed: {future.exception()}",
+                f"All instances of tag '{object_tag}' are unavailable after "
+                f"excluding blocked key '{exclude_object_key}'.",
             )
             return None, ""
 
-        response = future.result()
-        if response is None or not response.success:
-            message = response.message if response is not None else "no response"
-            self._log_stage_error(
-                "RECOVERY/BT",
-                f"Retry target resolution failed: {message}",
-            )
-            return None, ""
-
-        if not self._pose_is_valid_for_navigation(response.pose):
-            return None, ""
-
-        object_key = (
-            getattr(response, "object_key", "")
-            or response.location_id
-            or ""
-        )
-
-        return response.pose, object_key
+        return result.pose, object_key
 
     def _build_directive_from_bt_proposal(
         self,
@@ -3669,10 +3628,13 @@ class NavigationOrchestrator(Node):
             )
 
         if proposal.action == "retry_target":
+            _, _, blocked_key = self._bt_request_object_context(request)
             return build_retry_target_directive(
                 directive_proposal,
                 context,
-                resolver=self._resolve_target_for_directive,
+                resolver=lambda tag, hint: self._resolve_target_for_directive(
+                    tag, hint, exclude_object_key=blocked_key
+                ),
             )
 
         if proposal.action == "wait_then_replan":
@@ -4130,6 +4092,12 @@ def extract_query_from_argv() -> Optional[str]:
       --ros-args -p command:='I am hungry'
     """
     argv = sys.argv[1:]
+
+    # Everything at and after --ros-args is ROS infrastructure (remaps, params-file
+    # paths, etc.).  Truncate before collecting positionals so that values like
+    # /tmp/launch_params_xyz are never mistaken for a navigation query.
+    if '--ros-args' in argv:
+        argv = argv[:argv.index('--ros-args')]
 
     positional = [
         arg

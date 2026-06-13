@@ -99,12 +99,6 @@ class NavigatorNode(Node):
             "map_v001.json",
         )
 
-        default_legacy_semantic_db_path = os.path.join(
-            get_package_share_directory("semantic_nav_semantics"),
-            "config",
-            "semantic_db.json",
-        )
-
         default_intent_affordances_path = os.path.join(
             get_package_share_directory("semantic_nav_semantics"),
             "config",
@@ -126,8 +120,6 @@ class NavigatorNode(Node):
         self.declare_parameter("service_name", "/parse_semantic_command")
         self.declare_parameter("llama_action", "/llama/generate_response")
         self.declare_parameter("semantic_map_path", default_semantic_map_path)
-        self.declare_parameter("semantic_db_path", default_semantic_map_path)
-        self.declare_parameter("legacy_semantic_db_path", default_legacy_semantic_db_path)
         self.declare_parameter("intent_affordances_path", default_intent_affordances_path)
         self.declare_parameter("grammar_path", default_grammar_path)
 
@@ -168,18 +160,6 @@ class NavigatorNode(Node):
         )
         self._semantic_map_path = (
             self.get_parameter("semantic_map_path")
-            .get_parameter_value()
-            .string_value
-            .strip()
-        )
-        self._semantic_db_path = (
-            self.get_parameter("semantic_db_path")
-            .get_parameter_value()
-            .string_value
-            .strip()
-        )
-        self._legacy_semantic_db_path = (
-            self.get_parameter("legacy_semantic_db_path")
             .get_parameter_value()
             .string_value
             .strip()
@@ -291,7 +271,7 @@ class NavigatorNode(Node):
 
         self._callback_group = ReentrantCallbackGroup()
 
-        self._catalog = self._load_semantic_catalog_with_fallback()
+        self._catalog = self._load_semantic_catalog(self._semantic_map_path)
         self._object_store = self._load_object_store()
         self._gbnf_grammar = self._load_gbnf(self._grammar_path)
         self._recovery_gbnf_grammar = self._load_recovery_gbnf(
@@ -327,8 +307,6 @@ class NavigatorNode(Node):
             f"recovery_max_tokens={self._recovery_max_tokens}, "
             f"llama_action='{self._llama_action_name}', "
             f"semantic_map_path='{self._semantic_map_path}', "
-            f"semantic_db_path='{self._semantic_db_path}', "
-            f"legacy_semantic_db_path='{self._legacy_semantic_db_path}', "
             f"grammar_path='{self._grammar_path}', "
             f"canonical_locations={len(self._catalog.canonical_locations)}, "
             f"valid_queries={len(self._catalog.valid_queries)}"
@@ -761,9 +739,6 @@ class NavigatorNode(Node):
         if parsed.action == "clarify":
             response.success = True
             response.intent = "clarify"
-            response.location_query = ""
-            response.canonical_location_id = ""
-            response.location_known = False
             response.object_tag = ""
             response.intent_hint = ""
             response.target_object_key = ""
@@ -782,9 +757,6 @@ class NavigatorNode(Node):
 
         response.success = True
         response.intent = "reject"
-        response.location_query = ""
-        response.canonical_location_id = ""
-        response.location_known = False
         response.object_tag = ""
         response.intent_hint = ""
         response.target_object_key = ""
@@ -849,12 +821,8 @@ class NavigatorNode(Node):
         response.intent = "navigate_to_object"
         response.object_tag = resolved_tag
         response.intent_hint = parsed.intent_hint
-        response.target_object_key = ""
+        response.target_object_key = getattr(parsed, "target_object_key", "") or ""
         response.target_known = True
-        # Legacy mirror fields for orchestrator compatibility:
-        response.location_query = resolved_tag
-        response.canonical_location_id = ""
-        response.location_known = True
         response.confidence_percent = int(parsed.confidence)
         response.raw_output = raw_output
         response.message = (
@@ -872,9 +840,6 @@ class NavigatorNode(Node):
     def _fill_failure(response, raw_output: str, message: str):
         response.success = False
         response.intent = "reject"
-        response.location_query = ""
-        response.canonical_location_id = ""
-        response.location_known = False
         response.object_tag = ""
         response.intent_hint = ""
         response.target_object_key = ""
@@ -1124,8 +1089,6 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         store = load_semantic_store(
             self._semantic_map_path,
             affordances_path=self._intent_affordances_path,
-            legacy_db_path=self._legacy_semantic_db_path,
-            allow_legacy_fallback=False,
         )
         self.get_logger().info(
             f"[LLM_INTENT] Loaded SemanticStore: tags={len(store.tag_vocabulary)}, "
@@ -1133,37 +1096,6 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             f"objects={len(store.by_object_key)}, db_version={store.db_version}"
         )
         return store
-
-    def _load_semantic_catalog_with_fallback(self) -> SemanticCatalog:
-        candidate_paths = []
-
-        for path in [
-            self._semantic_map_path,
-            self._semantic_db_path,
-            self._legacy_semantic_db_path,
-        ]:
-            if path and path not in candidate_paths:
-                candidate_paths.append(path)
-
-        last_error = None
-
-        for path in candidate_paths:
-            try:
-                catalog = self._load_semantic_catalog(path)
-                self.get_logger().info(
-                    f"Loaded semantic catalog for navigator_node from '{path}'."
-                )
-                return catalog
-            except Exception as exc:
-                last_error = exc
-                self.get_logger().warn(
-                    f"Could not load semantic catalog from '{path}': {exc}"
-                )
-
-        raise RuntimeError(
-            f"Could not load semantic catalog from any configured path. "
-            f"Last error: {last_error}"
-        )
 
     def _load_semantic_catalog(self, db_path: str) -> SemanticCatalog:
         if not db_path:
@@ -1250,57 +1182,16 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         if not isinstance(data, dict):
             return []
 
-        for container_key in [
-            "locations",
-            "rooms",
-            "places",
-            "semantic_locations",
-            "waypoints",
-            "nodes",
-        ]:
-            container = data.get(container_key)
-            records = self._records_from_location_container(container)
-            if records:
-                return records
-
-        return []
-
-    def _records_from_location_container(self, container) -> List[Tuple[str, dict]]:
+        seen: set = set()
         records = []
-
-        if isinstance(container, dict):
-            for key, value in container.items():
-                if not isinstance(value, dict):
-                    continue
-
-                location_id = (
-                    str(value.get("id", "")).strip()
-                    or str(value.get("name", "")).strip()
-                    or str(value.get("location_id", "")).strip()
-                    or str(key).strip()
-                )
-
-                if not location_id:
-                    continue
-
-                records.append((location_id, value))
-
-        elif isinstance(container, list):
-            for value in container:
-                if not isinstance(value, dict):
-                    continue
-
-                location_id = (
-                    str(value.get("id", "")).strip()
-                    or str(value.get("name", "")).strip()
-                    or str(value.get("location_id", "")).strip()
-                )
-
-                if not location_id:
-                    continue
-
-                records.append((location_id, value))
-
+        for v in data.values():
+            if not isinstance(v, dict):
+                continue
+            tag = str(v.get("object_tag", "")).strip()
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            records.append((tag, {"id": tag}))
         return records
 
     def _load_gbnf(self, grammar_path: str) -> str:
@@ -1666,13 +1557,19 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             getattr(request, "original_object_tag", "") or request.original_target or ""
         )
         if self._normalize(resolved_tag) == original_tag:
-            return self._fill_recovery_failure(
-                response=response,
-                raw_output=raw_output,
-                message=(
-                    f"Recovery target_object_tag='{resolved_tag}' repeats the original failed target."
-                ),
-            )
+            # Reject only when there is a single instance of this tag; if multiple
+            # instances exist (e.g. six chairs) the orchestrator can exclude the
+            # blocked object_key and resolve to a different one.
+            instance_count = len(self._object_store.rows_for_tag(resolved_tag))
+            if instance_count <= 1:
+                return self._fill_recovery_failure(
+                    response=response,
+                    raw_output=raw_output,
+                    message=(
+                        f"Recovery target_object_tag='{resolved_tag}' repeats the only "
+                        f"instance of this tag — no alternative exists."
+                    ),
+                )
 
         attempted_tags = {
             self._normalize(v) for v in request.attempted_values if v

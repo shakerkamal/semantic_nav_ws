@@ -6,7 +6,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    semantic_db_path = LaunchConfiguration("semantic_db_path")
+    semantic_map_path = LaunchConfiguration("semantic_map_path")
     grammar_path = LaunchConfiguration("grammar_path")
     llama_action = LaunchConfiguration("llama_action")
     parse_service = LaunchConfiguration("parse_service")
@@ -32,10 +32,10 @@ def generate_launch_description():
     debug_grammar = LaunchConfiguration("debug_grammar")
     allow_json_extraction_fallback = LaunchConfiguration("allow_json_extraction_fallback")
 
-    default_semantic_db_path = PathJoinSubstitution([
+    default_semantic_map_path = PathJoinSubstitution([
         FindPackageShare("semantic_nav_semantics"),
         "config",
-        "semantic_db.json",
+        "map_v001.json",
     ])
 
     default_grammar_path = PathJoinSubstitution([
@@ -52,9 +52,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            "semantic_db_path",
-            default_value=default_semantic_db_path,
-            description="Path to semantic_nav_semantics semantic_db.json.",
+            "semantic_map_path",
+            default_value=default_semantic_map_path,
+            description="Path to object-centric semantic map (map_v001.json).",
         ),
         DeclareLaunchArgument(
             "grammar_path",
@@ -164,7 +164,7 @@ def generate_launch_description():
             parameters=[{
                 "service_name": parse_service,
                 "llama_action": llama_action,
-                "semantic_db_path": semantic_db_path,
+                "semantic_map_path": semantic_map_path,
                 "grammar_path": grammar_path,
 
                 "min_confidence_percent": min_confidence_percent,

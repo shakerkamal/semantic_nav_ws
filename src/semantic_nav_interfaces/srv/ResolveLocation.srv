@@ -1,16 +1,13 @@
 string query
 
-# New object-centric request fields
+# Object-centric request fields
 string object_tag
 string intent_hint
 string target_object_key
 ---
 bool success
 
-# Legacy field retained during migration
-string location_id
-
-# New object-centric response fields
+# Object-centric response fields
 string object_key
 string source_key
 string object_tag

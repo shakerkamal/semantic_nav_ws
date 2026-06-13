@@ -87,7 +87,7 @@ def test_real_map_refrigerator_summary():
     from semantic_nav_semantics.semantic_store import load_semantic_store
     store = load_semantic_store(REAL_MAP, affordances_path=REAL_SIDECAR)
     all_rows = list(store.by_object_key.values())
-    fridge = store.by_object_key["refrigerator:9"]
+    fridge = store.by_object_key["refrigerator:6"]
 
     sb = SpatialContextBuilder(neighbour_radius_m=2.5, max_neighbours=4)
     summary = sb.build(

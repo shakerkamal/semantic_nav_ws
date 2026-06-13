@@ -10,12 +10,6 @@ def generate_launch_description():
         description='Use simulation time'
     )
 
-    semantic_db_path_arg = DeclareLaunchArgument(
-        'semantic_db_path',
-        default_value='',
-        description='Optional absolute path to semantic_db.json'
-    )
-
     resolve_service_arg = DeclareLaunchArgument(
         'resolve_service',
         default_value='/resolve_location',
@@ -34,7 +28,6 @@ def generate_launch_description():
         name='semantic_resolver',
         output='screen',
         parameters=[{
-            'semantic_db_path': LaunchConfiguration('semantic_db_path'),
             'use_sim_time': LaunchConfiguration('use_sim_time')
         }]
     )
@@ -66,13 +59,11 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'semantic_db_path': LaunchConfiguration('semantic_db_path'),
         }]
     )
 
     return LaunchDescription([
         use_sim_time_arg,
-        semantic_db_path_arg,
         resolve_service_arg,
         execute_action_arg,
         semantic_node,

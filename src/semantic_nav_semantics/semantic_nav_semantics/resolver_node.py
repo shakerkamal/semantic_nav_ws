@@ -125,7 +125,6 @@ class ResolverNode(Node):
 
     def _fail(self, response, message: str):
         response.success = False
-        response.location_id = ""
         response.object_key = ""
         response.source_key = ""
         response.object_tag = ""
@@ -274,7 +273,6 @@ class ResolverNode(Node):
         bbox_extent.x, bbox_extent.y, bbox_extent.z = row.bbox_extent
 
         response.success = True
-        response.location_id = row.object_key
         response.object_key = row.object_key
         response.source_key = row.source_key
         response.object_tag = row.object_tag

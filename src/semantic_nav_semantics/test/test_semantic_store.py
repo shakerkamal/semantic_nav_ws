@@ -581,7 +581,7 @@ def test_loads_real_map_v001():
     """Smoke test: the real map_v001.json loads and key assertions hold."""
     store = load_semantic_store(_REAL_MAP, affordances_path=_REAL_SIDECAR)
 
-    assert "refrigerator:9" in store.by_object_key
+    assert "refrigerator:6" in store.by_object_key
     assert "picture" in store.tag_vocabulary
     assert "picture" not in store.navigable_tag_vocabulary
     assert "refrigerator" in store.navigable_tag_vocabulary
@@ -602,7 +602,7 @@ def test_real_map_rows_for_tag_refrigerator():
     rows = store.rows_for_tag("refrigerator")
     assert len(rows) >= 1
     keys = [r.object_key for r in rows]
-    assert "refrigerator:9" in keys
+    assert "refrigerator:6" in keys
 
 
 @pytest.mark.skipif(not os.path.exists(_REAL_MAP), reason="map_v001.json not present")

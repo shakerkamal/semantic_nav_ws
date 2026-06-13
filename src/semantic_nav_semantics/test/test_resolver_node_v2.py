@@ -27,7 +27,7 @@ def test_resolves_refrigerator_to_fridge_row(stack):
     store, ranker, planner = stack
     rows = store.rows_for_tag("refrigerator")
     ranked = ranker.rank(rows, "food storage and eating", robot_xy=(0.0, 0.0))
-    assert ranked[0].row.object_key == "refrigerator:9"
+    assert ranked[0].row.object_key == "refrigerator:6"
     pose = planner.plan(ranked[0].row, robot_xy=(0.0, 0.0))
     assert -10.0 < pose.position_xy[0] < 10.0
     assert -10.0 < pose.position_xy[1] < 10.0

@@ -1,14 +1,9 @@
 string command
 ---
 bool   success
-string intent                    # navigate_to_location | navigate_to_object | clarify | reject
+string intent                    # navigate_to_object | clarify | reject
 
-# Legacy fields retained during migration
-string location_query
-string canonical_location_id
-bool   location_known
-
-# New object-centric fields (OC-M4)
+# Object-centric fields
 string object_tag
 string intent_hint
 string target_object_key

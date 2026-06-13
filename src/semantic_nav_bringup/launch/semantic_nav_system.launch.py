@@ -17,8 +17,6 @@ def generate_launch_description():
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
-    semantic_db_path = LaunchConfiguration('semantic_db_path')
-    semantic_db_topic = LaunchConfiguration('semantic_db_topic')
     localization = LaunchConfiguration('localization')
     rviz = LaunchConfiguration('rviz')
     x_pose = LaunchConfiguration('x_pose')
@@ -28,7 +26,7 @@ def generate_launch_description():
 
     # LLM intent parser options.
     enable_llm = LaunchConfiguration('enable_llm')
-    llm_semantic_db_path = LaunchConfiguration('llm_semantic_db_path')
+    semantic_map_path = LaunchConfiguration('semantic_map_path')
     llama_action = LaunchConfiguration('llama_action')
     parse_service = LaunchConfiguration('parse_service')
     propose_recovery_service = LaunchConfiguration('propose_recovery_service')
@@ -57,18 +55,6 @@ def generate_launch_description():
         'use_sim_time',
         default_value='true',
         description='Use Gazebo simulation clock'
-    )
-
-    semantic_db_path_arg = DeclareLaunchArgument(
-        'semantic_db_path',
-        default_value='',
-        description='Optional absolute path to semantic_db.json for legacy resolver/core fallback'
-    )
-
-    semantic_db_topic_arg = DeclareLaunchArgument(
-        'semantic_db_topic',
-        default_value='/semantic_nav/semantic_database',
-        description='Topic for live semantic database snapshots'
     )
 
     localization_arg = DeclareLaunchArgument(
@@ -119,14 +105,14 @@ def generate_launch_description():
         description='Launch semantic_nav_llm navigator_node intent parser'
     )
 
-    llm_semantic_db_path_arg = DeclareLaunchArgument(
-        'llm_semantic_db_path',
+    semantic_map_path_arg = DeclareLaunchArgument(
+        'semantic_map_path',
         default_value=os.path.join(
             get_package_share_directory('semantic_nav_semantics'),
             'config',
-            'semantic_db.json'
+            'map_v001.json',
         ),
-        description='Absolute path to semantic location DB used by semantic_nav_llm navigator_node'
+        description='Absolute path to object-centric semantic map_v001.json',
     )
 
     llama_action_arg = DeclareLaunchArgument(
@@ -295,12 +281,6 @@ def generate_launch_description():
         }.items()
     )
 
-    # nav2_params_file = os.path.join(
-    #     rtabmap_demos_dir,
-    #     'params',
-    #     'turtlebot3_rgbd_scan_nav2_params.yaml'
-    # )
-
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -336,8 +316,6 @@ def generate_launch_description():
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
-            'semantic_db_path': semantic_db_path,
-            'semantic_db_topic': semantic_db_topic,
         }.items()
     )
 
@@ -351,7 +329,7 @@ def generate_launch_description():
         ),
         condition=IfCondition(enable_llm),
         launch_arguments={
-            'semantic_db_path': llm_semantic_db_path,
+            'semantic_map_path': semantic_map_path,
             'grammar_path': grammar_path,
             'llama_action': llama_action,
             'parse_service': parse_service,
@@ -395,13 +373,12 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'orchestration_mode': orchestration_mode,
             'behavior_tree': bt_xml_path,
+            'query': LaunchConfiguration('query'),
         }]
     )
 
     return LaunchDescription([
         use_sim_time_arg,
-        semantic_db_path_arg,
-        semantic_db_topic_arg,
         localization_arg,
         rviz_arg,
         x_pose_arg,
@@ -410,7 +387,7 @@ def generate_launch_description():
         nav2_params_file_arg,
 
         enable_llm_arg,
-        llm_semantic_db_path_arg,
+        semantic_map_path_arg,
         llama_action_arg,
         parse_service_arg,
         grammar_path_arg,

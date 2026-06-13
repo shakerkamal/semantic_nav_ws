@@ -1,8 +1,5 @@
 """Object-centric semantic store for semantic navigation.
 
-This module is the OC-M1 migration layer from the legacy room/location
-``semantic_db.json`` format to the object-instance ``map_v001.json`` format.
-
 Responsibilities:
   - Load object-centric map files whose top-level entries are object_N records.
   - Preserve source identity (``object_N``) and expose a stable wire key
@@ -10,7 +7,6 @@ Responsibilities:
   - Build indices for object-key lookup, source-key lookup, and tag-gated lookup.
   - Load intent-affordance metadata, including aliases and non-navigable tags.
   - Expose a navigable tag vocabulary for LLM intent prompts.
-  - Retain a conservative legacy adapter for old ``semantic_db.json`` files.
 
 The store does not produce poses. Object-to-standoff-pose planning belongs in
 ``standoff_planner.py`` in a later milestone.
@@ -34,8 +30,8 @@ _OBJECT_KEY_RE = re.compile(r"^\s*([a-zA-Z0-9_\- ]+)\s*:\s*(-?\d+)\s*$")
 
 @dataclass(frozen=True)
 class ObjectRow:
-    """One object instance from map_v001.json or a legacy adapter row."""
-    source_key: str              # e.g. "object_8" or "legacy_location:kitchen"
+    """One object instance from map_v001.json."""
+    source_key: str              # e.g. "object_8"
     object_key: str              # e.g. "refrigerator:9"
     object_id: int               # upstream id field
     object_tag: str              # raw tag after whitespace cleanup
@@ -45,7 +41,6 @@ class ObjectRow:
     bbox_center: Tuple[float, float, float]
     bbox_extent: Tuple[float, float, float]
     bbox_volume: float
-    is_legacy_location: bool = False
 
 
 @dataclass(frozen=True)
@@ -263,18 +258,14 @@ def load_object_intent_affordances(path: str) -> ObjectIntentAffordances:
 def load_semantic_store(
     map_path: str,
     affordances_path: str = "",
-    legacy_db_path: str = "",
-    allow_legacy_fallback: bool = True,
 ) -> SemanticStore:
-    """Load map_v001.json, with optional legacy semantic_db.json fallback."""
+    """Load map_v001.json object database."""
     affordances = load_object_intent_affordances(affordances_path)
 
+    if not map_path or not os.path.exists(map_path):
+        raise FileNotFoundError(f"semantic map not found at '{map_path}'.")
+
     selected_path = map_path
-    if not selected_path or not os.path.exists(selected_path):
-        if allow_legacy_fallback and legacy_db_path and os.path.exists(legacy_db_path):
-            selected_path = legacy_db_path
-        else:
-            raise FileNotFoundError(f"semantic map not found at '{map_path}'.")
 
     with open(selected_path, "rb") as f:
         raw_bytes = f.read()
@@ -290,10 +281,7 @@ def load_semantic_store(
     if not isinstance(data, dict):
         raise SemanticStoreError("semantic map root must be a JSON object.")
 
-    if _looks_like_legacy_location_db(data):
-        rows = _load_legacy_location_rows(data)
-    else:
-        rows = _load_object_rows(data)
+    rows = _load_object_rows(data)
 
     by_source_key: Dict[str, ObjectRow] = {}
     by_object_key: Dict[str, ObjectRow] = {}
@@ -432,7 +420,6 @@ def _parse_object_record(source_key: str, record: Mapping[str, object]) -> Objec
         bbox_center=bbox_center,
         bbox_extent=bbox_extent,
         bbox_volume=bbox_volume,
-        is_legacy_location=False,
     )
 
 
@@ -449,61 +436,6 @@ def _parse_float_triplet(value: object, source_key: str, field_name: str) -> Tup
         raise SemanticStoreError(f"object '{source_key}' field '{field_name}' contains non-finite values.")
 
     return triplet  # type: ignore[return-value]
-
-
-def _looks_like_legacy_location_db(data: Mapping[str, object]) -> bool:
-    return isinstance(data.get("locations"), dict)
-
-
-def _load_legacy_location_rows(data: Mapping[str, object]) -> Tuple[ObjectRow, ...]:
-    locations = data.get("locations")
-    if not isinstance(locations, dict) or not locations:
-        raise SemanticStoreError("legacy semantic DB must contain non-empty 'locations'.")
-
-    rows: List[ObjectRow] = []
-    for idx, (location_id, raw_record) in enumerate(sorted(locations.items())):
-        if not isinstance(raw_record, dict):
-            continue
-        canonical = " ".join(str(location_id).strip().split())
-        if not canonical:
-            continue
-
-        try:
-            x = float(raw_record.get("x", 0.0))
-            y = float(raw_record.get("y", 0.0))
-            z = float(raw_record.get("z", 0.0))
-        except Exception:
-            continue
-        if not all(math.isfinite(v) for v in (x, y, z)):
-            continue
-
-        # Keep ids deterministic and inside signed int range.
-        object_id = idx
-        object_tag = "room"
-        caption_parts = [canonical]
-        aliases = raw_record.get("aliases", [])
-        if isinstance(aliases, list):
-            caption_parts.extend(str(a) for a in aliases if str(a).strip())
-
-        rows.append(
-            ObjectRow(
-                source_key=f"legacy_location:{canonical}",
-                object_key=f"room:{object_id}",
-                object_id=object_id,
-                object_tag=object_tag,
-                normalized_tag=normalize_tag(object_tag),
-                object_caption="; ".join(caption_parts),
-                object_state="static",
-                bbox_center=(x, y, z),
-                bbox_extent=(0.5, 0.5, 0.1),
-                bbox_volume=0.025,
-                is_legacy_location=True,
-            )
-        )
-
-    if not rows:
-        raise SemanticStoreError("legacy semantic DB produced no valid location rows.")
-    return tuple(rows)
 
 
 def _uint32_hash(raw_bytes: bytes) -> int:
