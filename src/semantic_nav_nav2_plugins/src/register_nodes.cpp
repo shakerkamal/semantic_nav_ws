@@ -8,6 +8,7 @@
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
+#include "semantic_nav_nav2_plugins/operator_prompt.hpp"
 
 BT_REGISTER_NODES(factory)
 {
@@ -21,4 +22,6 @@ BT_REGISTER_NODES(factory)
     "QuerySemanticContext");
   factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(
     "EmitObstacleSignal");
+  factory.registerNodeType<semantic_nav_nav2_plugins::OperatorPrompt>(
+    "OperatorPrompt");
 }

@@ -165,7 +165,9 @@ BT::NodeStatus EscalateToLLMRecovery::on_completion(
     return BT::NodeStatus::SUCCESS;
   }
 
-  if (action == "wait_then_replan" || action == "give_up") {
+  if (action == "wait_then_replan" || action == "give_up" ||
+      action == "open_door_then_replan" || action == "clear_object_then_replan")
+  {
     return BT::NodeStatus::SUCCESS;
   }
 
@@ -200,7 +202,8 @@ BT::PortsList EscalateToLLMRecovery::providedPorts()
 
     // ---- Outputs ----
     BT::OutputPort<std::string>(
-      "directive_action", "retry_target | wait_then_replan | give_up"),
+      "directive_action",
+        "retry_target | wait_then_replan | open_door_then_replan | clear_object_then_replan | give_up"),
     BT::OutputPort<geometry_msgs::msg::PoseStamped>(
       "directive_target_pose", "New standoff pose for retry_target"),
     BT::OutputPort<std::string>("directive_target_object_key", ""),

@@ -9,6 +9,7 @@
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
+#include "semantic_nav_nav2_plugins/operator_prompt.hpp"
 
 TEST(ValidateSemanticTest, hasGoalPoseInputPort)
 {
@@ -105,6 +106,10 @@ TEST(PluginRegistrationTest, currentNodesRegisterWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(
       "EmitObstacleSignal"));
+
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::OperatorPrompt>(
+      "OperatorPrompt"));
 }
 
 // ---- PathClearCondition -------------------------------------------------
@@ -356,6 +361,58 @@ TEST(EmitObstacleSignalTest, registersWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(
       "EmitObstacleSignal"));
+}
+
+// ---- OperatorPrompt -------------------------------------------------------
+
+TEST(OperatorPromptTest, hasServiceNameInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("service_name"), 0u);
+  EXPECT_EQ(ports.at("service_name").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, hasPromptTextInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("prompt_text"), 0u);
+  EXPECT_EQ(ports.at("prompt_text").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, hasResponsibleObjectKeyInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("responsible_object_key"), 0u);
+  EXPECT_EQ(ports.at("responsible_object_key").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, hasFailureStageInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("failure_stage"), 0u);
+  EXPECT_EQ(ports.at("failure_stage").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, hasDirectiveActionInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("directive_action"), 0u);
+  EXPECT_EQ(ports.at("directive_action").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, hasRecoveryEventIdInputPort)
+{
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("recovery_event_id"), 0u);
+  EXPECT_EQ(ports.at("recovery_event_id").direction(), BT::PortDirection::INPUT);
+}
+
+TEST(OperatorPromptTest, registersWithoutError)
+{
+  BT::BehaviorTreeFactory factory;
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::OperatorPrompt>(
+      "OperatorPrompt"));
 }
 
 int main(int argc, char ** argv)

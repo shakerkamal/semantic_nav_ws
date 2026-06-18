@@ -1,0 +1,10 @@
+# Request
+string prompt_text
+string responsible_object_key
+string failure_stage
+string directive_action
+string recovery_event_id
+---
+# Response
+bool acknowledged
+string operator_note

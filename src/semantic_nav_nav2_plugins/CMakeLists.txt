@@ -24,6 +24,7 @@ add_library(${library_name} SHARED
   src/query_semantic_context.cpp
   src/register_nodes.cpp
   src/emit_obstacle_signal.cpp
+  src/operator_prompt.cpp
 )
 
 target_include_directories(${library_name} PUBLIC

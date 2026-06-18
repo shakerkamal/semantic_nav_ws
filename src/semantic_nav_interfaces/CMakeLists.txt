@@ -20,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RequestRecovery.srv"
   "srv/RefreshLocalObjects.srv"
   "srv/MatchResponsibleObject.srv"
+  "srv/OperatorDecision.srv"
 
   "action/ExecutePose.action"
 

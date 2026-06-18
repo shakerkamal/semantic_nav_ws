@@ -1,10 +1,11 @@
 <!--
-  BT-LR M4: EmitObstacleSignal + signal-wait-recheck branch.
+  BT-LR M5: OperatorPrompt + nested Switch3 for operator-action directives.
 
-  wait_then_replan is now Fallback(SignalWaitRecheck, PassiveWait).
-  EmitObstacleSignal gates on directive_emit_signal_during_wait and
-  re-emits "polite_clear:<signal_class>" on every SignalCycle iteration.
-  directive_wait_seconds remains int (matches Nav2 Humble Wait InputPort<int>).
+  outer Switch3 cases: retry_target, wait_then_replan, give_up.
+  outer Switch3 default: inner Switch3 for operator actions
+    (open_door_then_replan, clear_object_then_replan).
+  OperatorPrompt blocks on /operator_decision up to response_timeout_ms.
+  Returns SUCCESS on operator ack, FAILURE on rejection/timeout.
 -->
 <root main_tree_to_execute="SemanticNavigateWithRecovery">
 
@@ -180,10 +181,62 @@
             <AlwaysSuccess/>
           </ForceFailure>
 
-          <!-- default: unexpected directive -->
-          <ForceFailure name="UnexpectedDirective">
-            <AlwaysSuccess/>
-          </ForceFailure>
+          <!-- default: inner Switch3 for operator-action directives -->
+          <Switch3 name="OperatorDirectiveSwitch"
+                   variable="{directive_action}"
+                   case_1="open_door_then_replan"
+                   case_2="clear_object_then_replan"
+                   case_3="__unused_operator_case__">
+
+            <!-- open_door_then_replan: wait for operator to open door, then replan -->
+            <Sequence name="OpenDoorThenReplanBranch">
+              <OperatorPrompt
+                  service_name="/operator_decision"
+                  prompt_text="{directive_operator_message}"
+                  responsible_object_key="{responsible_object_key}"
+                  failure_stage="execution"
+                  directive_action="{directive_action}"
+                  recovery_event_id="{recovery_event_id}"
+                  service_ready_timeout_ms="2000"
+                  response_timeout_ms="120000"/>
+              <ClearEntireCostmap
+                  name="ClearGlobalOpenDoor"
+                  service_name="global_costmap/clear_entirely_global_costmap"/>
+              <ClearEntireCostmap
+                  name="ClearLocalOpenDoor"
+                  service_name="local_costmap/clear_entirely_local_costmap"/>
+            </Sequence>
+
+            <!-- clear_object_then_replan: wait for operator to remove obstacle, then replan -->
+            <Sequence name="ClearObjectThenReplanBranch">
+              <OperatorPrompt
+                  service_name="/operator_decision"
+                  prompt_text="{directive_operator_message}"
+                  responsible_object_key="{responsible_object_key}"
+                  failure_stage="execution"
+                  directive_action="{directive_action}"
+                  recovery_event_id="{recovery_event_id}"
+                  service_ready_timeout_ms="2000"
+                  response_timeout_ms="120000"/>
+              <ClearEntireCostmap
+                  name="ClearGlobalClearObject"
+                  service_name="global_costmap/clear_entirely_global_costmap"/>
+              <ClearEntireCostmap
+                  name="ClearLocalClearObject"
+                  service_name="local_costmap/clear_entirely_local_costmap"/>
+            </Sequence>
+
+            <!-- placeholder for case_3 — never reached in M5 -->
+            <ForceFailure name="UnusedOperatorCase">
+              <AlwaysSuccess/>
+            </ForceFailure>
+
+            <!-- default: truly unexpected directive string -->
+            <ForceFailure name="UnexpectedDirective">
+              <AlwaysSuccess/>
+            </ForceFailure>
+
+          </Switch3>
 
         </Switch3>
 

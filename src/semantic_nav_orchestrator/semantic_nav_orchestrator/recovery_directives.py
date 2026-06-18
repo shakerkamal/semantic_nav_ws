@@ -235,3 +235,62 @@ def build_give_up_directive(
         escalate_to_operator=True,
         recovery_event_id=context.recovery_event_id,
     )
+
+
+def build_open_door_directive(
+    proposal: LLMProposal,
+    context: ProposalContext,
+    responsible_object_key: str,
+) -> Directive:
+    """Build an open_door_then_replan directive for openable door obstacles.
+
+    Only reached when responsible_openable=True and object tag is 'door'.
+    Overrides the LLM's wait_then_replan with operator-escalated door action.
+    """
+    key = (responsible_object_key or "").strip()
+    return Directive(
+        action="open_door_then_replan",
+        responsible_object_key=key,
+        operator_message=(
+            f"Please open the door blocking the path (object: {key}), then confirm."
+        ),
+        rationale=(
+            "deterministic_override=true "
+            "original_llm_action=wait_then_replan "
+            "override_action=open_door_then_replan "
+            f"reason=responsible_openable=true key={key}"
+        ),
+        confidence_percent=int(proposal.confidence_percent),
+        escalate_to_operator=True,
+        recovery_event_id=context.recovery_event_id,
+    )
+
+
+def build_clear_object_directive(
+    proposal: LLMProposal,
+    context: ProposalContext,
+    responsible_object_key: str,
+) -> Directive:
+    """Build a clear_object_then_replan directive for clearable non-animate obstacles.
+
+    Only reached when responsible_clearable=True, safety_class not in
+    {'human', 'animal'}, and tag not in the animate-object set.
+    Overrides the LLM's wait_then_replan with operator-escalated clear action.
+    """
+    key = (responsible_object_key or "").strip()
+    return Directive(
+        action="clear_object_then_replan",
+        responsible_object_key=key,
+        operator_message=(
+            f"Please clear the object blocking the path (object: {key}), then confirm."
+        ),
+        rationale=(
+            "deterministic_override=true "
+            "original_llm_action=wait_then_replan "
+            "override_action=clear_object_then_replan "
+            f"reason=responsible_clearable=true key={key}"
+        ),
+        confidence_percent=int(proposal.confidence_percent),
+        escalate_to_operator=True,
+        recovery_event_id=context.recovery_event_id,
+    )

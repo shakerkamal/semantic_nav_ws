@@ -42,6 +42,11 @@ def generate_launch_description():
     bt_xml_path = LaunchConfiguration('bt_xml_path')
     orchestration_mode = LaunchConfiguration('orchestration_mode')
 
+    # Operator I/O options.
+    enable_operator_io = LaunchConfiguration('enable_operator_io')
+    operator_auto_ack_for_dev = LaunchConfiguration('operator_auto_ack_for_dev')
+    operator_prompt_timeout_sec = LaunchConfiguration('operator_prompt_timeout_sec')
+
     # Recovery trigger layer options.
     use_recovery_trigger_layer = LaunchConfiguration('use_recovery_trigger_layer')
     plan_topic = LaunchConfiguration('plan_topic')
@@ -250,6 +255,22 @@ def generate_launch_description():
         description='Orchestration mode: pipeline | bt_led.',
     )
 
+    enable_operator_io_arg = DeclareLaunchArgument(
+        'enable_operator_io',
+        default_value='true',
+        description='Launch operator_io_node to serve /operator_decision for BT-LR M5.',
+    )
+    operator_auto_ack_for_dev_arg = DeclareLaunchArgument(
+        'operator_auto_ack_for_dev',
+        default_value='false',
+        description='Auto-acknowledge all operator prompts without stdin (dev/CI only).',
+    )
+    operator_prompt_timeout_sec_arg = DeclareLaunchArgument(
+        'operator_prompt_timeout_sec',
+        default_value='0.0',
+        description='Stdin timeout (sec) for operator prompts; 0.0 disables timeout.',
+    )
+
     aws_small_house_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(
@@ -377,6 +398,18 @@ def generate_launch_description():
         }]
     )
 
+    operator_io_node = Node(
+        package='semantic_nav_operator_io',
+        executable='operator_io_node',
+        name='operator_io_node',
+        output='screen',
+        condition=IfCondition(enable_operator_io),
+        parameters=[{
+            'auto_ack_for_dev': operator_auto_ack_for_dev,
+            'prompt_timeout_sec': operator_prompt_timeout_sec,
+        }],
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         localization_arg,
@@ -410,6 +443,9 @@ def generate_launch_description():
         bt_xml_path_arg,
         query_arg,
         orchestration_mode_arg,
+        enable_operator_io_arg,
+        operator_auto_ack_for_dev_arg,
+        operator_prompt_timeout_sec_arg,
 
         aws_small_house_sim_launch,
 
@@ -430,6 +466,7 @@ def generate_launch_description():
 
         semantic_core_launch,
         semantic_llm_launch,
+        operator_io_node,
 
         # Orchestrator starts after Nav2 is up (10 s) so bt_navigator is ready
         # to accept NavigateToPose goals before any query arrives.

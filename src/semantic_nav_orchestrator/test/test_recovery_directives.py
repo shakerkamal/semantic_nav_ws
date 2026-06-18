@@ -7,6 +7,8 @@ from semantic_nav_orchestrator.recovery_directives import (
     build_wait_then_replan_directive,
     OverrideConfig,
     build_give_up_directive,
+    build_open_door_directive,
+    build_clear_object_directive,
 )
 
 
@@ -409,3 +411,51 @@ def test_give_up_uses_default_rationale_when_empty():
     assert directive.escalate_to_operator is True
     assert directive.rationale == "LLM returned terminal give_up"
     assert directive.confidence_percent == 55
+
+
+# ---- build_open_door_directive / build_clear_object_directive ---------------
+
+def test_open_door_directive_sets_action_and_key():
+    proposal = LLMProposal(
+        action="wait_then_replan",
+        rationale="LLM wants to wait.",
+        confidence_percent=72,
+    )
+    directive = build_open_door_directive(proposal, _ctx(), responsible_object_key="door:3")
+    assert directive.action == "open_door_then_replan"
+    assert directive.responsible_object_key == "door:3"
+    assert directive.escalate_to_operator is True
+    assert "door:3" in directive.operator_message
+    assert "deterministic_override=true" in directive.rationale
+    assert "open_door_then_replan" in directive.rationale
+    assert directive.confidence_percent == 72
+    assert directive.recovery_event_id == "event-1"
+
+
+def test_open_door_directive_strips_whitespace_from_key():
+    proposal = LLMProposal(action="wait_then_replan", confidence_percent=60)
+    directive = build_open_door_directive(proposal, _ctx(), responsible_object_key="  door:1  ")
+    assert directive.responsible_object_key == "door:1"
+
+
+def test_clear_object_directive_sets_action_and_key():
+    proposal = LLMProposal(
+        action="wait_then_replan",
+        rationale="LLM wants to wait.",
+        confidence_percent=65,
+    )
+    directive = build_clear_object_directive(proposal, _ctx(), responsible_object_key="box:7")
+    assert directive.action == "clear_object_then_replan"
+    assert directive.responsible_object_key == "box:7"
+    assert directive.escalate_to_operator is True
+    assert "box:7" in directive.operator_message
+    assert "deterministic_override=true" in directive.rationale
+    assert "clear_object_then_replan" in directive.rationale
+    assert directive.confidence_percent == 65
+    assert directive.recovery_event_id == "event-1"
+
+
+def test_clear_object_directive_strips_whitespace_from_key():
+    proposal = LLMProposal(action="wait_then_replan", confidence_percent=55)
+    directive = build_clear_object_directive(proposal, _ctx(), responsible_object_key=" box:2 ")
+    assert directive.responsible_object_key == "box:2"

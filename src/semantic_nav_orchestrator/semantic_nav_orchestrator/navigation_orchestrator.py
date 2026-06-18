@@ -44,6 +44,8 @@ from semantic_nav_orchestrator.recovery_directives import (
     OverrideConfig,
     ProposalContext,
     build_give_up_directive,
+    build_open_door_directive,
+    build_clear_object_directive,
     build_retry_target_directive,
     build_wait_then_replan_directive,
 )
@@ -3638,6 +3640,23 @@ class NavigationOrchestrator(Node):
             )
 
         if proposal.action == "wait_then_replan":
+            tag = (trigger.responsible_object_tag or "").strip().lower()
+            safety_class = (trigger.responsible_safety_class or "").strip().lower()
+            _animate_tags = {"human", "person", "animal", "dog", "cat"}
+            if trigger.responsible_openable and "door" in tag:
+                return build_open_door_directive(
+                    directive_proposal,
+                    context,
+                    responsible_object_key=trigger.responsible_object_key or "",
+                )
+            if (trigger.responsible_clearable
+                    and safety_class not in {"human", "animal"}
+                    and tag not in _animate_tags):
+                return build_clear_object_directive(
+                    directive_proposal,
+                    context,
+                    responsible_object_key=trigger.responsible_object_key or "",
+                )
             return build_wait_then_replan_directive(
                 directive_proposal,
                 context,
@@ -3694,6 +3713,12 @@ class NavigationOrchestrator(Node):
         elif directive.action == "wait_then_replan":
             value = str(int(directive.wait_seconds))
             outcome = "bt_directive_wait_then_replan"
+        elif directive.action == "open_door_then_replan":
+            value = directive.responsible_object_key
+            outcome = "bt_directive_open_door_then_replan"
+        elif directive.action == "clear_object_then_replan":
+            value = directive.responsible_object_key
+            outcome = "bt_directive_clear_object_then_replan"
         elif directive.action == "give_up":
             value = ""
             outcome = "bt_directive_give_up"
