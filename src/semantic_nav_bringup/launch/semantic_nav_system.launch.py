@@ -252,7 +252,7 @@ def generate_launch_description():
     orchestration_mode_arg = DeclareLaunchArgument(
         'orchestration_mode',
         default_value='bt_led',
-        description='Orchestration mode: pipeline | bt_led.',
+        description='Orchestration mode. bt_led is the only active mode; standalone recovery is legacy and commented out.',
     )
 
     enable_operator_io_arg = DeclareLaunchArgument(

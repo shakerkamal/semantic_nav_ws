@@ -77,7 +77,7 @@ Robot moves (or graceful give_up after 3 retries)
 | `semantic_nav_semantics`  | ament_python | Object-centric semantic resolution: `SemanticStore` (immutable `map_v001.json` snapshot), `resolver_node`, `local_object_query_node`, `StandoffPlanner`, BM25/LLM/Hybrid caption rankers, `SpatialContextBuilder` |
 | `semantic_nav_validator`  | ament_python | Path-existence check via `ComputePathToPose` |
 | `semantic_nav_executor`   | ament_python | Bridges custom `ExecutePose` action to Nav2 `NavigateToPose` |
-| `semantic_nav_orchestrator` | ament_python | Pipeline controller (standalone and `bt_led` modes); serves `/request_recovery` with LLM-backed directive generation, `exclude_object_key` disambiguation, and 3-retry cap |
+| `semantic_nav_orchestrator` | ament_python | BT-led pipeline controller; resolves queries, dispatches `ExecutePose` with custom BT XML, and serves `/request_recovery` with LLM-backed directive generation, `exclude_object_key` disambiguation, and 3-retry cap |
 | `semantic_nav_llm`        | ament_python | NL → constrained semantic intent (llama_ros + GBNF); serves `/propose_recovery` for BT-led LLM recovery proposals |
 | `semantic_nav_nav2_plugins` | ament_cmake (C++) | Nav2 BT plugins: `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, `ValidateSemantic`; BT XML: `semantic_recovery_bt.xml` |
 | `semantic_nav_path_monitor` | ament_python | `plan_intersection_monitor`: monitors Nav2 plan for intersections with semantic obstacles in the costmap |
@@ -869,7 +869,17 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py x_pose:=-2.0 y_po
 9. **Nav2 BT owns the recovery flow** - in `bt_led` mode the orchestrator dispatches a single `ExecutePose` goal and then does not cancel it. All path-failure detection, costmap clearing, and retry sequencing is delegated to `semantic_recovery_bt.xml`. The orchestrator only responds to explicit `/request_recovery` calls from the BT plugin (`EscalateToLLMRecovery`).
 10. **Object-instance multi-disambiguation via `exclude_object_key`** - when a `retry_target` directive would resolve back to the already-blocked instance, `_resolve_target_for_directive` walks all same-tag instances and selects the nearest non-blocked one via `target_object_key` direct lookup (Precedence 1 in the resolver, bypassing caption ranking).
 11. **Retry budget is BT-authoritative** - the Nav2 BT's `RetryUntilSuccessful` node controls the outer retry count; the orchestrator tracks `remaining_retry_budget` separately and returns a `give_up` directive when it reaches 0, which causes the BT's `GiveUpTerminal` subtree to execute and the `ExecutePose` action to return failure.
-12. **Object-centric resolution with ranked candidates** - the resolver scores all instances of an object tag using BM25/LLM/Hybrid caption ranking and returns the highest-scoring navigable instance. The `intent_hint` string from the LLM shifts the ranking toward spatially-qualified targets (e.g. "near the window").
+12. **Object-centric resolution with ranked candidates** - the resolver scores all instances of an object tag using BM25/LLM/Hybrid caption ranking and returns the highest-scoring navigable instance. The `intent_hint` string from the LLM shifts the ranking toward spatially-qualified targets (e.g. "near the window"). Offline eval on 40 single-tag fixtures (GPU-accelerated llama_ros, 2026-06-18):
+
+    | Ranker | Top-1 | Top-3 | LLM invocation rate | Notes |
+    |---|---|---|---|---|
+    | BM25 | 87.5% | 100.0% | 0% | Baseline; zero LLM cost |
+    | BM25+spatial | 90.0% | 97.5% | 0% | |
+    | LLM-text | 90.0% | 95.0% | 100% | ~3.2 s/query |
+    | LLM+spatial | 87.5% | 95.0% | 100% | |
+    | **Hybrid δ=0.5** | **90.0%** | **100.0%** | **48%** | **Production default** |
+
+    Hybrid δ=0.5 matches pure-LLM top-1 accuracy, achieves 100% top-3 (same as BM25 baseline), and invokes the LLM on only 48% of queries — halving average latency relative to pure LLM. Delta value is robust: accuracy is flat from δ=0.2 to δ=inf. Production default is `ranker=bm25` (param); switch to `ranker=hybrid` with llama_ros running to activate the full hybrid path.
 
 ### Expected behavior summary
 
@@ -885,7 +895,9 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py x_pose:=-2.0 y_po
 | Retry budget exhausted (3 attempts) | Orchestrator returns `give_up`; BT executes `GiveUpTerminal` subtree; `ExecutePose` returns failure |
 | Persistent blockage (closed door) | After 3 retries all blocked, `give_up` reached cleanly |
 | Human/animal blocking path | `signal_wait_recheck` directive: robot emits polite-clear signal, waits, re-checks path |
-| Clearable object blocking path | `wait_then_replan` directive: robot waits `wait_seconds`, then BT replans |
+| Clearable non-animate object blocking path | `clear_object_then_replan` directive: operator prompted to remove obstacle, then BT clears costmaps and replans |
+| Non-clearable static object blocking path | `wait_then_replan` directive: robot waits `wait_seconds`, then BT replans |
+| Door blocking path (`responsible_openable=True`) | `open_door_then_replan` directive: operator prompted to open door, then BT clears costmaps and replans |
 
 ---
 
@@ -893,8 +905,8 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py x_pose:=-2.0 y_po
 
 1. **Live semantic DB topic ingestion** - re-add a `SemanticDB` topic subscriber to `resolver_node` that atomically replaces the snapshot at runtime, bumping `db_version`. The interfaces (`SemanticDB.msg`, the `db_version` / `db_stamp` fields on `ResolveLocation`) and the orchestrator-side propagation are already in place; only the subscriber needs to come back.
 2. ~~**Recovery Orchestration with LLM**~~ - **DONE (BT-LR M1–M4, 2026-06-12).** Nav2 BT with `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, and `ValidateSemantic` C++ plugins; GBNF-constrained `ProposeRecovery` endpoint; `exclude_object_key` multi-instance disambiguation; up to 3 retries with `give_up` terminal. E2E validated (Scenarios 1 & 4, 2026-06-13).
-3. **E2E Scenario 2 & 3 validation** - Scenario 2: mid-flight clearable obstacle → `wait_then_replan` (requires map injection with clearable object on path). Scenario 3: human-class blockage → `signal_wait_recheck` (requires person object in map_v001.json).
+3. ~~**E2E Scenario 2 & 3 validation**~~ - **DONE (2026-06-18).** Scenario 2a: clearable non-animate obstacle → `clear_object_then_replan` (direct service call, `responsible_clearable=True`, `safety_class=none`). Scenario 2b: non-clearable static obstacle → `wait_then_replan` passive (direct service call, `responsible_clearable=False`). Scenario 3: human-class blockage → `signal_wait_recheck` directive (`emit_signal_during_wait=True`, `signal_attempts=3`, direct service call with `safety_class=human`).
 4. **Optional llama_ros launch integration** - `navigator_node` is now launched by `semantic_nav_system.launch.py` by default, but the heavyweight `llama_node` model server is still launched separately. A future launch file may optionally include `llama_node` once model startup, Python environment isolation, and memory behavior are stable.
-5. **Ranker evaluation with live LLM** - run the full offline eval harness (`ranker_eval`) with `llama_ros` running to capture real LLM ranker accuracy vs BM25 baseline; generate plots with `plot_ranker_eval`; populate §15.12 with real numbers.
+5. ~~**Ranker evaluation with live LLM**~~ - **DONE (2026-06-18).** Full 40-fixture offline eval with GPU-accelerated llama_ros. Results in `eval/results_full.csv`; plots in `eval/`. Production recommendation: `hybrid δ=0.5` (90% top-1, 100% top-3, 48% LLM invocation rate). See §15.12 for full table.
 6. **Post-failure orchestrator policies** - re-resolve / re-validate on failure, optionally gated on `db_version` change.
 7. **Snapshot immutability during active navigation** - when live DB updates return, ensure an in-flight goal keeps using the snapshot it was resolved against.
