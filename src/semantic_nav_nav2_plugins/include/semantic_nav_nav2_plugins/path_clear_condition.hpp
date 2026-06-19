@@ -15,14 +15,33 @@ namespace semantic_nav_nav2_plugins
 {
 
 /**
+ * @brief Metrics returned by PathClearCondition::isCorridorBlocked.
+ *
+ * Severity fields (blocked_poses, blocked_fraction, max_run_length_m) drive the
+ * allow_geometric_detour_first gating in tick(): minor local obstacles that Nav2
+ * can replan around return any_blocked=true but low severity, so tick() returns
+ * SUCCESS and lets Nav2 handle them without escalating to semantic recovery.
+ */
+struct BlockageMetrics
+{
+  bool any_blocked{false};
+  int blocked_poses{0};          // path poses with at least one lethal sample
+  int total_poses{0};            // total path poses checked within lookahead
+  double blocked_fraction{0.0};  // blocked_poses / total_poses
+  double max_run_length_m{0.0};  // longest consecutive blocked stretch (path distance)
+  geometry_msgs::msg::Point centroid{};
+  float extent_m{0.0f};          // approx blocked-region diameter
+};
+
+/**
  * @brief BT condition node that checks whether the active path corridor is blocked.
  *
  * Preferred input is the BT blackboard path="{path}" produced by ComputePathToPose.
  * The /plan subscription is only a fallback/debug source.
  *
  * Returns:
- *   SUCCESS: no path/costmap data yet, or corridor is clear.
- *   FAILURE: lethal cells persist inside the sampled path corridor for debounce_ticks.
+ *   SUCCESS: corridor clear, or blockage is minor (Nav2 can replan around it).
+ *   FAILURE: significant blockage persists for debounce_ticks consecutive ticks.
  *
  * On FAILURE, writes:
  *   blockage_centroid
@@ -40,19 +59,21 @@ public:
   static BT::PortsList providedPorts();
 
   /**
-   * @brief Pure helper for unit tests.
+   * @brief Pure helper exposed for unit tests.
    *
-   * Samples the first lookahead_m metres of path against the occupancy grid.
-   * Around each path pose, samples cells within sample_radius_m.
+   * Samples the first lookahead_m metres of path against the occupancy grid
+   * and returns raw blockage metrics. Severity gating (min_blocked_samples etc.)
+   * is applied in tick(), not here.
+   *
+   * When sample_radius_m == 0.0, checks only the costmap cell containing each
+   * plan pose (no distance filter applied).
    */
-  static bool isCorridorBlocked(
+  static BlockageMetrics isCorridorBlocked(
     const nav_msgs::msg::Path & path,
     const nav_msgs::msg::OccupancyGrid & costmap,
     int lethal_threshold,
     double lookahead_m,
-    double sample_radius_m,
-    geometry_msgs::msg::Point & centroid_out,
-    float & extent_out);
+    double sample_radius_m);
 
 private:
   rclcpp::Node::SharedPtr node_;

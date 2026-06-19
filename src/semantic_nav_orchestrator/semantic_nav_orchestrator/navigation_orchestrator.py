@@ -49,7 +49,6 @@ from semantic_nav_orchestrator.recovery_directives import (
     build_retry_target_directive,
     build_wait_then_replan_directive,
 )
-from semantic_nav_interfaces.msg import RecoveryTrigger
 
 
 _OBJECT_KEY_RE = re.compile(r"[a-z][a-z0-9 _]*:\d+")
@@ -222,8 +221,14 @@ class NavigationOrchestrator(Node):
         self.declare_parameter("require_recovery_approval", False)
         self.declare_parameter("allow_stdin_intervention", True)
 
+        default_bt_xml_path = os.path.join(
+            get_package_share_directory("semantic_nav_nav2_plugins"),
+            "config",
+            "semantic_recovery_bt.xml",
+        )
+
         self.declare_parameter('planner_id', '')
-        self.declare_parameter('behavior_tree', '')
+        self.declare_parameter('behavior_tree', default_bt_xml_path)
         self.declare_parameter('enable_validation', True)
 
         self.declare_parameter('service_wait_timeout_sec', 30.0)
@@ -237,13 +242,6 @@ class NavigationOrchestrator(Node):
         # BT parameters for recovery triggering and logging
         self.declare_parameter("recovery_status_topic", "/recovery_status")
         self.declare_parameter("request_recovery_service", "/request_recovery")
-        self.declare_parameter("recovery_trigger_topic", "/recovery_trigger")
-        self.declare_parameter("enable_bt_recovery_trigger", True)
-        self.declare_parameter("enable_plan_intersection_trigger", True)
-        self.declare_parameter("enable_stall_watchdog", True)
-        self.declare_parameter("stall_distance_epsilon_m", 0.05)
-        self.declare_parameter("stall_window_sec", 4.0)
-        self.declare_parameter("stall_nav2_recoveries_cap", 2)
         self.declare_parameter("responsible_object_debounce_sec", 2.0)
         self.declare_parameter("unknown_blockage_debounce_sec", 1.0)
         self.declare_parameter("bbox_inflation_m", 0.20)
@@ -322,13 +320,6 @@ class NavigationOrchestrator(Node):
             .integer_value
         )
 
-        self._recovery_trigger_topic = self.get_parameter("recovery_trigger_topic").get_parameter_value().string_value
-        self._enable_plan_intersection_trigger = self.get_parameter("enable_plan_intersection_trigger").get_parameter_value().bool_value
-        self._enable_stall_watchdog = self.get_parameter("enable_stall_watchdog").get_parameter_value().bool_value
-        self._stall_distance_epsilon_m = self.get_parameter("stall_distance_epsilon_m").get_parameter_value().double_value
-        self._stall_window_sec = self.get_parameter("stall_window_sec").get_parameter_value().double_value
-        self._stall_nav2_recoveries_cap = self.get_parameter("stall_nav2_recoveries_cap").get_parameter_value().integer_value
-
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
@@ -361,9 +352,6 @@ class NavigationOrchestrator(Node):
         self._fsm_state = RecoveryFSMState.IDLE
         self._active_recovery = False
         self._bt_directive_in_progress = False
-        self._last_trigger: Optional[TriggerInfo] = None
-        self._last_trigger_by_key = {}
-
         self._attempt_records: List[AttemptRecord] = []
 
         self._parse_command_client = self.create_client(
@@ -400,13 +388,12 @@ class NavigationOrchestrator(Node):
         )
         self._publish_recovery_status("RECOVERY_IDLE")
 
-        if self.get_parameter("enable_bt_recovery_trigger").value:
-            self._request_recovery_srv = self.create_service(
-                RequestRecovery,
-                self.get_parameter("request_recovery_service").get_parameter_value().string_value,
-                self._handle_request_recovery,
-                callback_group=self._callback_group,
-            )
+        self._request_recovery_srv = self.create_service(
+            RequestRecovery,
+            self.get_parameter("request_recovery_service").get_parameter_value().string_value,
+            self._handle_request_recovery,
+            callback_group=self._callback_group,
+        )
 
         self._match_responsible_object_service = self.create_service(
             MatchResponsibleObject,
@@ -415,26 +402,9 @@ class NavigationOrchestrator(Node):
             callback_group=self._callback_group,
         )
 
-        self._recovery_trigger_sub = None
-        if self._enable_plan_intersection_trigger:
-            self._recovery_trigger_sub = self.create_subscription(
-                RecoveryTrigger,
-                self._recovery_trigger_topic,
-                self._handle_recovery_trigger_msg,
-                10,
-                callback_group=self._callback_group,
-            )
-            self._log_stage_info(
-                "RECOVERY/MONITOR",
-                f"Subscribed to recovery trigger topic '{self._recovery_trigger_topic}'.",
-            )
-
         self._goal_handle = None
         self._result_future = None
         self._navigation_goal_active = False
-        self._stall_watchdog_triggered = False
-        self._stall_baseline_distance_remaining: Optional[float] = None
-        self._stall_baseline_stamp_sec: Optional[float] = None
         self._final_success = False
 
         self._resolved_target: Optional[ResolvedTarget] = None
@@ -466,9 +436,6 @@ class NavigationOrchestrator(Node):
             f"propose_recovery_service='{self._propose_recovery_service_name}', "
             f"require_recovery_approval={self._require_recovery_approval}, "
             f"allow_stdin_intervention={self._allow_stdin_intervention}, "
-            f"recovery_trigger_topic='{self._recovery_trigger_topic}', "
-            f"enable_plan_intersection_trigger={self._enable_plan_intersection_trigger}, "
-            f"enable_stall_watchdog={self._enable_stall_watchdog}, "
             f"orchestration_mode='{self._orchestration_mode}', "
         )
 
@@ -898,7 +865,6 @@ class NavigationOrchestrator(Node):
         self._attempt_records = []
         self._active_recovery = False
         self._bt_directive_in_progress = False
-        self._last_trigger = None
 
         self._transition_recovery_fsm(
             RecoveryFSMState.EXECUTING,
@@ -2632,7 +2598,6 @@ class NavigationOrchestrator(Node):
         self._last_feedback_distance_remaining = 0.0
         self._last_feedback_recoveries = 0
         self._last_feedback_pose = None
-        self._reset_stall_watchdog()
 
         if target is None or target.pose is None:
             self._last_execution_message = "No resolved target provided for execution."
@@ -2821,133 +2786,6 @@ class NavigationOrchestrator(Node):
         self._last_feedback_distance_remaining = float(fb.distance_remaining)
         self._last_feedback_recoveries = int(fb.number_of_recoveries)
 
-        self._maybe_fire_stall_watchdog(fb)
-
-    def _reset_stall_watchdog(self) -> None:
-        self._stall_watchdog_triggered = False
-        self._stall_baseline_distance_remaining = None
-        self._stall_baseline_stamp_sec = None
-
-    def _maybe_fire_stall_watchdog(self, fb) -> None:
-        if not self._enable_stall_watchdog:
-            return
-
-        # BT-LED: stall detection is owned by PathClearCondition inside the BT.
-        # PathClearCondition monitors the active plan against the local costmap
-        # on every BT tick and triggers the RecoveryNode when a blockage is
-        # detected. The orchestrator stall watchdog must not run in parallel.
-        if self._orchestration_mode == "bt_led":
-            return
-
-        if self._stall_watchdog_triggered:
-            return
-
-        if self._active_recovery or not self._navigation_goal_active:
-            return
-
-        if self._fsm_state != RecoveryFSMState.EXECUTING:
-            return
-
-        try:
-            distance_remaining = float(fb.distance_remaining)
-            nav2_recoveries = int(fb.number_of_recoveries)
-        except Exception:
-            return
-
-        if not math.isfinite(distance_remaining):
-            return
-
-        now = time.monotonic()
-
-        if self._stall_baseline_distance_remaining is None:
-            self._stall_baseline_distance_remaining = distance_remaining
-            self._stall_baseline_stamp_sec = now
-            return
-
-        trigger_reason = ""
-
-        if (
-            self._stall_nav2_recoveries_cap > 0
-            and nav2_recoveries >= self._stall_nav2_recoveries_cap
-        ):
-            trigger_reason = (
-                f"nav2_recoveries_cap_reached:{nav2_recoveries}"
-            )
-        else:
-            distance_delta = abs(
-                distance_remaining - float(self._stall_baseline_distance_remaining)
-            )
-
-            if distance_delta > self._stall_distance_epsilon_m:
-                self._stall_baseline_distance_remaining = distance_remaining
-                self._stall_baseline_stamp_sec = now
-                return
-
-            elapsed = now - float(self._stall_baseline_stamp_sec or now)
-            if elapsed >= self._stall_window_sec:
-                trigger_reason = (
-                    f"no_progress_for_{elapsed:.2f}s:"
-                    f"distance_delta={distance_delta:.3f}"
-                )
-
-        if not trigger_reason:
-            return
-
-        self._stall_watchdog_triggered = True
-        self._raise_stall_watchdog_trigger(
-            reason=trigger_reason,
-            current_pose=fb.current_pose,
-            distance_remaining=distance_remaining,
-            nav2_recoveries=nav2_recoveries,
-        )
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _raise_stall_watchdog_trigger(). Stall
-    # detection is owned by PathClearCondition BT node in bt_led mode.
-    # ======================================================================
-#     def _raise_stall_watchdog_trigger(
-#         self,
-#         reason: str,
-#         current_pose: PoseStamped,
-#         distance_remaining: float,
-#         nav2_recoveries: int,
-#     ) -> None:
-#         blockage_centroid = Point()
-#         if current_pose is not None:
-#             blockage_centroid.x = float(current_pose.pose.position.x)
-#             blockage_centroid.y = float(current_pose.pose.position.y)
-#             blockage_centroid.z = float(current_pose.pose.position.z)
-# 
-#         trigger = TriggerInfo(
-#             trigger_source="stall_watchdog",
-#             failure_stage="execution",
-#             nav2_message=(
-#                 f"Controller stall watchdog fired: {reason}; "
-#                 f"distance_remaining={distance_remaining:.3f}; "
-#                 f"nav2_recoveries={nav2_recoveries}"
-#             ),
-#             robot_pose=current_pose,
-#             match_type="unknown",
-#             blockage_centroid=blockage_centroid,
-#             blockage_extent_m=0.0,
-#             debounce_key=f"stall_watchdog:{reason}",
-#             stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
-#         )
-# 
-#         status = self._on_trigger(trigger)
-# 
-#         self._log_stage_warn(
-#             "RECOVERY/STALL",
-#             (
-#                 f"Stall watchdog trigger processed: status={status}, "
-#                 f"reason='{reason}', distance_remaining={distance_remaining:.3f}, "
-#                 f"nav2_recoveries={nav2_recoveries}"
-#             ),
-#         )
-# 
-#         if status == "accepted":
-#             self._cancel_active_goal_for_recovery(trigger)
-
     def cancel_goal(self):
         if self._goal_handle is None:
             return
@@ -3049,33 +2887,9 @@ class NavigationOrchestrator(Node):
         return f"centroid:{x:.1f},{y:.1f}"
 
 
-    def _is_duplicate_trigger(self, trigger: TriggerInfo) -> bool:
-        now = time.monotonic()
-        key = self._trigger_bucket_key(trigger)
-
-        debounce_sec = (
-            float(self.get_parameter("responsible_object_debounce_sec").value)
-            if trigger.responsible_object_key
-            else float(self.get_parameter("unknown_blockage_debounce_sec").value)
-        )
-
-        last = self._last_trigger_by_key.get(key)
-        if last is not None and (now - last) < debounce_sec:
-            return True
-
-        self._last_trigger_by_key[key] = now
-        return False
-    
     def _finite_point(self, point: Point) -> bool:
         values = [point.x, point.y, point.z]
         return all(math.isfinite(float(v)) for v in values)
-
-    def _trigger_is_navigation_source(self, trigger: TriggerInfo) -> bool:
-        return trigger.trigger_source in {
-            "action_backstop",
-            "plan_intersection_monitor",
-            "stall_watchdog",
-        }
 
     def _validate_trigger(self, trigger: TriggerInfo) -> bool:
         if not trigger.trigger_source:
@@ -3146,76 +2960,6 @@ class NavigationOrchestrator(Node):
 #         # and the navigation worker observes the resulting ExecutePose terminal state.
 #         threading.Thread(target=self.cancel_goal, daemon=True).start()
 
-    def _handle_recovery_trigger_msg(self, msg: RecoveryTrigger) -> None:
-        if not self._enable_plan_intersection_trigger:
-            return
-
-        trigger = TriggerInfo(
-            trigger_source=msg.trigger_source or "plan_intersection_monitor",
-            failure_stage="execution",
-            nav2_message=msg.note,
-            robot_pose=self._make_recovery_pose(self._resolved_target),
-            responsible_object_key=msg.responsible_object_key,
-            match_type=msg.match_type or "unknown",
-            blockage_centroid=msg.blockage_centroid,
-            blockage_extent_m=float(msg.blockage_extent_m),
-            blocked_plan_index_lo=int(msg.blocked_plan_index_lo),
-            blocked_plan_index_hi=int(msg.blocked_plan_index_hi),
-            debounce_key=msg.debounce_key,
-            stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
-        )
-
-        if self._orchestration_mode == "bt_led":
-            if not self._validate_trigger(trigger):
-                status = "rejected"
-            else:
-                self._augment_trigger_with_responsible_object(trigger)
-                self._last_trigger = trigger
-                status = "cached_for_bt"
-
-            self._log_stage_info(
-                "RECOVERY/MONITOR",
-                (
-                    f"BT-led mode cached RecoveryTrigger: status={status}, "
-                    f"source='{trigger.trigger_source}', match_type='{trigger.match_type}', "
-                    f"key='{self._trigger_bucket_key(trigger)}', "
-                    f"blocked_indices=[{trigger.blocked_plan_index_lo}, {trigger.blocked_plan_index_hi}], "
-                    f"extent={trigger.blockage_extent_m:.3f}. "
-                    "No external Nav2 cancel performed."
-                ),
-            )
-            return
-
-        # ======================================================================
-        # LEGACY (standalone mode) — standalone path in
-        # _handle_recovery_trigger_msg().
-        # ======================================================================
-#         # STANDALONE / PIPELINE MODE: orchestrator owns goal cancellation and
-#         # the full recovery dispatch. Not active when orchestration_mode=bt_led.
-#         status = self._on_trigger(trigger)
-# 
-#         self._log_stage_info(
-#             "RECOVERY/MONITOR",
-#             (
-#                 f"RecoveryTrigger processed: status={status}, "
-#                 f"source='{trigger.trigger_source}', match_type='{trigger.match_type}', "
-#                 f"key='{self._trigger_bucket_key(trigger)}', "
-#                 f"blocked_indices=[{trigger.blocked_plan_index_lo}, {trigger.blocked_plan_index_hi}], "
-#                 f"extent={trigger.blockage_extent_m:.3f}"
-#             ),
-#         )
-# 
-#         if status == "accepted":
-#             self._cancel_active_goal_for_recovery(trigger)
-# 
-#     # ---------------------------------------------------------------------------
-#     # STANDALONE / PIPELINE MODE trigger handlers — not active in bt_led mode.
-#     # In bt_led mode the BT's RecoveryNode owns all trigger processing:
-#     #   PathClearCondition fires → BT preempts FollowPath → EscalateToLLMRecovery
-#     #   → orchestrator serves /request_recovery → BT executes directive.
-#     # The methods below (_on_trigger, _accept_trigger, _cancel_active_goal_for_recovery)
-#     # are never called when orchestration_mode=bt_led.
-    # ---------------------------------------------------------------------------
     # ======================================================================
     # LEGACY (standalone mode) — _on_trigger(). In bt_led mode
     # EscalateToLLMRecovery calls /request_recovery directly.
@@ -3325,13 +3069,6 @@ class NavigationOrchestrator(Node):
         if self._bt_directive_in_progress:
             return "already_in_recovery"
 
-        if trigger.trigger_source != "bt_recovery_plugin" and self._is_duplicate_trigger(trigger):
-            return "duplicate"
-
-        if not trigger.trigger_source:
-            return "rejected"
-
-        self._last_trigger = trigger
         return "accepted"
 
     def _remaining_bt_retry_budget(self) -> int:

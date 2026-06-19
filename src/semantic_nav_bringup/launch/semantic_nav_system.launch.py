@@ -8,7 +8,6 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
@@ -39,22 +38,10 @@ def generate_launch_description():
     debug_prompt = LaunchConfiguration('debug_prompt')
     debug_grammar = LaunchConfiguration('debug_grammar')
 
-    bt_xml_path = LaunchConfiguration('bt_xml_path')
-    orchestration_mode = LaunchConfiguration('orchestration_mode')
-
     # Operator I/O options.
     enable_operator_io = LaunchConfiguration('enable_operator_io')
     operator_auto_ack_for_dev = LaunchConfiguration('operator_auto_ack_for_dev')
     operator_prompt_timeout_sec = LaunchConfiguration('operator_prompt_timeout_sec')
-
-    # Recovery trigger layer options.
-    use_recovery_trigger_layer = LaunchConfiguration('use_recovery_trigger_layer')
-    plan_topic = LaunchConfiguration('plan_topic')
-    global_costmap_topic = LaunchConfiguration('global_costmap_topic')
-    recovery_trigger_topic = LaunchConfiguration('recovery_trigger_topic')
-    occupied_threshold = LaunchConfiguration('occupied_threshold')
-    sample_radius_m = LaunchConfiguration('sample_radius_m')
-    recovery_trigger_debounce_sec = LaunchConfiguration('recovery_trigger_debounce_sec')
 
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
@@ -93,15 +80,15 @@ def generate_launch_description():
         ),
         description='Absolute path to aws-robomaker-small-house-world'
     )
-    
+
     nav2_params_file_arg = DeclareLaunchArgument(
-    'nav2_params_file',
-    default_value=os.path.join(
-        bringup_dir,
-        'config',
-        'nav2_semantic_params.yaml'
-    ),
-    description='Absolute path to the Nav2 params file'
+        'nav2_params_file',
+        default_value=os.path.join(
+            bringup_dir,
+            'config',
+            'nav2_semantic_params.yaml'
+        ),
+        description='Absolute path to the Nav2 params file'
     )
 
     enable_llm_arg = DeclareLaunchArgument(
@@ -194,67 +181,6 @@ def generate_launch_description():
         description='Print GBNF grammar sent from navigator_node to llama_ros'
     )
 
-    use_recovery_trigger_layer_arg = DeclareLaunchArgument(
-        'use_recovery_trigger_layer',
-        default_value='false',
-        description='Launch the legacy plan_intersection_monitor (redundant with BT PathClearCondition; disabled by default)'
-    )
-
-    plan_topic_arg = DeclareLaunchArgument(
-        'plan_topic',
-        default_value='/plan',
-        description='Nav2 global plan topic monitored by plan_intersection_monitor'
-    )
-
-    global_costmap_topic_arg = DeclareLaunchArgument(
-        'global_costmap_topic',
-        default_value='/global_costmap/costmap',
-        description='Global costmap occupancy grid topic monitored by plan_intersection_monitor'
-    )
-
-    recovery_trigger_topic_arg = DeclareLaunchArgument(
-        'recovery_trigger_topic',
-        default_value='/recovery_trigger',
-        description='RecoveryTrigger topic published by plan_intersection_monitor and consumed by the orchestrator'
-    )
-
-    occupied_threshold_arg = DeclareLaunchArgument(
-        'occupied_threshold',
-        default_value='90',
-        description='OccupancyGrid value at or above which a plan cell is considered blocked'
-    )
-
-    sample_radius_m_arg = DeclareLaunchArgument(
-        'sample_radius_m',
-        default_value='0.05',
-        description='Radius around each plan pose sampled for occupied costmap cells'
-    )
-
-    recovery_trigger_debounce_sec_arg = DeclareLaunchArgument(
-        'recovery_trigger_debounce_sec',
-        default_value='1.0',
-        description='Monitor-side debounce window for repeated plan/costmap intersection triggers'
-    )
-
-    bt_xml_path_arg = DeclareLaunchArgument(
-        'bt_xml_path',
-        default_value=os.path.join(
-            get_package_share_directory('semantic_nav_nav2_plugins'),
-            'config', 'semantic_recovery_bt.xml',
-        ),
-        description='Installed path to semantic_recovery_bt.xml; pass to orchestrator via -p behavior_tree:=...',
-    )
-    query_arg = DeclareLaunchArgument(
-        'query',
-        default_value='',
-        description='One-shot navigation query for manual orchestrator run (e.g. "chair").',
-    )
-    orchestration_mode_arg = DeclareLaunchArgument(
-        'orchestration_mode',
-        default_value='bt_led',
-        description='Orchestration mode. bt_led is the only active mode; standalone recovery is legacy and commented out.',
-    )
-
     enable_operator_io_arg = DeclareLaunchArgument(
         'enable_operator_io',
         default_value='true',
@@ -316,15 +242,18 @@ def generate_launch_description():
         }.items()
     )
 
-    rviz_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                nav2_bringup_dir,
-                'launch',
-                'rviz_launch.py'
-            )
-        ),
-        condition=IfCondition(rviz)
+    # Launch RViz2 directly (not via nav2_bringup/rviz_launch.py) so that a
+    # RViz2 crash does NOT cascade-shutdown the whole stack. respawn=True
+    # restarts it automatically; the nav2_bringup shutdown handler is bypassed.
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', os.path.join(nav2_bringup_dir, 'rviz', 'nav2_default_view.rviz')],
+        output='screen',
+        respawn=True,
+        respawn_delay=2.0,
+        condition=IfCondition(rviz),
     )
 
     semantic_core_launch = IncludeLaunchDescription(
@@ -365,39 +294,6 @@ def generate_launch_description():
         }.items()
     )
 
-    recovery_trigger_layer_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                bringup_dir,
-                'launch',
-                'recovery_trigger_layer.launch.py'
-            )
-        ),
-        condition=IfCondition(use_recovery_trigger_layer),
-        launch_arguments={
-            'use_sim_time': use_sim_time,
-            'plan_topic': plan_topic,
-            'costmap_topic': global_costmap_topic,
-            'recovery_trigger_topic': recovery_trigger_topic,
-            'occupied_threshold': occupied_threshold,
-            'sample_radius_m': sample_radius_m,
-            'debounce_sec': recovery_trigger_debounce_sec,
-        }.items()
-    )
-
-    orchestrator_node = Node(
-        package='semantic_nav_orchestrator',
-        executable='navigation_orchestrator',
-        name='navigation_orchestrator',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'orchestration_mode': orchestration_mode,
-            'behavior_tree': bt_xml_path,
-            'query': LaunchConfiguration('query'),
-        }]
-    )
-
     operator_io_node = Node(
         package='semantic_nav_operator_io',
         executable='operator_io_node',
@@ -433,16 +329,6 @@ def generate_launch_description():
         recovery_grammar_path_arg,
         recovery_max_tokens_arg,
 
-        use_recovery_trigger_layer_arg,
-        plan_topic_arg,
-        global_costmap_topic_arg,
-        recovery_trigger_topic_arg,
-        occupied_threshold_arg,
-        sample_radius_m_arg,
-        recovery_trigger_debounce_sec_arg,
-        bt_xml_path_arg,
-        query_arg,
-        orchestration_mode_arg,
         enable_operator_io_arg,
         operator_auto_ack_for_dev_arg,
         operator_prompt_timeout_sec_arg,
@@ -456,22 +342,10 @@ def generate_launch_description():
 
         TimerAction(
             period=5.0,
-            actions=[nav2_launch, rviz_launch]
-        ),
-
-        TimerAction(
-            period=7.0,
-            actions=[recovery_trigger_layer_launch]
+            actions=[nav2_launch, rviz_node]
         ),
 
         semantic_core_launch,
         semantic_llm_launch,
         operator_io_node,
-
-        # Orchestrator starts after Nav2 is up (10 s) so bt_navigator is ready
-        # to accept NavigateToPose goals before any query arrives.
-        TimerAction(
-            period=10.0,
-            actions=[orchestrator_node]
-        ),
     ])

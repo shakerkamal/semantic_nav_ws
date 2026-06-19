@@ -21,6 +21,7 @@ add_library(${library_name} SHARED
   src/validate_semantic.cpp
   src/escalate_to_llm_recovery.cpp
   src/path_clear_condition.cpp
+  src/capture_blockage_context.cpp
   src/query_semantic_context.cpp
   src/register_nodes.cpp
   src/emit_obstacle_signal.cpp

@@ -174,14 +174,11 @@ TEST(PathClearConditionTest, clearCostmapReturnsFalse)
   auto costmap = makeCostmap(20, 20, 0.1f, 0.0f, 0.0f, 0);
   auto path = makeStraightPath(0.05, 0.55, 0.1, 15);
 
-  geometry_msgs::msg::Point centroid;
-  float extent = 0.0f;
-
-  const bool blocked =
+  auto metrics =
     semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
-      path, costmap, 90, 1.5, 0.05, centroid, extent);
+      path, costmap, 90, 1.5, 0.05);
 
-  EXPECT_FALSE(blocked);
+  EXPECT_FALSE(metrics.any_blocked);
 }
 
 TEST(PathClearConditionTest, lethalCellInsideSampleRadiusReturnsTrue)
@@ -193,17 +190,14 @@ TEST(PathClearConditionTest, lethalCellInsideSampleRadiusReturnsTrue)
 
   auto path = makeStraightPath(0.05, 0.55, 0.1, 15);
 
-  geometry_msgs::msg::Point centroid;
-  float extent = 0.0f;
-
-  const bool blocked =
+  auto metrics =
     semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
-      path, costmap, 90, 1.5, 0.08, centroid, extent);
+      path, costmap, 90, 1.5, 0.08);
 
-  EXPECT_TRUE(blocked);
-  EXPECT_NEAR(centroid.x, 0.55, 0.11);
-  EXPECT_NEAR(centroid.y, 0.55, 0.11);
-  EXPECT_GT(extent, 0.0f);
+  EXPECT_TRUE(metrics.any_blocked);
+  EXPECT_NEAR(metrics.centroid.x, 0.55, 0.11);
+  EXPECT_NEAR(metrics.centroid.y, 0.55, 0.11);
+  EXPECT_GT(metrics.extent_m, 0.0f);
 }
 
 TEST(PathClearConditionTest, lethalCellOutsideLookaheadReturnsFalse)
@@ -215,14 +209,11 @@ TEST(PathClearConditionTest, lethalCellOutsideLookaheadReturnsFalse)
 
   auto path = makeStraightPath(0.05, 0.55, 0.1, 40);
 
-  geometry_msgs::msg::Point centroid;
-  float extent = 0.0f;
-
-  const bool blocked =
+  auto metrics =
     semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
-      path, costmap, 90, 1.5, 0.08, centroid, extent);
+      path, costmap, 90, 1.5, 0.08);
 
-  EXPECT_FALSE(blocked);
+  EXPECT_FALSE(metrics.any_blocked);
 }
 
 TEST(PathClearConditionTest, negativeOriginUsesFloorIndexing)
@@ -235,14 +226,11 @@ TEST(PathClearConditionTest, negativeOriginUsesFloorIndexing)
 
   auto path = makeStraightPath(-0.45, -0.45, 0.1, 5);
 
-  geometry_msgs::msg::Point centroid;
-  float extent = 0.0f;
-
-  const bool blocked =
+  auto metrics =
     semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
-      path, costmap, 90, 1.0, 0.08, centroid, extent);
+      path, costmap, 90, 1.0, 0.08);
 
-  EXPECT_TRUE(blocked);
+  EXPECT_TRUE(metrics.any_blocked);
 }
 
 TEST(PathClearConditionTest, malformedCostmapReturnsFalse)
@@ -252,14 +240,69 @@ TEST(PathClearConditionTest, malformedCostmapReturnsFalse)
 
   auto path = makeStraightPath(0.05, 0.55, 0.1, 10);
 
-  geometry_msgs::msg::Point centroid;
-  float extent = 0.0f;
-
-  const bool blocked =
+  auto metrics =
     semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
-      path, costmap, 90, 1.0, 0.08, centroid, extent);
+      path, costmap, 90, 1.0, 0.08);
 
-  EXPECT_FALSE(blocked);
+  EXPECT_FALSE(metrics.any_blocked);
+}
+
+TEST(PathClearConditionTest, sampleRadiusZeroChecksContainingCell)
+{
+  // Costmap 10x10, resolution=0.1m, origin=(0,0). Cell (0,5) is lethal.
+  auto costmap = makeCostmap(10, 10, 0.1f, 0.0f, 0.0f, 0);
+  costmap.data[5 * 10 + 0] = 100;
+
+  // Plan pose at (0.07, 0.55): inside cell (0,5) but NOT at the cell center (0.05, 0.55).
+  // Old code: distance (0.07-0.05)^2+(0.55-0.55)^2 = 0.02 > 0.0 → skipped → no detection.
+  // New code: sample_radius_m==0 skips the distance filter → cell checked → detected.
+  auto path = makeStraightPath(0.07, 0.55, 0.1, 5);
+
+  auto metrics =
+    semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
+      path, costmap, 90, 1.5, 0.0);
+
+  EXPECT_TRUE(metrics.any_blocked);
+}
+
+TEST(PathClearConditionTest, singleLethalPoseHasMinorMetrics)
+{
+  // Only one path pose is blocked — severity metrics should be small.
+  auto costmap = makeCostmap(20, 20, 0.1f, 0.0f, 0.0f, 0);
+  costmap.data[5 * 20 + 5] = 100;  // cell at ~(0.55, 0.55)
+
+  // 15 poses along y=0.55; only the pose near x=0.55 hits the blocked cell.
+  auto path = makeStraightPath(0.05, 0.55, 0.1, 15);
+
+  auto metrics =
+    semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
+      path, costmap, 90, 1.5, 0.08);
+
+  EXPECT_TRUE(metrics.any_blocked);
+  EXPECT_EQ(metrics.blocked_poses, 1);
+  EXPECT_LT(metrics.blocked_fraction, 0.1);
+  EXPECT_LT(metrics.max_run_length_m, 0.2);
+}
+
+TEST(PathClearConditionTest, fullRowBlockedHasLargeMetrics)
+{
+  // Entire row at y≈0.55 is lethal — severity metrics should be large.
+  auto costmap = makeCostmap(20, 20, 0.1f, 0.0f, 0.0f, 0);
+  for (int mx = 0; mx < 20; ++mx) {
+    costmap.data[5 * 20 + mx] = 100;
+  }
+
+  // 15 poses along y=0.55, step=0.1m → all within lookahead are blocked.
+  auto path = makeStraightPath(0.05, 0.55, 0.1, 15);
+
+  auto metrics =
+    semantic_nav_nav2_plugins::PathClearCondition::isCorridorBlocked(
+      path, costmap, 90, 1.5, 0.05);
+
+  EXPECT_TRUE(metrics.any_blocked);
+  EXPECT_EQ(metrics.blocked_poses, metrics.total_poses);
+  EXPECT_NEAR(metrics.blocked_fraction, 1.0, 0.01);
+  EXPECT_GT(metrics.max_run_length_m, 1.0);  // 15 poses × 0.1m step ≈ 1.4m run
 }
 
 // ---- QuerySemanticContext -----------------------------------------------

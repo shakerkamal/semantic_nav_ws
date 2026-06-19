@@ -6,6 +6,7 @@
 #include "semantic_nav_nav2_plugins/escalate_to_llm_recovery.hpp"
 #include "semantic_nav_nav2_plugins/validate_semantic.hpp"
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
+#include "semantic_nav_nav2_plugins/capture_blockage_context.hpp"
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
@@ -18,6 +19,8 @@ BT_REGISTER_NODES(factory)
     "EscalateToLLMRecovery");
   factory.registerNodeType<semantic_nav_nav2_plugins::PathClearCondition>(
     "PathClearCondition");
+  factory.registerNodeType<semantic_nav_nav2_plugins::CaptureBlockageContext>(
+    "CaptureBlockageContext");
   factory.registerNodeType<semantic_nav_nav2_plugins::QuerySemanticContext>(
     "QuerySemanticContext");
   factory.registerNodeType<semantic_nav_nav2_plugins::EmitObstacleSignal>(

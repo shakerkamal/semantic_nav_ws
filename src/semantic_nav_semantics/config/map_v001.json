@@ -1987,5 +1987,22 @@
       0.21
     ],
     "bbox_volume": 0.17
+  },
+  "object_118": {
+    "id": 117,
+    "object_tag": "person",
+    "object_caption": "A person standing in the room, possibly near the center or in a specific area of the space.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.08,
+      0.4,
+      0.39
+    ],
+    "bbox_center": [
+      1.66,
+      -1.93,
+      0.21
+    ],
+    "bbox_volume": 0.17
   }
 }

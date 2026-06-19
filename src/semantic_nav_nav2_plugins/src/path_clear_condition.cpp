@@ -64,7 +64,7 @@ BT::NodeStatus PathClearCondition::tick()
     costmap = latest_costmap_;
   }
 
-  // No data yet. Treat as clear so startup timing does not trigger false recovery.
+  // No data yet — treat as clear so startup timing does not trigger false recovery.
   if (path.poses.empty() || !costmap) {
     blocked_count_ = 0;
     return BT::NodeStatus::SUCCESS;
@@ -74,34 +74,51 @@ BT::NodeStatus PathClearCondition::tick()
   double lookahead_m{1.5};
   double sample_radius_m{0.05};
   int debounce_ticks{2};
+  double min_blocked_length_m{0.45};
+  int min_blocked_samples{4};
+  double blocked_fraction_threshold{0.30};
+  bool allow_geometric_detour_first{true};
 
   getInput("lethal_threshold", lethal_threshold);
   getInput("lookahead_m", lookahead_m);
   getInput("sample_radius_m", sample_radius_m);
   getInput("debounce_ticks", debounce_ticks);
+  getInput("min_blocked_length_m", min_blocked_length_m);
+  getInput("min_blocked_samples", min_blocked_samples);
+  getInput("blocked_fraction_threshold", blocked_fraction_threshold);
+  getInput("allow_geometric_detour_first", allow_geometric_detour_first);
 
   debounce_ticks = std::max(1, debounce_ticks);
   sample_radius_m = std::max(0.0, sample_radius_m);
 
-  geometry_msgs::msg::Point centroid;
-  float extent{0.0f};
-
-  const bool blocked = isCorridorBlocked(
+  const BlockageMetrics metrics = isCorridorBlocked(
     path,
     *costmap,
     lethal_threshold,
     lookahead_m,
-    sample_radius_m,
-    centroid,
-    extent);
+    sample_radius_m);
 
-  if (!blocked) {
+  if (!metrics.any_blocked) {
     blocked_count_ = 0;
     return BT::NodeStatus::SUCCESS;
   }
 
-  last_centroid_ = centroid;
-  last_extent_ = extent;
+  // Severity gating: if blockage is minor (few poses, short run, low fraction)
+  // return SUCCESS and let Nav2 replan around it without escalating to recovery.
+  if (allow_geometric_detour_first) {
+    const bool minor =
+      (metrics.blocked_poses < min_blocked_samples) ||
+      (metrics.max_run_length_m < min_blocked_length_m) ||
+      (metrics.blocked_fraction < blocked_fraction_threshold);
+    if (minor) {
+      blocked_count_ = 0;
+      return BT::NodeStatus::SUCCESS;
+    }
+  }
+
+  // Significant blockage — apply debounce before firing FAILURE.
+  last_centroid_ = metrics.centroid;
+  last_extent_ = metrics.extent_m;
   blocked_count_ = std::min(blocked_count_ + 1, debounce_ticks + 1);
 
   if (blocked_count_ < debounce_ticks) {
@@ -113,7 +130,12 @@ BT::NodeStatus PathClearCondition::tick()
 
   RCLCPP_DEBUG(
     node_->get_logger(),
-    "[PathClearCondition] blocked centroid=(%.3f, %.3f) extent=%.3f ticks=%d",
+    "[PathClearCondition] FAILURE: poses=%d/%d fraction=%.2f run=%.2fm"
+    " centroid=(%.3f,%.3f) extent=%.3f ticks=%d",
+    metrics.blocked_poses,
+    metrics.total_poses,
+    metrics.blocked_fraction,
+    metrics.max_run_length_m,
     last_centroid_.x,
     last_centroid_.y,
     last_extent_,
@@ -122,33 +144,30 @@ BT::NodeStatus PathClearCondition::tick()
   return BT::NodeStatus::FAILURE;
 }
 
-bool PathClearCondition::isCorridorBlocked(
+BlockageMetrics PathClearCondition::isCorridorBlocked(
   const nav_msgs::msg::Path & path,
   const nav_msgs::msg::OccupancyGrid & costmap,
   int lethal_threshold,
   double lookahead_m,
-  double sample_radius_m,
-  geometry_msgs::msg::Point & centroid_out,
-  float & extent_out)
+  double sample_radius_m)
 {
-  centroid_out = geometry_msgs::msg::Point{};
-  extent_out = 0.0f;
+  BlockageMetrics metrics;
 
   if (path.poses.empty()) {
-    return false;
+    return metrics;
   }
 
   const auto & info = costmap.info;
 
   if (info.width == 0 || info.height == 0 || info.resolution <= 0.0f) {
-    return false;
+    return metrics;
   }
 
   const auto expected_size =
     static_cast<std::size_t>(info.width) * static_cast<std::size_t>(info.height);
 
   if (costmap.data.size() < expected_size) {
-    return false;
+    return metrics;
   }
 
   const double origin_x = info.origin.position.x;
@@ -159,12 +178,17 @@ bool PathClearCondition::isCorridorBlocked(
     0,
     static_cast<int>(std::ceil(sample_radius_m / resolution)));
 
-  std::vector<geometry_msgs::msg::Point> blocked_points;
+  // Globally unique blocked cell positions — for centroid and extent.
+  std::vector<geometry_msgs::msg::Point> all_blocked_points;
   std::unordered_set<std::size_t> seen_indices;
 
   double travelled_m = 0.0;
   double prev_x = path.poses.front().pose.position.x;
   double prev_y = path.poses.front().pose.position.y;
+
+  // Run-length tracking (consecutive blocked path poses).
+  bool run_in_progress = false;
+  double run_start_dist = 0.0;
 
   for (const auto & pose_stamped : path.poses) {
     const double px = pose_stamped.pose.position.x;
@@ -181,14 +205,16 @@ bool PathClearCondition::isCorridorBlocked(
     const int cx = static_cast<int>(std::floor((px - origin_x) / resolution));
     const int cy = static_cast<int>(std::floor((py - origin_y) / resolution));
 
+    bool this_pose_blocked = false;
+
     for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
       for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
         const int mx = cx + dx;
         const int my = cy + dy;
 
         if (mx < 0 || my < 0 ||
-            mx >= static_cast<int>(info.width) ||
-            my >= static_cast<int>(info.height))
+          mx >= static_cast<int>(info.width) ||
+          my >= static_cast<int>(info.height))
         {
           continue;
         }
@@ -196,7 +222,9 @@ bool PathClearCondition::isCorridorBlocked(
         const double wx = origin_x + (static_cast<double>(mx) + 0.5) * resolution;
         const double wy = origin_y + (static_cast<double>(my) + 0.5) * resolution;
 
-        if (std::hypot(wx - px, wy - py) > sample_radius_m) {
+        // When sample_radius_m == 0, skip the distance filter so the containing
+        // cell is always checked regardless of where the plan pose falls within it.
+        if (sample_radius_m > 0.0 && std::hypot(wx - px, wy - py) > sample_radius_m) {
           continue;
         }
 
@@ -208,46 +236,72 @@ bool PathClearCondition::isCorridorBlocked(
           continue;
         }
 
-        const auto raw_cost = costmap.data[index];
-
-        if (static_cast<int>(raw_cost) >= lethal_threshold) {
+        if (static_cast<int>(costmap.data[index]) >= lethal_threshold) {
+          this_pose_blocked = true;
           if (seen_indices.insert(index).second) {
             geometry_msgs::msg::Point pt;
             pt.x = wx;
             pt.y = wy;
             pt.z = 0.0;
-            blocked_points.push_back(pt);
+            all_blocked_points.push_back(pt);
           }
         }
       }
     }
+
+    metrics.total_poses++;
+
+    if (this_pose_blocked) {
+      metrics.blocked_poses++;
+      if (!run_in_progress) {
+        run_start_dist = travelled_m;
+        run_in_progress = true;
+      }
+    } else {
+      if (run_in_progress) {
+        const double run_len = travelled_m - run_start_dist;
+        metrics.max_run_length_m = std::max(metrics.max_run_length_m, run_len);
+        run_in_progress = false;
+      }
+    }
   }
 
-  if (blocked_points.empty()) {
-    return false;
+  // Close a run that extends to the end of the lookahead window.
+  if (run_in_progress) {
+    metrics.max_run_length_m =
+      std::max(metrics.max_run_length_m, travelled_m - run_start_dist);
   }
 
+  if (all_blocked_points.empty()) {
+    return metrics;
+  }
+
+  metrics.any_blocked = true;
+  metrics.blocked_fraction = metrics.total_poses > 0
+    ? static_cast<double>(metrics.blocked_poses) / static_cast<double>(metrics.total_poses)
+    : 0.0;
+
+  // Centroid of all blocked cells.
   double sx = 0.0;
   double sy = 0.0;
-
-  for (const auto & p : blocked_points) {
+  for (const auto & p : all_blocked_points) {
     sx += p.x;
     sy += p.y;
   }
+  metrics.centroid.x = sx / static_cast<double>(all_blocked_points.size());
+  metrics.centroid.y = sy / static_cast<double>(all_blocked_points.size());
+  metrics.centroid.z = 0.0;
 
-  centroid_out.x = sx / static_cast<double>(blocked_points.size());
-  centroid_out.y = sy / static_cast<double>(blocked_points.size());
-  centroid_out.z = 0.0;
-
+  // Extent: approximate blocked-region diameter.
   double max_radius = 0.0;
-  for (const auto & p : blocked_points) {
+  for (const auto & p : all_blocked_points) {
     max_radius = std::max(
       max_radius,
-      std::hypot(p.x - centroid_out.x, p.y - centroid_out.y));
+      std::hypot(p.x - metrics.centroid.x, p.y - metrics.centroid.y));
   }
+  metrics.extent_m = static_cast<float>((2.0 * max_radius) + resolution);
 
-  extent_out = static_cast<float>((2.0 * max_radius) + resolution);
-  return true;
+  return metrics;
 }
 
 BT::PortsList PathClearCondition::providedPorts()
@@ -267,11 +321,27 @@ BT::PortsList PathClearCondition::providedPorts()
     BT::InputPort<int>(
       "debounce_ticks",
       2,
-      "Consecutive blocked ticks required before FAILURE"),
+      "Consecutive significant-blockage ticks required before FAILURE"),
     BT::InputPort<double>(
       "sample_radius_m",
       0.05,
-      "Radius around each path pose sampled for lethal cells"),
+      "Radius around each path pose sampled for lethal cells; 0.0 checks the containing cell only"),
+    BT::InputPort<double>(
+      "min_blocked_length_m",
+      0.45,
+      "Minimum continuous blocked path length (m) before semantic recovery triggers"),
+    BT::InputPort<int>(
+      "min_blocked_samples",
+      4,
+      "Minimum number of blocked path poses before semantic recovery triggers"),
+    BT::InputPort<double>(
+      "blocked_fraction_threshold",
+      0.30,
+      "Minimum fraction of checked path poses that must be blocked"),
+    BT::InputPort<bool>(
+      "allow_geometric_detour_first",
+      true,
+      "If true, minor blockages return SUCCESS and let Nav2 replan around them"),
     BT::InputPort<std::string>(
       "plan_topic",
       "/plan",
