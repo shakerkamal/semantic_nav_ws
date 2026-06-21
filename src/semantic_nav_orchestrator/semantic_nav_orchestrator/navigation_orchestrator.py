@@ -26,9 +26,12 @@ from rclpy.duration import Duration
 from tf2_ros import TransformException, Buffer, TransformListener
 from nav2_msgs.srv import ClearEntireCostmap
 
+from std_srvs.srv import Trigger
+
 from semantic_nav_interfaces.action import ExecutePose
 from semantic_nav_interfaces.srv import (
     MatchResponsibleObject,
+    NavigateToQuery,
     ParseSemanticCommand,
     ProposeRecovery,
     RequestRecovery,
@@ -399,6 +402,21 @@ class NavigationOrchestrator(Node):
             MatchResponsibleObject,
             "/match_responsible_object",
             self._handle_match_responsible_object,
+            callback_group=self._callback_group,
+        )
+
+        # /navigate_to_query: one navigation at a time; terminal is the caller.
+        self._nav_to_query_lock = threading.Lock()
+        self._nav_to_query_srv = self.create_service(
+            NavigateToQuery,
+            "/navigate_to_query",
+            self._handle_navigate_to_query,
+            callback_group=self._callback_group,
+        )
+        self._cancel_navigation_srv = self.create_service(
+            Trigger,
+            "/cancel_navigation",
+            self._handle_cancel_navigation,
             callback_group=self._callback_group,
         )
 
@@ -2785,6 +2803,48 @@ class NavigationOrchestrator(Node):
         self._last_feedback_pose = fb.current_pose
         self._last_feedback_distance_remaining = float(fb.distance_remaining)
         self._last_feedback_recoveries = int(fb.number_of_recoveries)
+
+    def _handle_navigate_to_query(
+        self,
+        request: NavigateToQuery.Request,
+        response: NavigateToQuery.Response,
+    ) -> NavigateToQuery.Response:
+        if not self._nav_to_query_lock.acquire(blocking=False):
+            response.success = False
+            response.outcome = "BUSY"
+            response.failure_reason = "Navigation already in progress; cancel first"
+            return response
+        try:
+            query = request.query.strip()
+            nl_command = request.nl_command.strip()
+            if not query:
+                response.success = False
+                response.outcome = "INVALID"
+                response.failure_reason = "Empty query"
+                return response
+            self._parsed_command = None
+            success = self._run_bt_led_once(
+                initial_query=query,
+                original_nl_command=nl_command,
+            )
+            response.success = success
+            response.outcome = "REACHED" if success else "EXECUTION_FAILED"
+            response.failure_reason = (
+                "" if success else "Navigation failed — check orchestrator logs"
+            )
+        finally:
+            self._nav_to_query_lock.release()
+        return response
+
+    def _handle_cancel_navigation(
+        self,
+        request: Trigger.Request,
+        response: Trigger.Response,
+    ) -> Trigger.Response:
+        self.cancel_goal()
+        response.success = True
+        response.message = "Cancel sent"
+        return response
 
     def cancel_goal(self):
         if self._goal_handle is None:

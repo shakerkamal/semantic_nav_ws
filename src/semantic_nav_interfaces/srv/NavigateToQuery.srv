@@ -1,0 +1,6 @@
+string query          # object key (e.g. "chair:2") or NL-resolved tag/key
+string nl_command     # original NL text; empty for direct object commands
+---
+bool success
+string outcome        # REACHED | RESOLUTION_FAILED | EXECUTION_FAILED | BUSY | INVALID
+string failure_reason

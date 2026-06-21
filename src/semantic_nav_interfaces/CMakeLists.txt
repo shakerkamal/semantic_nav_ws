@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RefreshLocalObjects.srv"
   "srv/MatchResponsibleObject.srv"
   "srv/OperatorDecision.srv"
+  "srv/NavigateToQuery.srv"
 
   "action/ExecutePose.action"
 

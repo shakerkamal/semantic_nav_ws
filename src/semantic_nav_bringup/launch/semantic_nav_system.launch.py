@@ -183,8 +183,8 @@ def generate_launch_description():
 
     enable_operator_io_arg = DeclareLaunchArgument(
         'enable_operator_io',
-        default_value='true',
-        description='Launch operator_io_node to serve /operator_decision for BT-LR M5.',
+        default_value='false',
+        description='Launch operator_io_node. Default false: navigation_terminal serves /operator_decision.',
     )
     operator_auto_ack_for_dev_arg = DeclareLaunchArgument(
         'operator_auto_ack_for_dev',
@@ -294,6 +294,16 @@ def generate_launch_description():
         }.items()
     )
 
+    # Orchestrator runs as a long-running idle service, accepting
+    # /navigate_to_query goals from navigation_terminal.
+    # No query arg → bt_led mode auto-sets start_idle=True.
+    orchestrator_node = Node(
+        package='semantic_nav_orchestrator',
+        executable='navigation_orchestrator',
+        name='navigation_orchestrator',
+        output='screen',
+    )
+
     operator_io_node = Node(
         package='semantic_nav_operator_io',
         executable='operator_io_node',
@@ -348,4 +358,9 @@ def generate_launch_description():
         semantic_core_launch,
         semantic_llm_launch,
         operator_io_node,
+
+        TimerAction(
+            period=10.0,
+            actions=[orchestrator_node]
+        ),
     ])

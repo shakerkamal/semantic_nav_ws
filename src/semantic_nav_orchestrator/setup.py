@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'navigation_orchestrator = semantic_nav_orchestrator.navigation_orchestrator:main',
+            'navigation_terminal = semantic_nav_orchestrator.navigation_terminal:main',
         ],
     },
 )

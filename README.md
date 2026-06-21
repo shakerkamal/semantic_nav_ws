@@ -13,7 +13,7 @@ A modular ROS 2 Humble semantic navigation stack that lets a robot drive to sema
 5. [Building](#5-building)
 6. [Environment variables](#6-environment-variables-critical)
 7. [Running the system](#7-running-the-system)
-8. [Sending a navigation query](#8-sending-a-navigation-query)
+8. [Navigation terminal](#8-navigation-terminal)
 9. [Natural-language commands via the LLM navigator](#9-natural-language-commands-via-the-llm-navigator)
 10. [Semantic database](#10-semantic-database)
 11. [Launch arguments reference](#11-launch-arguments-reference)
@@ -30,12 +30,15 @@ A modular ROS 2 Humble semantic navigation stack that lets a robot drive to sema
 Given a semantic object query (`chair`, `refrigerator`) or a natural-language command (e.g. `"I am hungry"`) that an LLM converts into one, the system:
 
 1. **Parses** (optional) a natural-language command via `semantic_nav_llm` into a constrained `{action, object_tag, intent_hint, confidence}` JSON intent enforced by a GBNF grammar.
-2. **Resolves** the object tag to a `PoseStamped` in the `map` frame using an object-centric semantic database (`map_v001.json`, 117 objects), ranked by BM25/LLM/Hybrid caption scoring, and stamps the response with `db_version`/`db_stamp`.
-3. **Validates** that Nav2's planner can currently compute a path to that pose (catches goals in unmapped or blocked areas before committing).
-4. **Executes** the navigation via Nav2's `NavigateToPose`, using a custom Nav2 behavior tree (`semantic_recovery_bt.xml`) that monitors for path blockages and autonomously invokes LLM-driven recovery.
-5. **Recovers** (if blocked): the Nav2 BT detects a path obstruction via `PathClearCondition`, queries semantic context via `QuerySemanticContext`, escalates to the LLM via `EscalateToLLMRecovery` → `/request_recovery`, and the orchestrator issues a directive (`retry_target`, `wait_then_replan`, or `give_up`) with up to 3 retries, excluding previously-blocked object instances when selecting alternatives.
+2. **Resolves** the object tag to a `PoseStamped` in the `map` frame using an object-centric semantic database (`map_v001.json`, N objects), ranked by Hybrid(Deterministic+LLM) caption scoring, and stamps the response with `db_version`/`db_stamp`.
+3. **Validates** that Nav2's planner can currently compute a path to that pose via `ValidateSemantic` inside the Nav2 behavior tree.
+4. **Executes** the navigation via Nav2's `NavigateToPose`, using a custom Nav2 behavior tree (`semantic_recovery_bt.xml`) with a three-tier recovery strategy on path failure.
+5. **Recovers** (if blocked) using a three-tier strategy owned entirely by the Nav2 BT:
+   - **Tier 1 — continuous replanning:** `RateController(1 Hz)` around `ComputePathToPose` replans against the current costmap every second. Small navigable obstacles are routed around automatically; no recovery fires.
+   - **Tier 2 — geometric recovery:** `ClearEntireCostmap` (local + global) followed by `BackUp`. Resolves stale costmap data and transient stuck situations.
+   - **Tier 3 — semantic recovery:** `CaptureBlockageContext` samples the last path against the live costmap to locate the blockage centroid, then `QuerySemanticContext` identifies the responsible object, `EscalateToLLMRecovery` calls `/request_recovery`, and the orchestrator issues a directive (`retry_target`, `wait_then_replan`, `give_up`) with up to 3 retries.
 
-Each stage gates the next: if parsing/resolution fails, downstream stages are skipped; if validation fails, execution is skipped. RTAB-Map provides live SLAM (no pre-saved map), so semantic destinations must already be in the explored, navigable free space at the time you issue the query.
+Each stage gates the next: if parsing/resolution fails, downstream stages are skipped. RTAB-Map provides live SLAM (no pre-saved map), so semantic destinations must already be in the explored, navigable free space at the time you issue the query.
 
 ---
 
@@ -44,43 +47,49 @@ Each stage gates the next: if parsing/resolution fails, downstream stages are sk
 ### Pipeline
 
 ```
-User intent ("I am hungry")
+User intent (typed in navigation_terminal)
+    │
+    ▼  NL path: parse via LLM → object_tag / object_key
+    │  Direct path: object key (e.g. "chair:2") used as-is
+    ▼
+ResolveLocation  (object_tag → Hybrid-ranked ObjectRow → PoseStamped + db_version/db_stamp)
     │
     ▼
-NavigatorNode (LLM + GBNF) -> {action: navigate, object_tag: "chair", intent_hint: "...", confidence: 92}
-    │  (or a direct semantic query, skipping the LLM step)
-    ▼
-ResolveLocation  (object_tag -> BM25/Hybrid-ranked ObjectRow -> PoseStamped + db_version/db_stamp)
+ExecutePose  (Nav2 NavigateToPose with semantic_recovery_bt.xml)
     │
+    │   ┌── PRIMARY ─────────────────────────────────────────────────────────┐
+    │   │  ValidateSemantic  (geometric veto before motion)                  │
+    │   │  RateController(1 Hz) → ComputePathToPose  (continuous replanning) │
+    │   │  FollowPath                                                         │
+    │   └────────────────────────────────────────────────────────────────────┘
+    │         │ FollowPath fails
+    │   ┌── RECOVERY (RoundRobin) ───────────────────────────────────────────┐
+    │   │  Tier 2 — GeometricSafeRecovery:                                   │
+    │   │    ClearLocalCostmap + ClearGlobalCostmap + BackUp                 │
+    │   │                                                                     │
+    │   │  Tier 3 — SemanticRecoveryBranch:                                  │
+    │   │    CaptureBlockageContext (blockage_centroid / extent)              │
+    │   │    → QuerySemanticContext (responsible object lookup)               │
+    │   │    → EscalateToLLMRecovery → /request_recovery                     │
+    │   │    → directive: retry_target | wait_then_replan | give_up          │
+    │   │         operator actions: open_door | clear_object                 │
+    │   └────────────────────────────────────────────────────────────────────┘
     ▼
-ValidatePose    (Nav2 ComputePathToPose feasibility check)       [skipped in bt_led mode]
-    │
-    ▼
-ExecutePose     (Nav2 NavigateToPose with semantic_recovery_bt.xml)
-    │                │
-    │          ┌─────▼──────────────────────────────────────────────┐
-    │          │  BT-Led Recovery (on path blockage)                 │
-    │          │  PathClearCondition → QuerySemanticContext           │
-    │          │  → EscalateToLLMRecovery → /request_recovery        │
-    │          │  → orchestrator: retry_target | wait_then_replan    │
-    │          │                  | signal_wait_recheck | give_up    │
-    │          └─────────────────────────────────────────────────────┘
-    ▼
-Robot moves (or graceful give_up after 3 retries)
+Robot moves (or graceful give_up after 3 BT retries)
 ```
 
 ### Package layout (this workspace, `src/`)
 
 | Package | Type | Responsibility |
 |---|---|---|
-| `semantic_nav_interfaces` | ament_cmake | Custom msgs/srvs/actions (`ResolveLocation`, `ValidatePose`, `ExecutePose`, `RequestRecovery`, `ProposeRecovery`, `MatchResponsibleObject`, `RefreshLocalObjects`, `ObjectInstance`, `RecoveryTrigger`) |
+| `semantic_nav_interfaces` | ament_cmake | Custom msgs/srvs/actions (`ResolveLocation`, `ValidatePose`, `ExecutePose`, `RequestRecovery`, `ProposeRecovery`, `MatchResponsibleObject`, `RefreshLocalObjects`, `NavigateToQuery`, `OperatorDecision`, `ObjectInstance`, `RecoveryTrigger`) |
 | `semantic_nav_semantics`  | ament_python | Object-centric semantic resolution: `SemanticStore` (immutable `map_v001.json` snapshot), `resolver_node`, `local_object_query_node`, `StandoffPlanner`, BM25/LLM/Hybrid caption rankers, `SpatialContextBuilder` |
 | `semantic_nav_validator`  | ament_python | Path-existence check via `ComputePathToPose` |
 | `semantic_nav_executor`   | ament_python | Bridges custom `ExecutePose` action to Nav2 `NavigateToPose` |
-| `semantic_nav_orchestrator` | ament_python | BT-led pipeline controller; resolves queries, dispatches `ExecutePose` with custom BT XML, and serves `/request_recovery` with LLM-backed directive generation, `exclude_object_key` disambiguation, and 3-retry cap |
-| `semantic_nav_llm`        | ament_python | NL → constrained semantic intent (llama_ros + GBNF); serves `/propose_recovery` for BT-led LLM recovery proposals |
-| `semantic_nav_nav2_plugins` | ament_cmake (C++) | Nav2 BT plugins: `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, `ValidateSemantic`; BT XML: `semantic_recovery_bt.xml` |
-| `semantic_nav_path_monitor` | ament_python | `plan_intersection_monitor`: monitors Nav2 plan for intersections with semantic obstacles in the costmap |
+| `semantic_nav_orchestrator` | ament_python | Idle service daemon: serves `/navigate_to_query`, `/cancel_navigation`, `/request_recovery`, `/match_responsible_object`; LLM-backed directive generation; launched from bringup. Also provides `navigation_terminal` — the unified interactive CLI |
+| `semantic_nav_llm`        | ament_python | NL → constrained semantic intent (llama_ros + GBNF); serves `/parse_semantic_command` and `/propose_recovery` |
+| `semantic_nav_nav2_plugins` | ament_cmake (C++) | Nav2 BT plugins: `ValidateSemantic`, `PathClearCondition` (with severity gating + `BlockageMetrics`), `CaptureBlockageContext`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, `OperatorPrompt`; BT XML: `semantic_recovery_bt.xml` |
+| `semantic_nav_operator_io` | ament_python | Serves `/operator_decision` via stdin. **Not launched by default** — `navigation_terminal` handles operator prompts inline. Set `enable_operator_io:=true` for headless/CI use |
 | `semantic_nav_bringup`    | ament_python | Launch files for the integrated stack |
 
 ---
@@ -94,7 +103,7 @@ This project lives across **two workspaces** that both need to be sourced at run
 | `~/demo_bringup` | RTAB-Map ROS 2 sources (`rtabmap_ros`, `rtabmap`) and `llama_ros` sources inside `src/`; `aws-robomaker-small-house-world/` cloned as a sibling of `src/` | RTAB-Map and `llama_ros` yes (colcon). AWS world **no** - we only consume its `worlds/` and `models/` assets |
 | `~/semantic_nav_ws` | **This repo** - all `semantic_nav_*` packages | Yes |
 
-> If you do not have `~/demo_bringup` yet, follow [Section 4](#4-first-time-setup-step-by-step) below to create it.
+> If you do not have `demo_bringup` yet, follow [Section 4](#4-first-time-setup-step-by-step) below to create it.
 
 ### System dependencies (apt)
 
@@ -134,7 +143,7 @@ cd ~/semantic_nav_ws/src
 git clone <THIS_REPO_URL> .
 ```
 
-### 4.2 Set up `~/demo_bringup` (RTAB-Map + llama_ros sources + AWS world assets)
+### 4.2 Set up `demo_bringup` (RTAB-Map + llama_ros sources + AWS world assets)
 
 ```bash
 mkdir -p ~/demo_bringup/src
@@ -182,10 +191,10 @@ The same patch is documented in the header comment of `/opt/ros/humble/share/rta
 
 ## 5. Building
 
-Build the two workspaces **in this order** (`~/demo_bringup` first, then this repo):
+Build the two workspaces **in this order** (`demo_bringup` first, then this repo):
 
 ```bash
-# 1. ~/demo_bringup builds both rtabmap_* and llama_ros from src/
+# 1. demo_bringup builds both rtabmap_* and llama_ros from src/
 source /opt/ros/humble/setup.bash
 cd ~/demo_bringup
 rosdep install -i --from-path src -y --rosdistro humble
@@ -199,13 +208,13 @@ rosdep install -i --from-path src -y --rosdistro humble
 colcon build --symlink-install
 ```
 
-The `aws-robomaker-small-house-world/` directory at `~/demo_bringup/` is intentionally outside `src/`, so colcon will ignore it. If any build fails with "package not found", you almost certainly forgot to source `~/demo_bringup/install/setup.bash` before building this workspace.
+The `aws-robomaker-small-house-world/` directory at `demo_bringup/` is intentionally outside `src/`, so colcon will ignore it. If any build fails with "package not found", you almost certainly forgot to source `demo_bringup/install/setup.bash` before building this workspace.
 
 ---
 
 ## 6. Environment variables (critical)
 
-Four variables can be set before any launch, in **every terminal** you use:
+Four variables must be set before any launch, in **every terminal** you use:
 
 ```bash
 export TURTLEBOT3_MODEL=waffle
@@ -214,28 +223,7 @@ export AWS_SMALL_HOUSE=$HOME/demo_bringup/aws-robomaker-small-house-world
 export GAZEBO_MODEL_PATH=$AWS_SMALL_HOUSE/models:$TURTLEBOT3_GAZEBO_MODELS
 ```
 
-**OR** update the `.bashrc` file with the following commands:
-
-```bash
-echo 'export TURTLEBOT3_MODEL=waffle' >> ~/.bashrc
-echo 'export TURTLEBOT3_GAZEBO_MODELS=/opt/ros/humble/share/turtlebot3_gazebo/models' >> ~/.bashrc
-echo 'export AWS_SMALL_HOUSE=$HOME/demo_bringup/aws-robomaker-small-house-world' >> ~/.bashrc
-echo 'export GAZEBO_MODEL_PATH=$AWS_SMALL_HOUSE/models:$TURTLEBOT3_GAZEBO_MODELS' >> ~/.bashrc
-
-source ~/.bashrc
-```
-
-
-**Why `GAZEBO_MODEL_PATH` matters:** the AWS world references its 60+ furniture meshes via `model://aws_robomaker_residential_*` URIs. Gazebo resolves those URIs by scanning `GAZEBO_MODEL_PATH`. The AWS world is asset-only (not built), so nothing exports `GAZEBO_MODEL_PATH` for you - you must set it manually or the Gazebo window opens empty and you get dozens of `Error Code 12 Msg: Unable to find uri[model://...]` errors.
-
-**Common pitfall:** if your `.bashrc` already has a line like `export GAZEBO_MODEL_PATH=/opt/ros/humble/share/turtlebot3_gazebo/models` (using `=`, not appending), it overwrites the variable every time a new shell starts and clobbers any AWS path you add. Replace any such line with the colon-joined version above, then open a fresh terminal and verify:
-
-```bash
-echo $GAZEBO_MODEL_PATH
-# Expected: both paths joined with a colon
-```
-
-For convenience, add the following block to the **end** of `~/.bashrc`:
+For convenience, add this block to the **end** of `~/.bashrc`:
 
 ```bash
 # --- semantic_nav: env ---
@@ -246,153 +234,182 @@ export GAZEBO_MODEL_PATH=$AWS_SMALL_HOUSE/models:$TURTLEBOT3_GAZEBO_MODELS
 # --- end semantic_nav ---
 ```
 
+**Why `GAZEBO_MODEL_PATH` matters:** the AWS world references its 60+ furniture meshes via `model://aws_robomaker_residential_*` URIs. Gazebo resolves those URIs by scanning `GAZEBO_MODEL_PATH`. The AWS world is asset-only (not built), so nothing exports `GAZEBO_MODEL_PATH` for you - you must set it manually or the Gazebo window opens empty and you get dozens of `Error Code 12 Msg: Unable to find uri[model://...]` errors.
+
+**Common pitfall:** if your `.bashrc` already has a line like `export GAZEBO_MODEL_PATH=/opt/ros/humble/share/turtlebot3_gazebo/models` (using `=`, not appending), it overwrites the variable every time a new shell starts and clobbers any AWS path you add. Replace any such line with the colon-joined version above, then open a fresh terminal and verify:
+
+```bash
+echo $GAZEBO_MODEL_PATH
+# Expected: both paths joined with a colon
+```
+
 ---
 
 ## 7. Running the system
 
-Open a new terminal, source the two workspaces in this order, then launch:
+### Terminal 1 — full system bringup
 
 ```bash
 source /opt/ros/humble/setup.bash
 source ~/demo_bringup/install/setup.bash
 source ~/semantic_nav_ws/install/setup.bash
 
-export TURTLEBOT3_MODEL=waffle
-export TURTLEBOT3_GAZEBO_MODELS=/opt/ros/humble/share/turtlebot3_gazebo/models
-export AWS_SMALL_HOUSE=$HOME/demo_bringup/aws-robomaker-small-house-world
-export GAZEBO_MODEL_PATH=$AWS_SMALL_HOUSE/models:$TURTLEBOT3_GAZEBO_MODELS
-
 ros2 launch semantic_nav_bringup semantic_nav_system.launch.py
 ```
 
-Sourcing `~/demo_bringup/install/setup.bash` makes RTAB-Map and the `llama_ros` message/action interfaces available. The `llama_ros` model server itself is still started separately, because model loading is heavyweight and may use a separate Python virtual environment.
-
-### What happens
-
-The launch starts components in a staggered order to avoid race conditions:
+### What starts and when
 
 | t (s) | What starts |
 |---|---|
-| 0 | Gazebo (gzserver + gzclient) loads the AWS small house, robot_state_publisher, spawns TurtleBot3 Waffle |
-| 0 | `semantic_resolver`, `semantic_nav_validator`, `semantic_nav_executor` nodes |
-| 0 | `navigator_node` from `semantic_nav_llm` by default (`enable_llm:=true`) |
+| 0 | Gazebo (gzserver + gzclient), robot_state_publisher, TurtleBot3 Waffle spawn |
+| 0 | `resolver_node`, `validator_node`, `executor_node`, `local_object_query_node` |
+| 0 | `navigator_node` (LLM intent parser) — disable with `enable_llm:=false` |
+| 0 | `operator_io_node` — **disabled by default** (`enable_operator_io:=false`); `navigation_terminal` handles operator prompts instead |
 | 3 | RTAB-Map (`turtlebot3_rgbd_scan.launch.py`) |
-| 5 | Nav2 (`navigation_launch.py`) and RViz |
+| 5 | Nav2 (`navigation_launch.py`) and RViz (with `respawn=true` — a RViz crash no longer brings down the stack) |
+| 10 | `navigation_orchestrator` — long-running idle service daemon; accepts `/navigate_to_query` calls from the terminal |
 
 You should see Gazebo render the textured house, then RViz appear with a growing occupancy grid as RTAB-Map builds the map.
 
-The LLM parser service is launched by default:
-
-```bash
-ros2 service list | grep parse_semantic
-# /parse_semantic_command
-```
-
-To disable the LLM parser for baseline Gazebo/Nav2/RTAB-Map debugging:
-
-```bash
-ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
-```
-
-> Important: do **not** launch Gazebo/system bringup from the `llama_ros` virtual environment. Use the normal ROS/system Python for Gazebo, RTAB-Map, Nav2, and `spawn_entity.py`. Use the `llama_ros` virtual environment only in terminals that run `llama_node` or other `llama_ros` tooling.
-
 ### Driving the robot manually (to explore the map)
 
-Open a **second** terminal (with `/opt/ros/humble/setup.bash` sourced) and run:
+Open a **second** terminal and run:
 
 ```bash
 export TURTLEBOT3_MODEL=waffle
+source /opt/ros/humble/setup.bash
 ros2 run turtlebot3_teleop teleop_keyboard
 ```
 
-Drive the robot through rooms until the area containing your target location is visible in RViz's occupancy grid. Semantic navigation will fail to validate goals in unexplored space.
+Drive the robot through rooms until the area containing your target object is visible in RViz's occupancy grid. Semantic navigation will fail to validate goals in unexplored space.
 
-## 8. Sending a navigation query
+### Terminal 2 — LLM model server (only if using NL commands)
 
-Open a **third** terminal, source the same scripts as in Section 7, then use either a direct semantic query or a natural-language command.
+See [Section 9.1](#91-start-the-llamaros-action-server) for `llama_node` startup instructions. This terminal uses the `llama_ros` virtual environment and should be kept separate from the ROS environment.
 
-### 8.1 Direct semantic query
+---
 
-```bash
-ros2 run semantic_nav_orchestrator navigation_orchestrator --ros-args -p query:=kitchen
-```
+## 8. Navigation terminal
 
-Or use the positional shorthand:
+The `navigation_terminal` is the unified user interface. It replaces both the old one-shot orchestrator CLI and the separate `operator_io_node`. Start it after bringup is up:
 
 ```bash
-ros2 run semantic_nav_orchestrator navigation_orchestrator kitchen
-ros2 run semantic_nav_orchestrator navigation_orchestrator living room
+source /opt/ros/humble/setup.bash
+source ~/demo_bringup/install/setup.bash
+source ~/semantic_nav_ws/install/setup.bash
+
+ros2 run semantic_nav_orchestrator navigation_terminal
 ```
 
-This path bypasses the LLM completely:
+You will see a banner and an interactive prompt:
 
 ```
-query -> ResolveLocation -> ValidatePose -> ExecutePose
+╔══════════════════════════════════════════════════════╗
+║        Semantic Navigation Terminal                  ║
+╚══════════════════════════════════════════════════════╝
+  Type an object key (chair:2) or NL command (go to the kitchen).
+  Type a new command at any time to cancel and reroute.
+  Ctrl-C cancels active navigation.  Ctrl-D exits.
+
+[nav] >
 ```
 
-### 8.2 Natural-language command
+### 8.1 Command types
 
-Requires:
+| What you type | How it is handled |
+|---|---|
+| `chair:2` | Recognised as a direct object key (`<tag>:<id>`); sent to the orchestrator immediately — no LLM call |
+| `go to the kitchen` | Sent to `/parse_semantic_command` (LLM); resolved target is then navigated to |
+| `refrigerator` | Sent to LLM; if it maps to a known object tag, that tag is used for resolution |
 
-1. `llama_node` running separately and exposing `/llama/generate_response`.
-2. `navigator_node` running, usually through `semantic_nav_system.launch.py` because `enable_llm` defaults to `true`.
+The terminal prints each stage as it happens:
 
-Then run:
+```
+[nav] > chair:2
+
+  → Direct key: chair:2
+  → Navigating to chair:2 …
+  · EXECUTING
+  · EXECUTING
+
+  ✓ SUCCESS — reached chair:2
+
+[nav] > go to the kitchen
+
+  → Parsing NL: "go to the kitchen" …
+  → Parsed: kitchen:1  confidence=87%
+  → Navigating to kitchen:1 …
+  · EXECUTING
+  · RECOVERY_EXECUTING        ← geometric recovery fired
+  · EXECUTING
+  ✓ SUCCESS — reached kitchen:1
+```
+
+### 8.2 Preemption — typing a new command mid-navigation
+
+You can type a new command at **any time** while the robot is navigating. The terminal immediately:
+
+1. Fires `/cancel_navigation` → orchestrator cancels the active Nav2 goal.
+2. Waits for the current goal to abort.
+3. Starts the new goal without returning to the prompt.
+
+```
+[nav] > chair:2
+  → Navigating to chair:2 …
+  · EXECUTING
+
+[nav] > living room      ← typed while navigating
+
+⚡ Preempted → new command: 'living room'
+  → Parsing NL: "living room" …
+  → Parsed: living_room:1  confidence=91%
+  → Navigating to living_room:1 …
+```
+
+### 8.3 Operator prompts (inline)
+
+When the BT's `OperatorPrompt` node fires (e.g. for `open_door_then_replan` or `clear_object_then_replan` directives), the prompt appears inline in the same terminal:
+
+```
+  ╔══════════════════════════════════════════════════╗
+  ║ OPERATOR PROMPT                                  ║
+  ╚══════════════════════════════════════════════════╝
+  Please open the door blocking the path to kitchen:1.
+  Object : door:3
+  Action : open_door_then_replan
+  [operator] y / n > y
+  ✓ Confirmed
+```
+
+Responding `y` acknowledges the directive and the BT continues. `n` rejects it.
+
+### 8.4 Keyboard shortcuts
+
+| Key | Effect |
+|---|---|
+| `Ctrl-C` | Cancel active navigation; return to prompt |
+| `Ctrl-D` | Exit the terminal |
+| New text + Enter | Preempt current navigation with new destination |
+
+### 8.5 Headless / CI use
+
+For unattended testing where operator prompts should be auto-acknowledged:
 
 ```bash
-ros2 run semantic_nav_orchestrator navigation_orchestrator --ros-args \
-  -p command:="I am hungry"
+ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_operator_io:=true operator_auto_ack_for_dev:=true
 ```
 
-This path is:
+In this mode, `operator_io_node` serves `/operator_decision` and automatically confirms all prompts. Do **not** run `navigation_terminal` alongside `operator_io_node` — they both serve `/operator_decision` and will conflict.
 
-```
-command -> ParseSemanticCommand -> ResolveLocation -> ValidatePose -> ExecutePose
-```
-
-If both `query` and `command` are provided, the orchestrator uses the direct `query` and bypasses LLM parsing.
-
-The orchestrator logs each stage and includes the active semantic DB version where applicable:
-
-```
-[INTENT] Parsing natural-language command: 'I am hungry'
-[INTENT] Parser response: success=True, intent='navigate_to_location', location_query='kitchen', canonical_location_id='kitchen', ...
-[RESOLUTION] Resolved 'kitchen' -> location_id='kitchen', db_version=1, db_stamp=..., x=13.222, y=-0.279
-[VALIDATION] Validation succeeded (location_id='kitchen', db_version=1): ..., path_length=..., pose_count=...
-[EXECUTION] Sending goal to execute_pose action server (location_id='kitchen', db_version=1, ...)
-[EXECUTION] Executor finished with status=SUCCEEDED(4), success=True, ...
-```
-
-If a stage fails, the prefix tells you exactly which one (`[INTENT]`, `[RESOLUTION]`, `[VALIDATION]`, `[EXECUTION]`).
-
-### Orchestrator parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `query` | `''` | Direct semantic location name to navigate to. Positional CLI args are accepted as an override |
-| `command` | `''` | Natural-language command to parse via `/parse_semantic_command` |
-| `parse_service` | `/parse_semantic_command` | LLM parser service used when `command` is provided |
-| `resolve_service` | `/resolve_location` | Resolution service name |
-| `validate_service` | `/validate_pose_goal` | Validation service name |
-| `execute_action` | `/execute_pose` | Execution action name |
-| `planner_id` | `''` | Nav2 planner to use (empty = default) |
-| `behavior_tree` | `''` | Behavior tree XML to forward to Nav2 (empty = default) |
-| `enable_validation` | `true` | Skip validation stage if set to `false` |
-| `service_wait_timeout_sec` | `10.0` | How long to wait for services to become available |
-| `service_call_timeout_sec` | `10.0` | Per-call timeout for parser, resolver, and validator services |
-| `action_server_wait_timeout_sec` | `10.0` | How long to wait for the execute_pose action server |
-| `action_send_goal_timeout_sec` | `10.0` | Timeout for sending the goal to the action server |
-| `execution_timeout_sec` | `300.0` | Overall execution timeout. Set ≤ 0 for no timeout |
+---
 
 ## 9. Natural-language commands via the LLM navigator
 
-`semantic_nav_llm` provides a `navigator_node` that converts a natural-language command (e.g. `"I am hungry"`) into a strictly structured intent using `llama_ros` and a GBNF grammar, then validates the target against your `semantic_db.json`. It **does not** publish motion commands or `PoseStamped` goals - it only provides a typed service response that the orchestrator can consume.
+`semantic_nav_llm` provides a `navigator_node` that converts a natural-language command (e.g. `"I am hungry"`) into a strictly structured intent using `llama_ros` and a GBNF grammar, then validates the target against `map_v001.json`. It **does not** publish motion commands or `PoseStamped` goals - it only provides a typed service response that the terminal can consume.
 
 ### 9.1 Start the llama_ros action server
 
-The system launch starts `navigator_node` by default, but it does **not** start the model server. Start `llama_node` in a separate terminal.
-
-Use the `llama_ros` virtual environment only in this terminal:
+The system launch starts `navigator_node` by default, but it does **not** start the model server. Start `llama_node` in a separate terminal using the `llama_ros` virtual environment:
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -410,7 +427,7 @@ The YAML file should point to your local GGUF model, for example:
 /**:
   ros__parameters:
     model:
-      path: "/home/shaker/Thesis/Implementation/demo_bringup/models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
+      path: "/home/shaker/demo_bringup/models/Meta-Llama-3-8B-Instruct-Q4_K_M.gguf"
       warmup: true
 
     context:
@@ -435,112 +452,31 @@ ros2 action info /llama/generate_response
 # Expected: Action servers: 1
 ```
 
-If the action name differs, pass it through with the `llama_action` launch argument or node parameter.
+> Important: do **not** launch Gazebo/system bringup from the `llama_ros` virtual environment. Use the normal ROS/system Python for Gazebo, RTAB-Map, Nav2, and all other nodes. Use the `llama_ros` virtual environment only in the terminal that runs `llama_node`.
 
-### 9.2 Start the full system with the navigator enabled
+### 9.2 Using NL commands through the terminal
 
-In a separate terminal, do **not** activate the `llama_ros` virtual environment:
+Once `llama_node` is running and `navigator_node` is up (launched by `semantic_nav_system.launch.py` by default), simply type your command at the `[nav] >` prompt in the navigation terminal:
+
+```
+[nav] > I am hungry
+
+  → Parsing NL: "I am hungry" …
+  → Parsed: kitchen:1  confidence=88%
+  → Navigating to kitchen:1 …
+```
+
+No separate orchestrator invocation is needed. The terminal calls `/parse_semantic_command` automatically when it detects free-form text that is not an object key.
+
+To disable the LLM parser (baseline Nav2/RTAB-Map testing only):
 
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/demo_bringup/install/setup.bash
-source ~/semantic_nav_ws/install/setup.bash
-
-ros2 launch semantic_nav_bringup semantic_nav_system.launch.py
+ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
 ```
 
-The system launch defaults to:
+In this mode the terminal still accepts direct object keys; NL commands will fail with a "parse service unavailable" error.
 
-```bash
-enable_llm:=true
-```
-
-Verify the parser service exists:
-
-```bash
-ros2 service list | grep parse_semantic
-# /parse_semantic_command
-```
-
-For isolated parser debugging without the full Gazebo stack, you can still run:
-
-```bash
-ros2 run semantic_nav_llm navigator_node
-```
-
-### 9.3 Parse a natural-language command
-
-```bash
-ros2 service call /parse_semantic_command \
-  semantic_nav_interfaces/srv/ParseSemanticCommand \
-  "{command: 'I am hungry'}"
-```
-
-A successful parse returns:
-
-```
-success: true
-intent: 'navigate_to_location'
-location_query: 'kitchen'
-canonical_location_id: 'kitchen'
-confidence_percent: 92
-location_known: true
-raw_output: '{"action":"navigate","target":"kitchen","confidence":92}'
-message: "Accepted navigation intent: target='kitchen', canonical_location_id='kitchen', confidence=92."
-```
-
-Other possible `intent` values:
-
-| `intent` | Meaning |
-|---|---|
-| `navigate_to_location` | LLM proposed a navigation target and the canonical ID exists in `semantic_db.json` |
-| `clarify` | LLM thinks the user wants navigation but the destination is ambiguous |
-| `reject` | LLM determined the command is not a valid semantic navigation request (e.g. `"drive forward"`, `"turn left"`) |
-
-A `reject` response is also returned when the LLM proposes a `navigate` action but the target is not present in the semantic DB or confidence is below the threshold - in this case `success=false` and the orchestrator should not proceed.
-
-### 9.4 End-to-end: NL -> navigation
-
-Once `llama_node`, `navigator_node`, Gazebo, RTAB-Map, Nav2, resolver, validator, and executor are running:
-
-```bash
-ros2 run semantic_nav_orchestrator navigation_orchestrator --ros-args \
-  -p command:="I am hungry"
-```
-
-Expected flow:
-
-```
-[INTENT] command -> /parse_semantic_command -> canonical_location_id
-[RESOLUTION] canonical_location_id -> PoseStamped + db_version/db_stamp
-[VALIDATION] ComputePathToPose feasibility check
-[EXECUTION] ExecutePose -> Nav2 NavigateToPose
-```
-
-### 9.5 Navigator parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| `service_name` | `/parse_semantic_command` | Service name this node provides |
-| `llama_action` | `/llama/generate_response` | `llama_msgs/action/GenerateResponse` action to call |
-| `semantic_db_path` | `<share>/semantic_nav_semantics/config/semantic_db.json` | DB used to build the catalog of canonical names + aliases used for validation |
-| `grammar_path` | `<share>/semantic_nav_llm/config/semantic_intent.gbnf` | GBNF grammar enforced on LLM output |
-| `llama_wait_timeout_sec` | `30.0` | How long to wait for the llama action server |
-| `llm_send_goal_timeout_sec` | `10.0` | Timeout for `send_goal_async` |
-| `llm_result_timeout_sec` | `60.0` | Timeout for the LLM result future |
-| `min_confidence_percent` | `60` | Reject `navigate` intents with confidence below this |
-| `target_min_len` | `1` | Minimum accepted target length |
-| `target_max_len` | `64` | Maximum accepted target length |
-| `temperature` | `0.0` | LLM sampling temperature (kept at 0 for deterministic intent classification) |
-| `top_k` | `1` | LLM top-k |
-| `top_p` | `1.0` | LLM top-p |
-| `max_tokens` | `64` | Request-level generation cap for intent JSON |
-| `reset_context` | `true` | Reset the LLM context per call |
-| `allow_json_extraction_fallback` | `false` | If GBNF is not enforced and the model emits prose, try to extract a JSON object (debug only - leave `false` in production) |
-| `debug_prompt` | `false` | Log the full prompt sent to the LLM |
-| `debug_grammar` | `false` | Log the GBNF grammar that is attached to the request |
-
-### 9.6 GBNF grammar
+### 9.3 GBNF grammar
 
 The grammar (`src/semantic_nav_llm/config/semantic_intent.gbnf`) constrains the LLM to emit exactly:
 
@@ -548,7 +484,22 @@ The grammar (`src/semantic_nav_llm/config/semantic_intent.gbnf`) constrains the 
 {"action": "navigate|clarify|reject", "target": "string", "confidence": 0-100}
 ```
 
-`target` is intentionally a free-form string - the navigator then **validates it against `semantic_db.json`** (normalizing case, underscores, and stripping leading articles). This decouples language reasoning from world-state authority: the LLM cannot send the robot to a place that doesn't exist.
+`target` is intentionally a free-form string — the navigator then **validates it against `map_v001.json`** (normalizing case, underscores, and stripping leading articles). This decouples language reasoning from world-state authority: the LLM cannot send the robot to a place that doesn't exist.
+
+### 9.4 Navigator parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `service_name` | `/parse_semantic_command` | Service name this node provides |
+| `llama_action` | `/llama/generate_response` | `llama_msgs/action/GenerateResponse` action to call |
+| `grammar_path` | `<share>/semantic_nav_llm/config/semantic_intent.gbnf` | GBNF grammar enforced on LLM output |
+| `llm_result_timeout_sec` | `180.0` | Timeout waiting for llama_ros inference result |
+| `min_confidence_percent` | `60` | Reject `navigate` intents with confidence below this |
+| `max_tokens` | `64` | Request-level generation cap for intent JSON |
+| `debug_prompt` | `false` | Log the full prompt sent to the LLM |
+| `debug_grammar` | `false` | Log the GBNF grammar attached to the request |
+
+---
 
 ## 10. Semantic database
 
@@ -556,7 +507,7 @@ The system uses two complementary JSON databases, both loaded once at startup in
 
 ### 10.1 Object-centric map — `map_v001.json`
 
-The primary database. 117 detected object instances in the AWS Small House, each with a 3D bounding-box pose, semantic tag, LLM-generated caption, and navigability flag:
+The primary database. 118 detected object instances in the AWS Small House, each with a 3D bounding-box pose, semantic tag, LLM-generated caption, and navigability flag:
 
 ```json
 {
@@ -614,15 +565,6 @@ The resolver builds an immutable `SemanticStore` snapshot at startup and stamps 
 
 All coordinates are measured for the **AWS Small House**. If you swap worlds, re-measure object poses via teleop + RViz and update `map_v001.json`.
 
-### 10.6 Overriding the DB at launch time
-
-```bash
-ros2 launch semantic_nav_bringup semantic_nav_system.launch.py \
-  semantic_db_path:=/absolute/path/to/your_db.json
-```
-
-Restart `semantic_resolver` and `navigator_node` after any DB change.
-
 ---
 
 ## 11. Launch arguments reference
@@ -632,31 +574,37 @@ Restart `semantic_resolver` and `navigator_node` after any DB change.
 | Argument | Default | Description |
 |---|---|---|
 | `use_sim_time` | `true` | Use the Gazebo simulation clock |
-| `semantic_db_path` | `''` (use package default) | Absolute path to a `semantic_db.json` override for the semantic core/resolver |
-| `semantic_db_topic` | `/semantic_nav/semantic_database` | Topic reserved for live semantic DB snapshots |
 | `localization` | `false` | Run RTAB-Map in localization mode instead of SLAM |
-| `rviz` | `true` | Launch RViz |
+| `rviz` | `true` | Launch RViz (with `respawn=true`; a RViz crash no longer kills the stack) |
 | `x_pose` | `0.0` | Initial TurtleBot3 X position in Gazebo |
 | `y_pose` | `0.0` | Initial TurtleBot3 Y position in Gazebo |
-| `aws_small_house_path` | (absolute path to the AWS world dir) | Path to the AWS world source dir (must contain `worlds/small_house.world`) |
+| `aws_small_house_path` | (absolute path) | Path to the AWS world source dir (must contain `worlds/small_house.world`) |
+| `nav2_params_file` | `<share>/semantic_nav_bringup/config/nav2_semantic_params.yaml` | Nav2 params file |
 | `enable_llm` | `true` | Launch `semantic_nav_llm`'s `navigator_node` |
-| `llm_semantic_db_path` | `<share>/semantic_nav_semantics/config/semantic_db.json` | DB path used specifically by `navigator_node`; kept separate because the core `semantic_db_path` may intentionally be empty |
+| `semantic_map_path` | `<share>/semantic_nav_semantics/config/map_v001.json` | Object-centric semantic map for resolver and LLM nodes |
 | `llama_action` | `/llama/generate_response` | `llama_ros` action endpoint consumed by `navigator_node` |
 | `parse_service` | `/parse_semantic_command` | Service name exposed by `navigator_node` |
-| `grammar_path` | `<share>/semantic_nav_llm/config/semantic_intent.gbnf` | GBNF grammar file for LLM output |
-| `min_confidence_percent` | `60` | Minimum confidence for accepted navigate intents |
-| `max_tokens` | `64` | Request-level generation cap for intent JSON |
-| `llm_result_timeout_sec` | `60.0` | Timeout waiting for `llama_ros` inference result |
+| `propose_recovery_service` | `/propose_recovery` | Recovery proposal service exposed by `navigator_node` |
+| `grammar_path` | `<share>/semantic_nav_llm/config/semantic_intent.gbnf` | GBNF grammar for LLM intent output |
+| `recovery_grammar_path` | `<share>/semantic_nav_llm/config/recovery_intent.gbnf` | GBNF grammar for recovery proposals |
+| `min_confidence_percent` | `60` | Minimum LLM confidence for accepted navigate intents |
+| `max_tokens` | `64` | Token cap for intent JSON generation |
+| `recovery_max_tokens` | `256` | Token cap for recovery JSON generation |
+| `llm_result_timeout_sec` | `180.0` | Timeout waiting for llama_ros inference result |
 | `debug_prompt` | `false` | Print prompt sent from `navigator_node` to `llama_ros` |
-| `debug_grammar` | `false` | Print GBNF grammar sent from `navigator_node` to `llama_ros` |
+| `debug_grammar` | `false` | Print GBNF grammar attached to the request |
+| `enable_operator_io` | `false` | Launch `operator_io_node`. Default `false` — `navigation_terminal` handles `/operator_decision` inline |
+| `operator_auto_ack_for_dev` | `false` | Auto-acknowledge all operator prompts (CI/headless only) |
+| `operator_prompt_timeout_sec` | `0.0` | Stdin timeout for `operator_io_node`; 0 = no timeout |
 
-**If you cloned the AWS package elsewhere**, you must pass `aws_small_house_path:=/your/path` on the launch command line - or edit the default in `src/semantic_nav_bringup/launch/semantic_nav_system.launch.py`.
+**If you cloned the AWS package elsewhere**, pass `aws_small_house_path:=/your/path` on the launch command line or edit the default in `semantic_nav_system.launch.py`.
 
-To launch the system without the LLM parser:
-
+To launch without the LLM parser (baseline testing):
 ```bash
 ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
 ```
+
+---
 
 ## 12. ROS 2 endpoints
 
@@ -670,6 +618,15 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
 | `/parse_semantic_command` | Service (`ParseSemanticCommand`) | `semantic_nav_llm/navigator_node` (optional) |
 | `/llama/generate_response` | Action (`llama_msgs/action/GenerateResponse`) | external (`llama_ros`), consumed by `semantic_nav_llm` |
 
+### Terminal ↔ orchestrator
+
+| Endpoint | Type | Provider / Consumer |
+|---|---|---|
+| `/navigate_to_query` | Service (`NavigateToQuery`) | served by `navigation_orchestrator`; called by `navigation_terminal` |
+| `/cancel_navigation` | Service (`std_srvs/Trigger`) | served by `navigation_orchestrator`; called by `navigation_terminal` on preemption |
+| `/operator_decision` | Service (`OperatorDecision`) | served by `navigation_terminal` (default) or `operator_io_node` (`enable_operator_io:=true`) |
+| `/recovery_status` | Topic (`std_msgs/String`) | published by `navigation_orchestrator`; subscribed by `navigation_terminal` for live status display |
+
 ### BT-led recovery
 
 | Endpoint | Type | Provider / Consumer |
@@ -678,7 +635,6 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
 | `/propose_recovery` | Service (`ProposeRecovery`) | served by `navigator_node` (LLM); called by `navigation_orchestrator` |
 | `/match_responsible_object` | Service (`MatchResponsibleObject`) | served by `navigation_orchestrator`; called by `QuerySemanticContext` C++ BT node |
 | `/refresh_local_objects` | Service (`RefreshLocalObjects`) | served by `local_object_query_node`; called by `QuerySemanticContext` C++ BT node |
-| `/recovery_trigger` | Topic (`RecoveryTrigger`) | published by BT recovery plugins; subscribed by `navigation_orchestrator` |
 | `/robot_obstacle_signal` | Topic (`std_msgs/String`) | published by `EmitObstacleSignal` BT node for `signal_wait_recheck` scenarios |
 
 ### Direct service calls (debugging)
@@ -696,9 +652,12 @@ ros2 service call /resolve_location semantic_nav_interfaces/srv/ResolveLocation 
 ros2 service call /validate_pose_goal semantic_nav_interfaces/srv/ValidatePose \
   "{goal: {header: {frame_id: map}, pose: {position: {x: 1.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}, planner_id: '', use_start: false}"
 
-# Query local objects near robot (radius in metres)
-ros2 service call /refresh_local_objects semantic_nav_interfaces/srv/RefreshLocalObjects \
-  "{robot_pose: {header: {frame_id: map}, pose: {position: {x: 0.0, y: 0.0, z: 0.0}, orientation: {w: 1.0}}}, radius_m: 3.0}"
+# Trigger navigation programmatically (bypasses terminal)
+ros2 service call /navigate_to_query semantic_nav_interfaces/srv/NavigateToQuery \
+  "{query: 'chair:2', nl_command: ''}"
+
+# Cancel active navigation
+ros2 service call /cancel_navigation std_srvs/srv/Trigger "{}"
 ```
 
 ---
@@ -739,12 +698,36 @@ uint32 pose_count
 string command
 ---
 bool success
-string intent                # navigate_to_location | clarify | reject
+string intent                # navigate_to_object | clarify | reject
 string object_tag            # resolved object tag (e.g. "chair")
 string intent_hint           # spatial qualifier from LLM (e.g. "near the window")
+string target_object_key     # direct key if LLM resolves to a specific instance
+bool target_known
 uint8 confidence_percent
 string raw_output
 string message
+```
+
+**`NavigateToQuery.srv`**
+```
+string query          # object key (e.g. "chair:2") or NL-resolved tag/key
+string nl_command     # original NL text; empty for direct commands
+---
+bool success
+string outcome        # REACHED | RESOLUTION_FAILED | EXECUTION_FAILED | BUSY | INVALID
+string failure_reason
+```
+
+**`OperatorDecision.srv`**
+```
+string prompt_text
+string responsible_object_key
+string failure_stage
+string directive_action
+string recovery_event_id
+---
+bool acknowledged
+string operator_note
 ```
 
 **`ExecutePose.action`**
@@ -778,13 +761,13 @@ string original_intent_hint
 string current_target_object_key
 string responsible_object_key
 string responsible_object_tag
-string robot_pose_summary      # nearest-neighbour text for LLM prompt
+string robot_pose_summary
 float32 distance_remaining_at_abort
 int32 remaining_retry_budget
 ---
 bool success
 string status                  # "directive_issued" | "terminal_fail"
-string action                  # "retry_target" | "wait_then_replan" | "signal_wait_recheck" | "give_up" | ""
+string action                  # "retry_target" | "wait_then_replan" | "give_up" | ""
 geometry_msgs/PoseStamped new_goal_pose
 string new_object_key
 int32 wait_seconds
@@ -798,7 +781,7 @@ string message
 
 **`ProposeRecovery.srv`** (orchestrator → LLM navigator)
 ```
-string original_target         # original object key or tag
+string original_target
 string original_object_tag
 string failure_stage
 string trigger_source
@@ -809,7 +792,7 @@ string responsible_object_tag
 int32 remaining_retry_budget
 ---
 bool success
-string action                  # "retry_target" | "wait_then_replan" | "signal_wait_recheck" | "give_up"
+string action                  # "retry_target" | "wait_then_replan" | "give_up"
 string target_object_tag
 string target_intent_hint
 int32 wait_seconds
@@ -834,19 +817,19 @@ pkill -9 gzserver; pkill -9 gzclient
 If the error persists on a fresh boot, suspect a GPU/Ogre problem. Confirm with `glxinfo -B` (install `mesa-utils` if missing) and try `LIBGL_ALWAYS_SOFTWARE=1` as a sanity check.
 
 ### `Package 'rtabmap_demos' not found` (or `aws_robomaker_small_house_world`)
-You forgot to source one of the workspaces. Re-do the `source` commands in [Section 7](#7-running-the-system), in order. If `rtabmap_demos` is missing entirely, you have not built `~/demo_bringup` - see [Section 5](#5-building).
+You forgot to source one of the workspaces. Re-do the `source` commands in [Section 7](#7-running-the-system), in order. If `rtabmap_demos` is missing entirely, you have not built `demo_bringup` — see [Section 5](#5-building).
 
 ### `LLM action server '/llama/generate_response' not available after 30.0s`
 The `llama_ros` action server is not running, or it advertises under a different name. Confirm with `ros2 action list`, and pass the correct name via `--ros-args -p llama_action:=/your/action/name` when starting `navigator_node`.
 
 ### `Invalid strict JSON from LLM: …`
-The LLM produced non-JSON output even though the GBNF grammar was attached. Verify with `ros2 interface show llama_msgs/msg/SamplingConfig` that the field `grammar` exists; if not, update `llama_ros` to a version that supports GBNF. As a temporary debugging aid, set `allow_json_extraction_fallback:=true` - never leave this on in production.
+The LLM produced non-JSON output even though the GBNF grammar was attached. Verify with `ros2 interface show llama_msgs/msg/SamplingConfig` that the field `grammar` exists; if not, update `llama_ros` to a version that supports GBNF. As a temporary debugging aid, set `allow_json_extraction_fallback:=true` — never leave this on in production.
 
-### `LLM target='…' is not known in semantic_db.json`
-The LLM resolved to a label your DB does not contain. Either add an alias for that label in `semantic_db.json` (and restart `navigator_node`) or rephrase the prompt.
+### `LLM target='…' is not known in map_v001.json`
+The LLM resolved to a label your DB does not contain. Either add the object to `map_v001.json` (and restart `resolver_node`) or rephrase the command.
 
-### Validation fails for a known location ("kitchen")
-The robot has not yet explored the area containing that location. Drive the robot with teleop until the room is visible in RViz's occupancy grid, then retry the query. This is by design - see Section 15, principle 6.
+### Validation fails for a known object ("chair:2")
+The robot has not yet explored the area containing that object. Drive the robot with teleop until the room is visible in RViz's occupancy grid, then retry. This is by design — see Section 15, principle 6.
 
 ### Robot spawns inside a wall
 The default `x_pose=0.0 y_pose=0.0` may not be in free space depending on AWS house origin. Pass spawn coordinates that you have visually confirmed are clear:
@@ -854,22 +837,28 @@ The default `x_pose=0.0 y_pose=0.0` may not be in free space depending on AWS ho
 ros2 launch semantic_nav_bringup semantic_nav_system.launch.py x_pose:=-2.0 y_pose:=0.5
 ```
 
+### `/operator_decision` service conflict
+Both `navigation_terminal` and `operator_io_node` serve `/operator_decision`. Running both simultaneously causes one to fail. Use one or the other: `navigation_terminal` for interactive use (default); `operator_io_node` with `enable_operator_io:=true` and `operator_auto_ack_for_dev:=true` for headless/CI runs. Do not start `navigation_terminal` in CI.
+
+### RViz crashes mid-session
+RViz is launched with `respawn=true` in the bringup and will restart automatically after 2 seconds. The rest of the stack (Nav2, RTAB-Map, semantic nodes) continues running uninterrupted.
+
 ---
 
 ## 15. Design principles
 
-1. **Modular ROS 2 package separation** - each concern in its own package.
-2. **No direct LLM-to-motion coupling** - the LLM emits a structured `{action, object_tag, intent_hint, confidence}` intent only. Targets are validated against the semantic DB; the LLM cannot fabricate coordinates, motion commands, behavior trees, or unknown object types.
-3. **Validation before execution** - planner-based reachability check before committing to navigation (skipped in `bt_led` mode where `ValidateSemantic` inside the BT handles this).
-4. **Stage-specific logging and failure isolation** - `[LLM_INTENT]` / `[RESOLUTION]` / `[VALIDATION]` / `[EXECUTION]` / `[RECOVERY/BT]` prefixes.
-5. **Live RTAB-Map map** - Nav2 consumes the live `/map` topic, no pre-saved map file.
-6. **Semantic navigation only for explored regions** - goals must be in mapped free space at the moment the query is issued.
-7. **Versioned semantic snapshots** - every resolution stamps its response with `db_version` and `db_stamp`, and the orchestrator propagates them through validation and execution so any single run can be traced back to a specific DB state.
-8. **Strict grammar-constrained LLM output** - a GBNF grammar enforces the JSON schema at decode time; a confidence floor and a DB membership check gate acceptance. A separate `recovery_intent.gbnf` constrains recovery proposals to `{action, target_object_tag, target_intent_hint, rationale, confidence}`.
-9. **Nav2 BT owns the recovery flow** - in `bt_led` mode the orchestrator dispatches a single `ExecutePose` goal and then does not cancel it. All path-failure detection, costmap clearing, and retry sequencing is delegated to `semantic_recovery_bt.xml`. The orchestrator only responds to explicit `/request_recovery` calls from the BT plugin (`EscalateToLLMRecovery`).
-10. **Object-instance multi-disambiguation via `exclude_object_key`** - when a `retry_target` directive would resolve back to the already-blocked instance, `_resolve_target_for_directive` walks all same-tag instances and selects the nearest non-blocked one via `target_object_key` direct lookup (Precedence 1 in the resolver, bypassing caption ranking).
-11. **Retry budget is BT-authoritative** - the Nav2 BT's `RetryUntilSuccessful` node controls the outer retry count; the orchestrator tracks `remaining_retry_budget` separately and returns a `give_up` directive when it reaches 0, which causes the BT's `GiveUpTerminal` subtree to execute and the `ExecutePose` action to return failure.
-12. **Object-centric resolution with ranked candidates** - the resolver scores all instances of an object tag using BM25/LLM/Hybrid caption ranking and returns the highest-scoring navigable instance. The `intent_hint` string from the LLM shifts the ranking toward spatially-qualified targets (e.g. "near the window"). Offline eval on 40 single-tag fixtures (GPU-accelerated llama_ros, 2026-06-18):
+1. **Modular ROS 2 package separation** — each concern in its own package.
+2. **No direct LLM-to-motion coupling** — the LLM emits a structured `{action, object_tag, intent_hint, confidence}` intent only. Targets are validated against the semantic DB; the LLM cannot fabricate coordinates, motion commands, behavior trees, or unknown object types.
+3. **Validation before execution** — `ValidateSemantic` inside the BT performs a geometric veto before motion starts.
+4. **Stage-specific logging and failure isolation** — `[LLM_INTENT]` / `[RESOLUTION]` / `[VALIDATION]` / `[EXECUTION]` / `[RECOVERY/BT]` prefixes.
+5. **Live RTAB-Map map** — Nav2 consumes the live `/map` topic, no pre-saved map file.
+6. **Semantic navigation only for explored regions** — goals must be in mapped free space at the moment the query is issued.
+7. **Versioned semantic snapshots** — every resolution stamps its response with `db_version` and `db_stamp`, and the orchestrator propagates them through execution so any single run can be traced back to a specific DB state.
+8. **Strict grammar-constrained LLM output** — a GBNF grammar enforces the JSON schema at decode time; a confidence floor and a DB membership check gate acceptance. A separate `recovery_intent.gbnf` constrains recovery proposals.
+9. **Nav2 BT owns the full recovery flow** — three-tier strategy entirely inside `semantic_recovery_bt.xml`. The orchestrator dispatches a single `ExecutePose` goal and only responds to explicit `/request_recovery` calls from the BT plugin (`EscalateToLLMRecovery`). `PathClearCondition` is not in the primary navigation sequence — `RateController(1 Hz)` around `ComputePathToPose` handles replanning around small navigable obstacles without triggering recovery. `PathClearCondition` is kept only inside the `SignalWaitRecheck` subtree for per-attempt clear-path confirmation during animate-blocker recovery.
+10. **Object-instance multi-disambiguation via `exclude_object_key`** — when a `retry_target` directive would resolve back to the already-blocked instance, `_resolve_target_for_directive` walks all same-tag instances and selects the nearest non-blocked one via `target_object_key` direct lookup (Precedence 1 in the resolver, bypassing caption ranking).
+11. **Retry budget is BT-authoritative** — the Nav2 BT's `RecoveryNode(number_of_retries=3)` controls the outer retry count; the orchestrator tracks `remaining_retry_budget` separately and returns a `give_up` directive when it reaches 0.
+12. **Object-centric resolution with ranked candidates** — the resolver scores all instances of an object tag using BM25/LLM/Hybrid caption ranking and returns the highest-scoring navigable instance. Offline eval on 40 single-tag fixtures (GPU-accelerated llama_ros):
 
     | Ranker | Top-1 | Top-3 | LLM invocation rate | Notes |
     |---|---|---|---|---|
@@ -879,34 +868,36 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py x_pose:=-2.0 y_po
     | LLM+spatial | 87.5% | 95.0% | 100% | |
     | **Hybrid δ=0.5** | **90.0%** | **100.0%** | **48%** | **Production default** |
 
-    Hybrid δ=0.5 matches pure-LLM top-1 accuracy, achieves 100% top-3 (same as BM25 baseline), and invokes the LLM on only 48% of queries — halving average latency relative to pure LLM. Delta value is robust: accuracy is flat from δ=0.2 to δ=inf. Production default is `ranker=bm25` (param); switch to `ranker=hybrid` with llama_ros running to activate the full hybrid path.
+    Hybrid δ=0.5 matches pure-LLM top-1 accuracy, achieves 100% top-3, and invokes the LLM on only 48% of queries — halving average latency. Production default is `ranker=bm25`; switch to `ranker=hybrid` with llama_ros running to activate the full hybrid path.
 
 ### Expected behavior summary
 
 | Scenario | Behavior |
 |---|---|
 | Unknown query | Resolution fails, pipeline stops |
-| LLM rejects command (e.g. "drive forward") | NavigatorNode returns `intent=reject`, orchestrator not invoked |
-| LLM proposes object tag not in DB | NavigatorNode returns `success=false`, orchestrator not invoked |
-| LLM confidence below `min_confidence_percent` | NavigatorNode returns `success=false`, orchestrator not invoked |
-| Known object, unexplored area | Validation fails (`ValidateSemantic` in BT) or planner rejects |
-| Path blocked mid-flight (`bt_led` mode) | `PathClearCondition` triggers, `QuerySemanticContext` gathers local objects, `EscalateToLLMRecovery` calls `/request_recovery` → orchestrator proposes `retry_target` / `wait_then_replan` / `signal_wait_recheck` / `give_up` |
-| Blocked object has same-tag alternatives | `exclude_object_key` redirects directive to nearest non-blocked instance |
-| Retry budget exhausted (3 attempts) | Orchestrator returns `give_up`; BT executes `GiveUpTerminal` subtree; `ExecutePose` returns failure |
-| Persistent blockage (closed door) | After 3 retries all blocked, `give_up` reached cleanly |
-| Human/animal blocking path | `signal_wait_recheck` directive: robot emits polite-clear signal, waits, re-checks path |
-| Clearable non-animate object blocking path | `clear_object_then_replan` directive: operator prompted to remove obstacle, then BT clears costmaps and replans |
-| Non-clearable static object blocking path | `wait_then_replan` directive: robot waits `wait_seconds`, then BT replans |
-| Door blocking path (`responsible_openable=True`) | `open_door_then_replan` directive: operator prompted to open door, then BT clears costmaps and replans |
+| LLM rejects command (e.g. `"drive forward"`) | NavigatorNode returns `intent=reject`; orchestrator not invoked |
+| LLM proposes object tag not in DB | NavigatorNode returns `success=false`; orchestrator not invoked |
+| LLM confidence below `min_confidence_percent` | NavigatorNode returns `success=false`; orchestrator not invoked |
+| Known object, unexplored area | `ValidateSemantic` in BT rejects before motion starts |
+| Small navigable obstacle mid-path | `RateController(1 Hz)` triggers replanning; FollowPath follows updated plan; no recovery fires |
+| Costmap artifact / transient stuck | Geometric recovery (Tier 2): clear costmaps + BackUp; primary retried |
+| Full path blockage | Geometric recovery fails; Tier 3 semantic recovery: `CaptureBlockageContext` → `QuerySemanticContext` → `EscalateToLLMRecovery` → directive |
+| Blocked object has same-tag alternatives | `exclude_object_key` redirects `retry_target` to nearest non-blocked instance |
+| Retry budget exhausted (3 BT attempts) | Orchestrator returns `give_up`; BT `GiveUpTerminal` executes; `ExecutePose` returns failure |
+| Human/animal blocking path | `signal_wait_recheck`: robot emits polite-clear signal, waits, re-checks via `PathClearCondition` |
+| Clearable non-animate object blocking | `clear_object_then_replan`: operator prompted inline in terminal to remove obstacle |
+| Door blocking path (`responsible_openable=True`) | `open_door_then_replan`: operator prompted inline in terminal to open door |
+| User types new command mid-navigation | Terminal fires `/cancel_navigation`; orchestrator aborts Nav2 goal; new goal started immediately |
 
 ---
 
 ## 16. Roadmap
 
-1. **Live semantic DB topic ingestion** - re-add a `SemanticDB` topic subscriber to `resolver_node` that atomically replaces the snapshot at runtime, bumping `db_version`. The interfaces (`SemanticDB.msg`, the `db_version` / `db_stamp` fields on `ResolveLocation`) and the orchestrator-side propagation are already in place; only the subscriber needs to come back.
-2. ~~**Recovery Orchestration with LLM**~~ - **DONE (BT-LR M1–M4, 2026-06-12).** Nav2 BT with `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, and `ValidateSemantic` C++ plugins; GBNF-constrained `ProposeRecovery` endpoint; `exclude_object_key` multi-instance disambiguation; up to 3 retries with `give_up` terminal. E2E validated (Scenarios 1 & 4, 2026-06-13).
-3. ~~**E2E Scenario 2 & 3 validation**~~ - **DONE (2026-06-18).** Scenario 2a: clearable non-animate obstacle → `clear_object_then_replan` (direct service call, `responsible_clearable=True`, `safety_class=none`). Scenario 2b: non-clearable static obstacle → `wait_then_replan` passive (direct service call, `responsible_clearable=False`). Scenario 3: human-class blockage → `signal_wait_recheck` directive (`emit_signal_during_wait=True`, `signal_attempts=3`, direct service call with `safety_class=human`).
-4. **Optional llama_ros launch integration** - `navigator_node` is now launched by `semantic_nav_system.launch.py` by default, but the heavyweight `llama_node` model server is still launched separately. A future launch file may optionally include `llama_node` once model startup, Python environment isolation, and memory behavior are stable.
-5. ~~**Ranker evaluation with live LLM**~~ - **DONE (2026-06-18).** Full 40-fixture offline eval with GPU-accelerated llama_ros. Results in `eval/results_full.csv`; plots in `eval/`. Production recommendation: `hybrid δ=0.5` (90% top-1, 100% top-3, 48% LLM invocation rate). See §15.12 for full table.
-6. **Post-failure orchestrator policies** - re-resolve / re-validate on failure, optionally gated on `db_version` change.
-7. **Snapshot immutability during active navigation** - when live DB updates return, ensure an in-flight goal keeps using the snapshot it was resolved against.
+1. **Live semantic DB topic ingestion** — re-add a `SemanticDB` topic subscriber to `resolver_node` that atomically replaces the snapshot at runtime, bumping `db_version`. The interfaces (`SemanticDB.msg`, `db_version`/`db_stamp` fields on `ResolveLocation`) and the orchestrator-side propagation are already in place; only the subscriber needs to come back.
+2. ~~**Recovery Orchestration with LLM**~~ — **DONE (BT-LR M1–M4, 2026-06-12).** Nav2 BT with `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, and `ValidateSemantic` C++ plugins; GBNF-constrained `ProposeRecovery` endpoint; `exclude_object_key` multi-instance disambiguation; up to 3 retries with `give_up` terminal.
+3. ~~**E2E Scenario 2 & 3 validation**~~ — **DONE (BT-LR M5, 2026-06-18).** `OperatorPrompt` BT node + `operator_io_node` + `open_door_then_replan` and `clear_object_then_replan` directives validated. Scenario 2a: clearable obstacle → `clear_object_then_replan`. Scenario 2b: non-clearable → `wait_then_replan`. Scenario 3: human-class → `signal_wait_recheck`.
+4. ~~**Three-tier BT recovery + navigation terminal**~~ — **DONE (BT-LR M6, 2026-06-20).** `PathClearCondition` removed from primary navigation path. `RateController(1 Hz)` around `ComputePathToPose` handles small navigable obstacles. `RoundRobin` recovery child: Tier 2 geometric (clear + backup), Tier 3 semantic (`CaptureBlockageContext` → `QuerySemanticContext` → `EscalateToLLMRecovery`). Unified `navigation_terminal` replaces one-shot CLI and `operator_io_node`; supports NL commands, direct object keys, mid-navigation preemption, and inline operator prompts. `sample_radius_m=0.0` bug fixed in `PathClearCondition`; severity gating added (`BlockageMetrics`, `min_blocked_samples`, `min_blocked_length_m`, `blocked_fraction_threshold`).
+5. **Optional llama_ros launch integration** — `navigator_node` is now launched by `semantic_nav_system.launch.py` by default, but the heavyweight `llama_node` model server is still launched separately. A future launch file may optionally include `llama_node` once model startup, Python environment isolation, and memory behavior are stable.
+6. ~~**Ranker evaluation with live LLM**~~ — **DONE (2026-06-18).** Full 40-fixture offline eval with GPU-accelerated llama_ros. Results in `eval/results_full.csv`; plots in `eval/`. Production recommendation: `hybrid δ=0.5` (90% top-1, 100% top-3, 48% LLM invocation rate). See §15.12 for full table.
+7. **Post-failure orchestrator policies** — re-resolve / re-validate on failure, optionally gated on `db_version` change.
+8. **Snapshot immutability during active navigation** — when live DB updates return, ensure an in-flight goal keeps using the snapshot it was resolved against.
