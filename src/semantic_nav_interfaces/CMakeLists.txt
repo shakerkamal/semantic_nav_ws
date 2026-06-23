@@ -12,6 +12,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SemanticDB.msg"
   "msg/RecoveryTrigger.msg"
   "msg/ObjectInstance.msg"
+  "msg/SemanticStoreUpdated.msg"
+  "msg/DynamicObjectObservation.msg"
+  "msg/DynamicObjectArray.msg"
+  "msg/DoorStateObservation.msg"
+  "msg/DoorStateArray.msg"
+  "msg/SemanticCorrectionReport.msg"
+  "msg/SemanticMapUpdate.msg"
 
   "srv/ResolveLocation.srv"
   "srv/ValidatePose.srv"
@@ -22,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MatchResponsibleObject.srv"
   "srv/OperatorDecision.srv"
   "srv/NavigateToQuery.srv"
+  "srv/QuerySemanticRegion.srv"
 
   "action/ExecutePose.action"
 

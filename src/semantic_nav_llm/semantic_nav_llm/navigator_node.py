@@ -905,6 +905,22 @@ User:
         original_intent_hint = (getattr(request, "original_intent_hint", "") or "").strip()
         current_target_object_key = (getattr(request, "current_target_object_key", "") or "").strip()
 
+        ranked_tags = self._rank_retry_suggestions(
+            original_intent_hint,
+            original_object_tag=original_object_tag,
+        )
+        if ranked_tags:
+            retry_suggestion_block = (
+                "\nSemantics-ranked retry alternatives (different object types to "
+                "prefer for retry_target):\n"
+                f"  {', '.join(ranked_tags)}\n"
+                f"(Ranked by relevance to the original intent; the blocked type "
+                f"'{original_object_tag or 'n/a'}' is intentionally excluded. Still "
+                "must be from the vocabulary above.)\n"
+            )
+        else:
+            retry_suggestion_block = ""
+
         return f"""You are a BT-aware semantic recovery policy planner for a mobile robot using ROS 2 Nav2.
 
 Nav2 has failed or is about to fail. Choose exactly ONE constrained recovery policy.
@@ -940,7 +956,7 @@ Rules:
 
 Navigable object tag vocabulary (use one of these for target_object_tag):
 {navigable_tags}
-
+{retry_suggestion_block}
 Original goal:
 user command: "{user_command}"
 original object_tag: {original_object_tag or 'unknown'}
@@ -1096,6 +1112,66 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             f"objects={len(store.by_object_key)}, db_version={store.db_version}"
         )
         return store
+
+    def _rank_retry_suggestions(
+        self,
+        intent_hint: str,
+        original_object_tag: str = "",
+        top_k: int = 6,
+    ) -> List[str]:
+        """Rank navigable tags as *alternatives* for retry_target.
+
+        The goal is to suggest a DIFFERENT object type than the one that just
+        failed, ranked by relevance to the user's intent. So:
+
+          - The originally-requested (now-blocked) tag is excluded — re-suggesting
+            it would point the LLM straight back at what already failed.
+          - When intent_hint is empty (direct object-key command), fall back to
+            the blocked tag itself as the ranking query, so captions describing
+            similar objects ("chair" → other seating) still surface alternatives
+            instead of returning nothing.
+
+        Returns up to top_k unique tags in descending relevance order, or an
+        empty list when the store has no rows.
+        """
+        from semantic_nav_semantics.caption_ranker import BM25CaptionRanker
+
+        exclude = (original_object_tag or "").strip().lower()
+        query = (intent_hint or "").strip()
+        if not query:
+            # Direct-key command: no NL hint. Use the blocked tag as the query so
+            # BM25 still ranks semantically-related object types.
+            query = exclude
+        if not query:
+            return []
+
+        all_rows = []
+        for tag in self._object_store.navigable_tag_vocabulary:
+            if tag == exclude:
+                continue
+            all_rows.extend(self._object_store.rows_for_tag(tag))
+
+        if not all_rows:
+            return []
+
+        ranker = BM25CaptionRanker(
+            affordances=self._object_store.affordances,
+            navigable_tags=frozenset(self._object_store.navigable_tag_vocabulary),
+        )
+        ranked = ranker.rank(all_rows, query)
+
+        seen: Set[str] = set()
+        tags: List[str] = []
+        for r in ranked:
+            tag = r.row.normalized_tag
+            if tag == exclude:
+                continue
+            if tag not in seen:
+                seen.add(tag)
+                tags.append(tag)
+                if len(tags) >= top_k:
+                    break
+        return tags
 
     def _load_semantic_catalog(self, db_path: str) -> SemanticCatalog:
         if not db_path:

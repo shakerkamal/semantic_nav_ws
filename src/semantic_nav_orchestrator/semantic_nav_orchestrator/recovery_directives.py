@@ -10,7 +10,7 @@ RequestRecovery.Response at the ROS boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 
 # Pure-test representation:
@@ -78,6 +78,7 @@ class OverrideConfig:
     short_signal_wait_seconds: int
     passive_wait_seconds_default: int
 
+
 def build_retry_target_directive(
     proposal: LLMProposal,
     context: ProposalContext,
@@ -130,6 +131,7 @@ def build_retry_target_directive(
         recovery_event_id=context.recovery_event_id,
     )
 
+
 def build_wait_then_replan_directive(
     proposal: LLMProposal,
     context: ProposalContext,
@@ -170,6 +172,7 @@ def build_wait_then_replan_directive(
         escalate_to_operator=False,
         recovery_event_id=context.recovery_event_id,
     )
+
 
 def build_give_up_directive(
     proposal: LLMProposal,
@@ -293,4 +296,94 @@ def build_clear_object_directive(
         confidence_percent=int(proposal.confidence_percent),
         escalate_to_operator=True,
         recovery_event_id=context.recovery_event_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M5C door-state deterministic directive (thin builders, no LLM context)
+# ---------------------------------------------------------------------------
+
+def build_direct_give_up_directive(
+    *,
+    reason: str,
+    operator_message: str = "",
+    recovery_event_id: str = "",
+) -> Directive:
+    """Build a terminal give_up directive without an LLM proposal."""
+    return Directive(
+        action="give_up",
+        rationale=reason,
+        operator_message=operator_message,
+        escalate_to_operator=True,
+        recovery_event_id=recovery_event_id,
+    )
+
+
+def build_direct_wait_then_replan_directive(
+    *,
+    wait_seconds: int,
+    emit_signal_during_wait: bool = False,
+    signal_attempts: int = 0,
+    reason: str = "",
+    recovery_event_id: str = "",
+) -> Directive:
+    """Build a wait_then_replan directive without an LLM proposal."""
+    return Directive(
+        action="wait_then_replan",
+        wait_seconds=max(0, int(wait_seconds)),
+        emit_signal_during_wait=bool(emit_signal_during_wait),
+        signal_attempts=max(0, int(signal_attempts)),
+        rationale=reason,
+        recovery_event_id=recovery_event_id,
+    )
+
+
+def maybe_build_closed_door_directive(
+    trigger: Any,
+    recovery_event_id: str = "",
+) -> Optional[Directive]:
+    """Return a deterministic directive for a closed-door blockage.
+
+    `trigger` is any object with at minimum:
+        responsible_object_tag (str)
+        responsible_state_detail (str)
+        responsible_traversability (str)
+        responsible_openable (bool)
+
+    Returns None when the trigger does not match a closed-door scenario,
+    allowing the caller to fall through to the LLM proposal path.
+    """
+    tag = (getattr(trigger, "responsible_object_tag", "") or "").strip()
+    if "door" not in tag:
+        return None
+
+    state_detail = (
+        getattr(trigger, "responsible_state_detail", "") or ""
+    ).strip().lower()
+    traversability = (
+        getattr(trigger, "responsible_traversability", "") or ""
+    ).strip().lower()
+    robot_openable = bool(getattr(trigger, "responsible_openable", False))
+
+    if state_detail != "closed" and traversability != "blocked":
+        return None
+
+    if robot_openable:
+        return build_direct_give_up_directive(
+            reason=(
+                "closed_door_requires_manipulation_capability_not_available"
+            ),
+            operator_message=(
+                "Path is blocked by a closed door; "
+                "door manipulation is not implemented."
+            ),
+            recovery_event_id=recovery_event_id,
+        )
+
+    return build_direct_wait_then_replan_directive(
+        wait_seconds=10,
+        emit_signal_during_wait=False,
+        signal_attempts=0,
+        reason="closed_door_passive_wait",
+        recovery_event_id=recovery_event_id,
     )

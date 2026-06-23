@@ -28,7 +28,10 @@ from nav2_msgs.srv import ClearEntireCostmap
 
 from std_srvs.srv import Trigger
 
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+
 from semantic_nav_interfaces.action import ExecutePose
+from semantic_nav_interfaces.msg import SemanticCorrectionReport, SemanticStoreUpdated
 from semantic_nav_interfaces.srv import (
     MatchResponsibleObject,
     NavigateToQuery,
@@ -51,6 +54,10 @@ from semantic_nav_orchestrator.recovery_directives import (
     build_clear_object_directive,
     build_retry_target_directive,
     build_wait_then_replan_directive,
+    maybe_build_closed_door_directive,
+)
+from semantic_nav_orchestrator.semantic_map_updates import (
+    write_displaced_semistatic_map,
 )
 
 
@@ -156,6 +163,8 @@ class TriggerInfo:
     responsible_openable: bool = False
     responsible_clearable: bool = False
     match_type: str = "unknown"
+    responsible_state_detail: str = ""
+    responsible_traversability: str = ""
 
     blockage_centroid: Point = field(default_factory=Point)
     blockage_extent_m: float = 0.0
@@ -252,6 +261,8 @@ class NavigationOrchestrator(Node):
         self.declare_parameter("start_idle", False)
 
         self.declare_parameter("orchestration_mode", "bt_led")  # bt_led is the only active mode
+        self.declare_parameter("environment_id", "")
+        self.declare_parameter("semantic_map_id", "")
         self.declare_parameter("signal_attempts_default", 3)
         self.declare_parameter("short_signal_wait_seconds", 2)
         self.declare_parameter("passive_wait_seconds_default", 5)
@@ -301,6 +312,14 @@ class NavigationOrchestrator(Node):
                 ),
             )
             self._orchestration_mode = "bt_led"
+
+        self._environment_id = (
+            self.get_parameter("environment_id").get_parameter_value().string_value.strip()
+        )
+        self._semantic_map_id = (
+            self.get_parameter("semantic_map_id").get_parameter_value().string_value.strip()
+        )
+        self._semantic_map_version: str = ""  # updated when provider publishes
 
         self._signal_attempts_default = (
             self.get_parameter("signal_attempts_default")
@@ -405,6 +424,20 @@ class NavigationOrchestrator(Node):
             callback_group=self._callback_group,
         )
 
+        store_update_qos = QoSProfile(depth=1)
+        store_update_qos.reliability = ReliabilityPolicy.RELIABLE
+        store_update_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._semantic_store_updated_pub = self.create_publisher(
+            SemanticStoreUpdated,
+            "/semantic_store_updated",
+            store_update_qos,
+        )
+        self._correction_report_pub = self.create_publisher(
+            SemanticCorrectionReport,
+            "/semantic_map/corrections",
+            10,
+        )
+
         # /navigate_to_query: one navigation at a time; terminal is the caller.
         self._nav_to_query_lock = threading.Lock()
         self._nav_to_query_srv = self.create_service(
@@ -435,6 +468,7 @@ class NavigationOrchestrator(Node):
         self._active_original_object_tag = ""
         self._active_original_intent_hint = ""
         self._active_current_target_object_key = ""
+        self._active_nl_command = ""
 
         self._db_version: int = 0
         self._db_stamp: Optional[Time] = None
@@ -567,7 +601,7 @@ class NavigationOrchestrator(Node):
         original_nl_command = self._command if self._command else ""
 
         # -----------------------------------------------------------------------
-        # BT-LED MODE (thesis primary path)
+        # BT-LED MODE 
         # Recovery ownership has been transferred to the Nav2 behavior tree
         # defined in semantic_recovery_bt.xml. The BT owns:
         #   - ValidateSemantic (geometric veto before motion starts)
@@ -585,20 +619,6 @@ class NavigationOrchestrator(Node):
                 initial_query=semantic_query,
                 original_nl_command=original_nl_command,
             )
-
-        # ======================================================================
-        # LEGACY (standalone mode) — commented out 2026-06-18. BT-led mode
-        # dispatches via _run_bt_led_once() above.
-        # ======================================================================
-#         # -----------------------------------------------------------------------
-#         # STANDALONE / PIPELINE MODE
-#         # The orchestrator owns the full recovery loop below. This path is NOT
-#         # active when orchestration_mode=bt_led.
-#         # -----------------------------------------------------------------------
-#         return self._run_with_recovery(
-#             initial_query=semantic_query,
-#             original_nl_command=original_nl_command,
-#         )
 
     def _get_semantic_query(self) -> Optional[str]:
         """
@@ -858,6 +878,8 @@ class NavigationOrchestrator(Node):
 
         if not original_intent_hint:
             original_intent_hint = getattr(target, "intent_hint", "") or ""
+        if not original_intent_hint:
+            original_intent_hint = self._active_original_intent_hint
 
         current_target_object_key = getattr(target, "object_key", "") or ""
 
@@ -879,10 +901,17 @@ class NavigationOrchestrator(Node):
         self,
         initial_query: str,
         original_nl_command: str = "",
+        original_intent_hint: str = "",
     ) -> bool:
         self._attempt_records = []
         self._active_recovery = False
         self._bt_directive_in_progress = False
+        self._active_nl_command = original_nl_command
+        self._active_original_intent_hint = original_intent_hint
+        # Distinguishes why a run failed so the terminal can react:
+        #   "resolution" — query could not be resolved to a pose
+        #   "execution"  — dispatched but Nav2 + BT recovery exhausted / gave up
+        self._last_failure_kind: Optional[str] = None
 
         self._transition_recovery_fsm(
             RecoveryFSMState.EXECUTING,
@@ -900,6 +929,7 @@ class NavigationOrchestrator(Node):
 
         target = self._resolve_query(initial_query)
         if target is None:
+            self._last_failure_kind = "resolution"
             self._transition_recovery_fsm(
                 RecoveryFSMState.TERMINAL_FAIL,
                 reason="bt_led_resolution_failed",
@@ -935,6 +965,7 @@ class NavigationOrchestrator(Node):
         )
 
         if not self._execute_pose(target):
+            self._last_failure_kind = "execution"
             self._transition_recovery_fsm(
                 RecoveryFSMState.TERMINAL_FAIL,
                 reason="bt_led_execute_pose_failed",
@@ -947,535 +978,6 @@ class NavigationOrchestrator(Node):
         )
         return True
     
-    # ---------------------------------------------------------------------------
-        # ======================================================================
-        # LEGACY (standalone mode) — _run_with_recovery(). In bt_led mode
-        # the BT RecoveryNode owns the retry loop.
-        # ======================================================================
-#     # STANDALONE / PIPELINE MODE — not active when orchestration_mode=bt_led.
-#     # In bt_led mode _run_bt_led_once is used instead and the BT tree owns
-#     # every recovery action below (trigger handling, FSM transitions, goal
-#     # cancellation, LLM escalation, and retry looping).
-#     # ---------------------------------------------------------------------------
-#     def _run_with_recovery(
-#         self,
-#         initial_query: str,
-#         original_nl_command: str = "",
-#     ) -> bool:
-#         attempts = []
-#         self._attempt_records = attempts
-# 
-#         recovery_count = 0
-#         current_query = initial_query
-#         chain_queue = []
-#         original_target_id = None
-# 
-#         self._active_recovery = False
-#         self._last_trigger = None
-#         self._transition_recovery_fsm(
-#             RecoveryFSMState.EXECUTING,
-#             reason="starting_navigation_pipeline",
-#         )
-# 
-#         self._log_stage_info(
-#             "RECOVERY",
-#             (
-#                 f"Recovery loop enabled: recovery_cap={self._recovery_cap}, "
-#                 f"require_recovery_approval={self._require_recovery_approval}, "
-#                 f"allow_stdin_intervention={self._allow_stdin_intervention}, "
-#                 f"recovery_trigger_topic='{self._recovery_trigger_topic}', "
-#                 f"enable_plan_intersection_trigger={self._enable_plan_intersection_trigger}, "
-#                 f"enable_stall_watchdog={self._enable_stall_watchdog}"
-#             ),
-#         )
-# 
-#         while True:
-#             outcome = self._run_pipeline_once(current_query)
-# 
-#             if outcome.target is not None and original_target_id is None:
-#                 original_target_id = outcome.target.object_key
-# 
-#             if outcome.success:
-#                 self._active_recovery = False
-# 
-#                 if chain_queue:
-#                     next_query = chain_queue.pop(0)
-#                     self._transition_recovery_fsm(
-#                         RecoveryFSMState.EXECUTING,
-#                         reason="continuing_waypoint_chain",
-#                     )
-#                     self._log_stage_info(
-#                         "RECOVERY",
-#                         (
-#                             f"Waypoint leg succeeded. Continuing chain with "
-#                             f"next target='{next_query}'. Remaining legs={chain_queue}"
-#                         ),
-#                     )
-#                     current_query = next_query
-#                     continue
-# 
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.TERMINAL_SUCCESS,
-#                     reason="goal_reached",
-#                 )
-#                 return True
-# 
-#             if outcome.stage == "resolution":
-#                 return self._escalate_intervention(
-#                     reason="resolution_failed",
-#                     original_nl_command=original_nl_command,
-#                     original_target=original_target_id or current_query,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             if outcome.stage not in {"validation", "execution"}:
-#                 self._active_recovery = False
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.TERMINAL_FAIL,
-#                     reason=f"unsupported_failure_stage:{outcome.stage}",
-#                 )
-#                 return False
-# 
-#             failed_target_id = (
-#                 outcome.target.object_key if outcome.target else current_query
-#             )
-# 
-#             stable_original_target = original_target_id or failed_target_id
-# 
-#             if recovery_count >= self._recovery_cap:
-#                 return self._escalate_intervention(
-#                     reason="cap_reached",
-#                     original_nl_command=original_nl_command,
-#                     original_target=stable_original_target,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             trigger_status = self._action_backstop_trigger(
-#                 failure_stage=outcome.stage,
-#                 nav2_message=outcome.message,
-#                 robot_pose=self._make_recovery_pose(outcome.target),
-#                 distance_remaining=self._last_feedback_distance_remaining,
-#                 nav2_recoveries=self._last_feedback_recoveries,
-#                 failed_target_id=failed_target_id,
-#                 recovery_count=recovery_count,
-#             )
-# 
-#             if trigger_status not in {"accepted", "already_in_recovery"}:
-#                 return self._escalate_intervention(
-#                     reason=f"recovery_trigger_{trigger_status}",
-#                     original_nl_command=original_nl_command,
-#                     original_target=stable_original_target,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             self._transition_recovery_fsm(
-#                 RecoveryFSMState.LLM_WAIT,
-#                 reason="calling_propose_recovery",
-#             )
-# 
-#             proposal = self._call_propose_recovery(
-#                 original_nl_command=original_nl_command,
-#                 original_target=stable_original_target,
-#                 failure_stage=outcome.stage,
-#                 nav2_message=outcome.message,
-#                 attempts=attempts,
-#                 target=outcome.target,
-#                 remaining_retry_budget=self._recovery_cap - recovery_count,
-#             )
-# 
-#             self._transition_recovery_fsm(
-#                 RecoveryFSMState.RECOVERY_IN_PROGRESS,
-#                 reason="proposal_received",
-#             )
-# 
-#             recovery_count += 1
-# 
-#             if proposal is None:
-#                 attempts.append(
-#                     AttemptRecord(
-#                         action="unusable_proposal",
-#                         value="",
-#                         outcome="proposal_call_failed",
-#                         rationale="",
-#                         failure_stage=outcome.stage,
-#                         message="ProposeRecovery service call failed.",
-#                     )
-#                 )
-#                 return self._escalate_intervention(
-#                     reason="unusable_proposal",
-#                     original_nl_command=original_nl_command,
-#                     original_target=stable_original_target,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             self._write_recovery_log(
-#                 original_nl_command=original_nl_command,
-#                 original_target=stable_original_target,
-#                 failure_stage=outcome.stage,
-#                 nav2_message=outcome.message,
-#                 attempts=attempts,
-#                 proposal=proposal,
-#                 outcome="proposal_received",
-#             )
-# 
-#             if not proposal.success:
-#                 attempts.append(
-#                     AttemptRecord(
-#                         action=proposal.action or "unusable_proposal",
-#                         value=proposal.target or ",".join(proposal.waypoints),
-#                         outcome="proposal_rejected",
-#                         rationale=proposal.rationale,
-#                         failure_stage=outcome.stage,
-#                         message=proposal.message,
-#                     )
-#                 )
-#                 return self._escalate_intervention(
-#                     reason="unusable_proposal",
-#                     original_nl_command=original_nl_command,
-#                     original_target=stable_original_target,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             if proposal.action == "give_up":
-#                 attempts.append(
-#                     AttemptRecord(
-#                         action="give_up",
-#                         value="",
-#                         outcome="llm_give_up",
-#                         rationale=proposal.rationale,
-#                         failure_stage=outcome.stage,
-#                         message=proposal.message,
-#                     )
-#                 )
-# 
-#                 return self._escalate_intervention(
-#                     reason="give_up",
-#                     original_nl_command=original_nl_command,
-#                     original_target=stable_original_target,
-#                     attempts=attempts,
-#                     last_outcome=outcome,
-#                 )
-# 
-#             if self._require_recovery_approval:
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.AWAITING_OPERATOR,
-#                     reason="proposal_approval_required",
-#                 )
-# 
-#                 if not self._approve_recovery_proposal(proposal):
-#                     attempts.append(
-#                         AttemptRecord(
-#                             action=proposal.action,
-#                             value=proposal.target or ",".join(proposal.waypoints),
-#                             outcome="operator_rejected_proposal",
-#                             rationale=proposal.rationale,
-#                             failure_stage=outcome.stage,
-#                             message=proposal.message,
-#                         )
-#                     )
-#                     return self._escalate_intervention(
-#                         reason="operator_rejected_proposal",
-#                         original_nl_command=original_nl_command,
-#                         original_target=stable_original_target,
-#                         attempts=attempts,
-#                         last_outcome=outcome,
-#                     )
-# 
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.RECOVERY_IN_PROGRESS,
-#                     reason="proposal_approved",
-#                 )
-# 
-#             if proposal.action == "retry_target":
-#                 attempts.append(
-#                     AttemptRecord(
-#                         action="retry_target",
-#                         value=proposal.target_object_tag,
-#                         outcome="dispatching_retry_target",
-#                         rationale=proposal.rationale,
-#                         failure_stage=outcome.stage,
-#                         message=proposal.message,
-#                     )
-#                 )
-#                 self._active_recovery = False
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.EXECUTING,
-#                     reason="dispatching_retry_target",
-#                 )
-#                 chain_queue = []
-#                 current_query = proposal.target_object_tag
-#                 # Store object-centric context consumed by the next _resolve_query call.
-#                 self._recovery_resolve_context = {
-#                     "object_tag": proposal.target_object_tag,
-#                     "intent_hint": proposal.target_intent_hint,
-#                 }
-#                 continue
-# 
-#             if proposal.action == "via_waypoints":
-#                 if not proposal.waypoints:
-#                     attempts.append(
-#                         AttemptRecord(
-#                             action="via_waypoints",
-#                             value="",
-#                             outcome="empty_waypoint_chain",
-#                             rationale=proposal.rationale,
-#                             failure_stage=outcome.stage,
-#                             message=proposal.message,
-#                         )
-#                     )
-#                     return self._escalate_intervention(
-#                         reason="empty_waypoint_chain",
-#                         original_nl_command=original_nl_command,
-#                         original_target=stable_original_target,
-#                         attempts=attempts,
-#                         last_outcome=outcome,
-#                     )
-# 
-#                 attempts.append(
-#                     AttemptRecord(
-#                         action="via_waypoints",
-#                         value=",".join(proposal.waypoints),
-#                         outcome="dispatching_waypoint_chain",
-#                         rationale=proposal.rationale,
-#                         failure_stage=outcome.stage,
-#                         message=proposal.message,
-#                     )
-#                 )
-# 
-#                 current_query = proposal.waypoints[0]
-#                 chain_queue = list(proposal.waypoints[1:])
-# 
-#                 self._active_recovery = False
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.EXECUTING,
-#                     reason="dispatching_waypoint_chain",
-#                 )
-# 
-#                 self._log_stage_info(
-#                     "RECOVERY",
-#                     (
-#                         f"Dispatching waypoint chain. "
-#                         f"current_target='{current_query}', "
-#                         f"remaining_chain={chain_queue}"
-#                     ),
-#                 )
-# 
-#                 continue
-# 
-#             attempts.append(
-#                 AttemptRecord(
-#                     action=proposal.action,
-#                     value=proposal.target or ",".join(proposal.waypoints),
-#                     outcome="unknown_recovery_action",
-#                     rationale=proposal.rationale,
-#                     failure_stage=outcome.stage,
-#                     message=proposal.message,
-#                 )
-#             )
-# 
-#             return self._escalate_intervention(
-#                 reason="unknown_recovery_action",
-#                 original_nl_command=original_nl_command,
-#                 original_target=stable_original_target,
-#                 attempts=attempts,
-#                 last_outcome=outcome,
-#             )
-# 
-        # ======================================================================
-        # LEGACY (standalone mode) — _call_propose_recovery(). bt_led uses
-        # _call_propose_recovery_for_bt_request() below.
-        # ======================================================================
-#     def _call_propose_recovery(
-#         self,
-#         original_nl_command: str,
-#         original_target: str,
-#         failure_stage: str,
-#         nav2_message: str,
-#         attempts: list,
-#         target: Optional[ResolvedTarget],
-#         remaining_retry_budget: int,
-#     ) -> Optional[RecoveryProposal]:
-#         self._log_stage_info(
-#             "RECOVERY",
-#             (
-#                 f"Calling propose recovery: original_target='{original_target}', "
-#                 f"failure_stage='{failure_stage}', "
-#                 f"remaining_retry_budget={remaining_retry_budget}"
-#             ),
-#         )
-# 
-#         if not self._propose_recovery_client.wait_for_service(
-#             timeout_sec=self._service_wait_timeout_sec
-#         ):
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 (
-#                     f"Propose recovery service "
-#                     f"'{self._propose_recovery_service_name}' not available."
-#                 ),
-#             )
-#             return None
-# 
-#         req = ProposeRecovery.Request()
-#         req.original_nl_command = original_nl_command
-#         req.original_target = original_target
-#         req.failure_stage = failure_stage
-#         req.nav2_message = nav2_message
-# 
-#         parsed = getattr(self, "_parsed_command", None)
-#         req.original_object_tag = getattr(parsed, "object_tag", "") or "" if parsed else ""
-#         req.original_intent_hint = getattr(parsed, "intent_hint", "") or "" if parsed else ""
-#         req.current_target_object_key = target.object_key if target else ""
-# 
-#         req.attempted_actions = [a.action for a in attempts]
-#         req.attempted_values = [a.value for a in attempts]
-#         req.attempt_outcomes = [a.outcome for a in attempts]
-#         req.attempt_rationales = [a.rationale for a in attempts]
-# 
-#         recovery_pose = self._make_recovery_pose(target)
-#         req.robot_pose_at_failure = recovery_pose
-#         req.nearest_locations_summary = self._build_nearest_locations_summary(
-#             robot_pose=recovery_pose,
-#             original_target=target,
-#         )
-# 
-#         if failure_stage == "execution":
-#             req.distance_remaining_at_abort = float(
-#                 self._last_feedback_distance_remaining
-#             )
-#             req.nav2_recoveries_attempted = int(self._last_feedback_recoveries)
-#         else:
-#             req.distance_remaining_at_abort = 0.0
-#             req.nav2_recoveries_attempted = 0
-# 
-#         req.remaining_retry_budget = int(remaining_retry_budget)
-# 
-#         self._populate_bt_recovery_request_defaults(req, target)
-# 
-#         future = self._propose_recovery_client.call_async(req)
-# 
-#         if not self._wait_for_future(future, self._service_call_timeout_sec):
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 (
-#                     f"Service call to propose recovery timed out after "
-#                     f"{self._service_call_timeout_sec:.1f}s."
-#                 ),
-#             )
-#             return None
-# 
-#         if future.exception() is not None:
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 f"Propose recovery service call failed: {future.exception()}",
-#             )
-#             return None
-# 
-#         response = future.result()
-#         if response is None:
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 "Propose recovery service returned no response.",
-#             )
-#             return None
-# 
-#         self._log_stage_info(
-#             "RECOVERY",
-#             (
-#                 f"Proposal response: success={response.success}, "
-#                 f"action='{response.action}', "
-#                 f"target_object_tag='{getattr(response, 'target_object_tag', '')}', "
-#                 f"target_intent_hint='{getattr(response, 'target_intent_hint', '')}', "
-#                 f"waypoints={list(response.waypoints)}, "
-#                 f"confidence={response.confidence_percent}, "
-#                 f"message='{response.message}'"
-#             ),
-#         )
-# 
-#         return RecoveryProposal(
-#             success=bool(response.success),
-#             action=response.action,
-#             target=response.target,
-#             waypoints=list(response.waypoints),
-#             rationale=response.rationale,
-#             confidence_percent=int(response.confidence_percent),
-#             raw_output=response.raw_output,
-#             message=response.message,
-#             responsible_object_key=getattr(response, "responsible_object_key", ""),
-#             operator_message=getattr(response, "operator_message", ""),
-#             wait_seconds=int(getattr(response, "wait_seconds", 0)),
-#             target_object_tag=getattr(response, "target_object_tag", "") or "",
-#             target_intent_hint=getattr(response, "target_intent_hint", "") or "",
-#         )
-
-    # ======================================================================
-    # LEGACY (standalone mode) —
-    # _populate_bt_recovery_request_defaults().
-    # ======================================================================
-#     def _populate_bt_recovery_request_defaults(
-#         self,
-#         req: ProposeRecovery.Request,
-#         target: Optional[ResolvedTarget],
-#     ) -> None:
-#         trigger = self._last_trigger
-# 
-#         req.trigger_source = (
-#             trigger.trigger_source
-#             if trigger is not None and trigger.trigger_source
-#             else "action_backstop"
-#         )
-# 
-#         req.responsible_object_key = (
-#             trigger.responsible_object_key
-#             if trigger is not None
-#             else ""
-#         )
-#         req.match_type = (
-#             trigger.match_type
-#             if trigger is not None and trigger.match_type
-#             else "unknown"
-#         )
-# 
-#         req.responsible_object_tag = (
-#             trigger.responsible_object_tag
-#             if trigger is not None
-#             else ""
-#         )
-#         req.responsible_object_state = (
-#             trigger.responsible_object_state
-#             if trigger is not None
-#             else ""
-#         )
-# 
-#         if trigger is not None:
-#             req.responsible_bbox_center = trigger.responsible_bbox_center
-#             req.responsible_bbox_extent = trigger.responsible_bbox_extent
-#             req.responsible_safety_class = trigger.responsible_safety_class or "none"
-#             req.responsible_openable = bool(trigger.responsible_openable)
-#             req.responsible_clearable = bool(trigger.responsible_clearable)
-#             req.blockage_centroid = trigger.blockage_centroid
-#             req.blockage_extent_m = float(trigger.blockage_extent_m)
-#         else:
-#             req.blockage_centroid = Point()
-#             req.blockage_extent_m = 0.0
-# 
-#         req.deterministic_waits_used = 0
-#         req.deterministic_wait_cap = 0
-#         req.total_seconds_blocked = 0.0
-# 
-#         if target is not None:
-#             req.db_version = int(target.db_version)
-#             req.db_stamp = target.db_stamp
-#         else:
-#             req.db_version = int(self._db_version)
-#             if self._db_stamp is not None:
-#                 req.db_stamp = self._db_stamp
-# 
     def _make_recovery_pose(self, target: Optional[ResolvedTarget]) -> PoseStamped:
         pose = self._lookup_robot_pose()
 
@@ -1694,7 +1196,7 @@ class NavigationOrchestrator(Node):
     @staticmethod
     def _safe_object_state(value: str) -> str:
         state = str(value or "").strip().lower()
-        if state in {"static", "semi-static", "movable"}:
+        if state in {"static", "semi-static", "movable", "displaced", "dynamic"}:
             return state
         return ""
 
@@ -2127,272 +1629,6 @@ class NavigationOrchestrator(Node):
 
         return f"nearest semantic locations: {nearest_text}{suffix}"
 
-    # ======================================================================
-    # LEGACY (standalone mode) — _approve_recovery_proposal().
-    # ======================================================================
-#     def _approve_recovery_proposal(self, proposal: RecoveryProposal) -> bool:
-#         if not self._allow_stdin_intervention:
-#             self._log_stage_warn(
-#                 "RECOVERY",
-#                 "Recovery approval required but stdin intervention is disabled.",
-#             )
-#             return False
-# 
-#         print()
-#         # print("============================================================")
-#         print("  LLM RECOVERY PROPOSAL — approval required")
-#         # print("============================================================")
-#         print(f"action:     {proposal.action}")
-#         print(f"target:     {proposal.target}")
-#         print(f"waypoints:  {proposal.waypoints}")
-#         print(f"confidence: {proposal.confidence_percent}")
-#         print(f"rationale:  {proposal.rationale}")
-#         print("Approve this proposal? [y/N]")
-#         choice = input("> ").strip().lower()
-# 
-#         return choice in {"y", "yes"}
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _escalate_intervention(). Operator
-    # escalation is handled by OperatorPrompt BT node in bt_led mode.
-    # ======================================================================
-#     def _escalate_intervention(
-#         self,
-#         reason: str,
-#         original_nl_command: str,
-#         original_target: str,
-#         attempts: list,
-#         last_outcome: Optional[PipelineOutcome],
-#     ) -> bool:
-#         self._active_recovery = False
-#         self._transition_recovery_fsm(
-#             RecoveryFSMState.ESCALATE_OPERATOR,
-#             reason=reason,
-#         )
-# 
-#         self._log_stage_warn(
-#             "RECOVERY",
-#             f"Escalating to operator intervention: reason='{reason}'",
-#         )
-# 
-#         if not self._allow_stdin_intervention:
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 "stdin intervention disabled. Aborting orchestrator.",
-#             )
-#             self._transition_recovery_fsm(
-#                 RecoveryFSMState.TERMINAL_FAIL,
-#                 reason="stdin_intervention_disabled",
-#             )
-#             return False
-# 
-#         print()
-#         print("============================================================")
-#         print("  NAVIGATION BLOCKED — operator input required")
-#         print("============================================================")
-#         print(f"reason: {reason}")
-#         print()
-#         print("Original goal:")
-#         print(f"  user command:  \"{original_nl_command or '(none)'}\"")
-#         print(f"  canonical id:  {original_target}")
-#         print()
-# 
-#         print(f"LLM recovery attempts ({len(attempts)}/{self._recovery_cap} used):")
-#         if not attempts:
-#             print("  (none)")
-#         else:
-#             for i, attempt in enumerate(attempts, start=1):
-#                 print(f"  {i}. action:    {attempt.action}")
-#                 print(f"     value:     {attempt.value}")
-#                 print(f"     outcome:   {attempt.outcome}")
-#                 print(f"     rationale: {attempt.rationale}")
-#                 print(f"     message:   {attempt.message}")
-# 
-#         print()
-# 
-#         if last_outcome is not None:
-#             print("Last failure:")
-#             print(f"  stage:   {last_outcome.stage}")
-#             print(f"  message: {last_outcome.message}")
-# 
-#         print()
-#         print("Choose:")
-#         print("  [t] provide a new semantic target manually")
-#         print("  [a] abort orchestrator so you can teleop and re-run")
-#         print("  [g] give up entirely")
-# 
-#         while True:
-#             choice = input("> ").strip().lower()
-# 
-#             if choice == "t":
-#                 new_target = input("New semantic target: ").strip()
-# 
-#                 if not new_target:
-#                     print("Target cannot be empty.")
-#                     continue
-# 
-#                 self._log_stage_info(
-#                     "RECOVERY",
-#                     f"Operator provided new semantic target: '{new_target}'",
-#                 )
-# 
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.OPERATOR_RECHECK,
-#                     reason="operator_new_target",
-#                 )
-# 
-#                 return self._run_with_recovery(
-#                     initial_query=new_target,
-#                     original_nl_command="",
-#                 )
-# 
-#             if choice == "a":
-#                 self._log_stage_warn(
-#                     "RECOVERY",
-#                     "Operator aborted orchestrator for teleoperation.",
-#                 )
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.TERMINAL_FAIL,
-#                     reason="operator_abort",
-#                 )
-#                 return False
-# 
-#             if choice == "g":
-#                 self._log_stage_warn(
-#                     "RECOVERY",
-#                     "Operator selected give up.",
-#                 )
-#                 self._transition_recovery_fsm(
-#                     RecoveryFSMState.TERMINAL_FAIL,
-#                     reason="operator_give_up",
-#                 )
-#                 return False
-# 
-#             print("Invalid choice. Use [t], [a], or [g].")
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _write_recovery_log().
-    # ======================================================================
-#     def _write_recovery_log(
-#         self,
-#         original_nl_command: str,
-#         original_target: str,
-#         failure_stage: str,
-#         nav2_message: str,
-#         attempts: list,
-#         proposal: RecoveryProposal,
-#         outcome: str,
-#     ):
-#         if not self._recovery_log_path:
-#             return
-# 
-#         record = {
-#             "session_id": self._session_id,
-#             "ts": datetime.now(timezone.utc).isoformat(),
-#             "fsm_state": self._fsm_state.value,
-#             "trigger_source": (
-#                 self._last_trigger.trigger_source
-#                 if self._last_trigger is not None
-#                 else ""
-#             ),
-#             "trigger_debounce_key": (
-#                 self._last_trigger.debounce_key
-#                 if self._last_trigger is not None
-#                 else ""
-#             ),
-#             "responsible_object": {
-#                 "key": (
-#                     self._last_trigger.responsible_object_key
-#                     if self._last_trigger is not None
-#                     else ""
-#                 ),
-#                 "match_type": (
-#                     self._last_trigger.match_type
-#                     if self._last_trigger is not None
-#                     else "unknown"
-#                 ),
-#                 "tag": (
-#                     self._last_trigger.responsible_object_tag
-#                     if self._last_trigger is not None
-#                     else ""
-#                 ),
-#                 "object_state": (
-#                     self._last_trigger.responsible_object_state
-#                     if self._last_trigger is not None
-#                     else ""
-#                 ),
-#                 "safety_class": (
-#                     self._last_trigger.responsible_safety_class
-#                     if self._last_trigger is not None
-#                     else "none"
-#                 ),
-#                 "openable": (
-#                     bool(self._last_trigger.responsible_openable)
-#                     if self._last_trigger is not None
-#                     else False
-#                 ),
-#                 "clearable": (
-#                     bool(self._last_trigger.responsible_clearable)
-#                     if self._last_trigger is not None
-#                     else False
-#                 ),
-#             },
-#             "responsible_object_key": (
-#                 self._last_trigger.responsible_object_key
-#                 if self._last_trigger is not None
-#                 else ""
-#             ),
-#             "blockage_geometry": {
-#                 "centroid": {
-#                     "x": (
-#                         float(self._last_trigger.blockage_centroid.x)
-#                         if self._last_trigger is not None
-#                         else 0.0
-#                     ),
-#                     "y": (
-#                         float(self._last_trigger.blockage_centroid.y)
-#                         if self._last_trigger is not None
-#                         else 0.0
-#                     ),
-#                     "z": (
-#                         float(self._last_trigger.blockage_centroid.z)
-#                         if self._last_trigger is not None
-#                         else 0.0
-#                     ),
-#                 },
-#                 "extent_m": (
-#                     float(self._last_trigger.blockage_extent_m)
-#                     if self._last_trigger is not None
-#                     else 0.0
-#                 ),
-#             },
-#             "original_nl_command": original_nl_command,
-#             "original_target": original_target,
-#             "failure_stage": failure_stage,
-#             "nav2_message": nav2_message,
-#             "attempts_so_far": [asdict(a) for a in attempts],
-#             "nearest_locations": [],
-#             "remaining_retry_budget": None,
-#             "raw_llm_output": proposal.raw_output,
-#             "llm_confidence": proposal.confidence_percent,
-#             "llm_rationale": proposal.rationale,
-#             "decision": proposal.action,
-#             "decision_payload": {
-#                 "target": proposal.target,
-#                 "waypoints": proposal.waypoints,
-#             },
-#             "outcome": outcome,
-#         }
-# 
-#         try:
-#             with open(self._recovery_log_path, "a", encoding="utf-8") as f:
-#                 f.write(json.dumps(record) + "\n")
-#         except Exception as exc:
-#             self._log_stage_error(
-#                 "RECOVERY",
-#                 f"Failed to write recovery log '{self._recovery_log_path}': {exc}",
-#             )
-
     def _resolve_query(
         self,
         query: str,
@@ -2609,7 +1845,43 @@ class NavigationOrchestrator(Node):
         )
 
         return True
-    
+
+    def _pose_is_reachable(self, pose: PoseStamped) -> bool:
+        """Ask Nav2's planner whether a path to `pose` exists against the current
+        costmap. Used during recovery to pick a *reachable* retry alternative
+        instead of handing the BT a pose the planner provably cannot reach.
+
+        Unlike _validate_pose (which logs against a ResolvedTarget), this is a
+        bare ComputePathToPose probe returning a bool.
+        """
+        if pose is None:
+            return False
+
+        if not self._validate_pose_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_warn(
+                "RECOVERY/BT",
+                (
+                    f"Validate pose service '{self._validate_service_name}' "
+                    "unavailable; treating candidate as unreachable."
+                ),
+            )
+            return False
+
+        req = ValidatePose.Request()
+        req.goal = pose
+        req.planner_id = self._planner_id
+        req.use_start = False
+
+        fut = self._validate_pose_client.call_async(req)
+        if not self._wait_for_future(fut, self._service_call_timeout_sec):
+            return False
+        if fut.exception() is not None:
+            return False
+        resp = fut.result()
+        return bool(resp is not None and resp.valid)
+
     def _execute_pose(self, target: ResolvedTarget) -> bool:
         self._navigation_goal_active = False
         self._last_execution_message = ""
@@ -2823,15 +2095,31 @@ class NavigationOrchestrator(Node):
                 response.failure_reason = "Empty query"
                 return response
             self._parsed_command = None
+            self._last_failure_kind = None
             success = self._run_bt_led_once(
                 initial_query=query,
                 original_nl_command=nl_command,
+                original_intent_hint=request.intent_hint.strip(),
             )
             response.success = success
-            response.outcome = "REACHED" if success else "EXECUTION_FAILED"
-            response.failure_reason = (
-                "" if success else "Navigation failed — check orchestrator logs"
-            )
+            if success:
+                response.outcome = "REACHED"
+                response.failure_reason = ""
+            elif self._last_failure_kind == "resolution":
+                response.outcome = "RESOLUTION_FAILED"
+                response.failure_reason = (
+                    f"Could not resolve '{query}' to a known object in the "
+                    "semantic map. Check the object key or try a different target."
+                )
+            else:
+                # Dispatched, but Nav2 + every BT recovery tier was exhausted or the
+                # recovery policy returned give_up. This is the operator-handoff case.
+                response.outcome = "NEEDS_OPERATOR"
+                response.failure_reason = (
+                    f"Could not reach '{query}'. Geometric and semantic recovery "
+                    "were exhausted and no reachable alternative was found. "
+                    "Operator input required."
+                )
         finally:
             self._nav_to_query_lock.release()
         return response
@@ -2870,50 +2158,6 @@ class NavigationOrchestrator(Node):
                 "EXECUTION",
                 f"Cancel request failed: {cancel_future.exception()}",
             )
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _action_backstop_trigger().
-    # ======================================================================
-#     def _action_backstop_trigger(
-#         self,
-#         failure_stage: str,
-#         nav2_message: str,
-#         robot_pose: Optional[PoseStamped],
-#         distance_remaining: float = 0.0,
-#         nav2_recoveries: int = 0,
-#         failed_target_id: str = "",
-#         recovery_count: int = 0,
-#     ) -> str:
-#         blockage_centroid = Point()
-#         if robot_pose is not None:
-#             blockage_centroid.x = float(robot_pose.pose.position.x)
-#             blockage_centroid.y = float(robot_pose.pose.position.y)
-#             blockage_centroid.z = float(robot_pose.pose.position.z)
-# 
-#         trigger = TriggerInfo(
-#             trigger_source="action_backstop",
-#             failure_stage=failure_stage,
-#             nav2_message=nav2_message,
-#             robot_pose=robot_pose,
-#             match_type="unknown",
-#             blockage_centroid=blockage_centroid,
-#             blockage_extent_m=0.0,
-#             debounce_key=(
-#                 f"action_backstop:{failure_stage}:"
-#                 f"{failed_target_id or 'unknown'}:{recovery_count}"
-#             ),
-#             stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
-#         )
-# 
-#         status = self._on_trigger(trigger)
-# 
-#         self.get_logger().info(
-#             f"[RECOVERY/BACKSTOP] status={status} "
-#             f"stage={failure_stage} distance_remaining={distance_remaining:.3f} "
-#             f"nav2_recoveries={nav2_recoveries}"
-#         )
-# 
-#         return status
 
     def _transition_recovery_fsm(self, new_state: RecoveryFSMState, reason: str = "") -> None:
         old_state = self._fsm_state
@@ -2982,104 +2226,6 @@ class NavigationOrchestrator(Node):
 
         return True
 
-    # ======================================================================
-    # LEGACY (standalone mode) — _accept_trigger(). BT-led arbitration
-    # uses _arbitrate_bt_recovery_request() instead.
-    # ======================================================================
-#     def _accept_trigger(self, trigger: TriggerInfo) -> str:
-#         self._last_trigger = trigger
-#         self._active_recovery = True
-#         self._transition_recovery_fsm(
-#             RecoveryFSMState.RECOVERY_IN_PROGRESS,
-#             reason=trigger.trigger_source,
-#         )
-#         return "accepted"
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _cancel_active_goal_for_recovery(). In
-    # bt_led mode the BT RecoveryNode owns goal preemption.
-    # ======================================================================
-#     def _cancel_active_goal_for_recovery(self, trigger: TriggerInfo) -> None:
-#         if self._goal_handle is None:
-#             self._log_stage_info(
-#                 "RECOVERY/TRIGGER",
-#                 f"Accepted trigger source='{trigger.trigger_source}' but no active goal handle is available to cancel.",
-#             )
-#             return
-# 
-#         self._log_stage_warn(
-#             "RECOVERY/TRIGGER",
-#             (
-#                 f"Accepted trigger source='{trigger.trigger_source}'. "
-#                 "Cancelling active ExecutePose goal so recovery can run through the orchestrator."
-#             ),
-#         )
-# 
-#         # Do not block inside a subscriber/feedback callback while waiting for the
-#         # cancel service response. The main MultiThreadedExecutor keeps spinning,
-#         # and the navigation worker observes the resulting ExecutePose terminal state.
-#         threading.Thread(target=self.cancel_goal, daemon=True).start()
-
-    # ======================================================================
-    # LEGACY (standalone mode) — _on_trigger(). In bt_led mode
-    # EscalateToLLMRecovery calls /request_recovery directly.
-    # ======================================================================
-#     def _on_trigger(self, trigger: TriggerInfo) -> str:
-#         if not self._validate_trigger(trigger):
-#             return "rejected"
-# 
-#         self._augment_trigger_with_responsible_object(trigger)
-# 
-#         if self._active_recovery:
-#             self.get_logger().info(
-#                 f"[RECOVERY/TRIGGER] already_in_recovery source={trigger.trigger_source}"
-#             )
-#             return "already_in_recovery"
-# 
-#         if trigger.trigger_source != "action_backstop" and self._is_duplicate_trigger(trigger):
-#             self.get_logger().info(
-#                 f"[RECOVERY/TRIGGER] duplicate source={trigger.trigger_source} "
-#                 f"key={self._trigger_bucket_key(trigger)}"
-#             )
-#             return "duplicate"
-# 
-#         if not self._trigger_is_navigation_source(trigger):
-#             self.get_logger().info(
-#                 f"[RECOVERY/TRIGGER] rejected non-wired trigger source={trigger.trigger_source}"
-#             )
-#             return "rejected"
-# 
-#         if trigger.trigger_source == "plan_intersection_monitor":
-#             if not self._navigation_goal_active:
-#                 self.get_logger().info(
-#                     "[RECOVERY/TRIGGER] rejected monitor trigger because no active ExecutePose goal is running"
-#                 )
-#                 return "rejected"
-# 
-#             if self._fsm_state not in {
-#                 RecoveryFSMState.EXECUTING,
-#                 RecoveryFSMState.RECOVERY_IN_PROGRESS,
-#             }:
-#                 self.get_logger().info(
-#                     f"[RECOVERY/TRIGGER] rejected monitor trigger while fsm_state={self._fsm_state.value}"
-#                 )
-#                 return "rejected"
-# 
-#         if trigger.trigger_source == "stall_watchdog":
-#             if not self._navigation_goal_active:
-#                 self.get_logger().info(
-#                     "[RECOVERY/TRIGGER] rejected stall watchdog trigger because no active ExecutePose goal is running"
-#                 )
-#                 return "rejected"
-# 
-#             if self._fsm_state != RecoveryFSMState.EXECUTING:
-#                 self.get_logger().info(
-#                     f"[RECOVERY/TRIGGER] rejected stall watchdog trigger while fsm_state={self._fsm_state.value}"
-#                 )
-#                 return "rejected"
-# 
-#         return self._accept_trigger(trigger)
-
     def _build_trigger_from_request(
         self,
         request: RequestRecovery.Request,
@@ -3101,11 +2247,19 @@ class NavigationOrchestrator(Node):
             stamp_sec=self.get_clock().now().nanoseconds * 1e-9,
         )
 
+        _srv_match = (request.responsible_match_type or "").strip().lower()
         trigger.match_type = (
-            "inferred"
-            if trigger.responsible_object_key
-            else "unknown"
+            _srv_match
+            if _srv_match in {"verified", "inferred"}
+            else ("inferred" if trigger.responsible_object_key else "unknown")
         )
+
+        trigger.responsible_state_detail = (
+            request.responsible_state_detail or ""
+        ).strip()
+        trigger.responsible_traversability = (
+            request.responsible_traversability or ""
+        ).strip()
 
         return trigger
 
@@ -3215,7 +2369,10 @@ class NavigationOrchestrator(Node):
             current_target_object_key,
         ) = self._bt_request_object_context(request)
 
-        req.original_nl_command = self._command if self._command else ""
+        req.original_nl_command = (
+            self._active_nl_command
+            or (self._command if self._command else "")
+        )
         req.original_target = (
             current_target_object_key
             or original_object_tag
@@ -3367,12 +2524,22 @@ class NavigationOrchestrator(Node):
         intent_hint: str,
         exclude_object_key: str = "",
     ):
-        """Resolve object_tag + intent_hint to a PoseStamped and object key.
+        """Resolve object_tag to the nearest *reachable* instance pose + key.
 
-        When exclude_object_key is set and the best-ranked resolution returns
-        that key (i.e. the currently-blocked instance), the method walks through
-        all other instances of the same tag and returns the first valid one,
-        using a direct target_object_key lookup (resolver Precedence 1).
+        Every instance of object_tag is a candidate, including the previously
+        blocked key (exclude_object_key) which is re-validated in case a
+        transient block has cleared. Candidates are ordered nearest-first from
+        the robot's current pose and each is checked with Nav2's planner
+        (ComputePathToPose via /validate_pose_goal). The first instance the
+        planner can actually reach *right now* (against the current costmap,
+        which still contains the blockage) is returned.
+
+        Returns (None, "") when no instance is reachable, in which case the
+        caller degrades retry_target to give_up rather than handing the BT a
+        pose the planner cannot reach (which would waste a recovery retry).
+
+        intent_hint is retained for signature/Protocol compatibility; nearest-
+        first reachability is the dominant selection criterion for recovery.
 
         Returns:
           (PoseStamped or None, object_key)
@@ -3392,61 +2559,87 @@ class NavigationOrchestrator(Node):
             )
             return None, ""
 
-        def _call(req_obj):
-            fut = self._resolve_location_client.call_async(req_obj)
+        tag_norm = object_tag.strip().lower()
+
+        # Candidate instances of this tag, nearest-first from the robot pose so
+        # the planner check returns on the first reachable (and usually closest)
+        # alternative — keeping recovery responsive.
+        candidates = [obj for obj in self._semantic_objects if obj.tag == tag_norm]
+        if not candidates:
+            self._log_stage_error(
+                "RECOVERY/BT",
+                f"No instances of tag '{object_tag}' in the semantic catalog.",
+            )
+            return None, ""
+
+        robot_pose = self._lookup_robot_pose()
+        if robot_pose is not None:
+            rx = robot_pose.pose.position.x
+            ry = robot_pose.pose.position.y
+            candidates.sort(
+                key=lambda o: (o.x - rx) ** 2 + (o.y - ry) ** 2
+            )
+
+        def _resolve_key(key):
+            req = ResolveLocation.Request()
+            req.query = ""
+            req.object_tag = ""
+            req.intent_hint = ""
+            req.target_object_key = key
+            fut = self._resolve_location_client.call_async(req)
             if not self._wait_for_future(fut, self._service_call_timeout_sec):
                 return None
             if fut.exception() is not None:
                 return None
             r = fut.result()
-            return r if (r is not None and r.success and self._pose_is_valid_for_navigation(r.pose)) else None
+            if r is None or not r.success:
+                return None
+            if not self._pose_is_valid_for_navigation(r.pose):
+                return None
+            return r
 
-        req = ResolveLocation.Request()
-        req.query = ""
-        req.object_tag = object_tag
-        req.intent_hint = intent_hint or ""
-        req.target_object_key = ""
-        result = _call(req)
+        resolved_count = 0
+        for obj in candidates:
+            resolved = _resolve_key(obj.key)
+            if resolved is None:
+                continue
+            resolved_count += 1
+            if not self._pose_is_reachable(resolved.pose):
+                self._log_stage_info(
+                    "RECOVERY/BT",
+                    (
+                        f"Candidate '{obj.key}' (tag='{object_tag}') resolved but "
+                        "the planner cannot reach it right now; skipping."
+                    ),
+                )
+                continue
 
-        if result is None:
-            self._log_stage_error(
+            if exclude_object_key and obj.key == exclude_object_key:
+                note = (
+                    f"original target '{obj.key}' is reachable again "
+                    "after the block cleared"
+                )
+            else:
+                note = (
+                    f"redirected from blocked "
+                    f"'{exclude_object_key or 'n/a'}' to reachable "
+                    f"alternative '{obj.key}'"
+                )
+            self._log_stage_info(
                 "RECOVERY/BT",
-                f"Retry target resolution failed for tag='{object_tag}'.",
+                f"Retry target {note} (tag='{object_tag}').",
             )
-            return None, ""
+            return resolved.pose, resolved.object_key or obj.key
 
-        object_key = result.object_key or ""
-
-        if exclude_object_key and object_key == exclude_object_key:
-            # Best-ranked instance is the blocked one. Walk through other
-            # instances of the same tag and pick the first reachable alternative.
-            tag_norm = object_tag.strip().lower()
-            alt_keys = [
-                obj.key for obj in self._semantic_objects
-                if obj.tag == tag_norm and obj.key != exclude_object_key
-            ]
-            for alt_key in alt_keys:
-                alt_req = ResolveLocation.Request()
-                alt_req.query = ""
-                alt_req.object_tag = ""
-                alt_req.intent_hint = ""
-                alt_req.target_object_key = alt_key
-                alt_result = _call(alt_req)
-                if alt_result is not None:
-                    self._log_stage_info(
-                        "RECOVERY/BT",
-                        f"Retry target redirected from blocked '{exclude_object_key}' "
-                        f"to alternative '{alt_key}' (tag='{object_tag}').",
-                    )
-                    return alt_result.pose, alt_result.object_key or alt_key
-            self._log_stage_warn(
-                "RECOVERY/BT",
-                f"All instances of tag '{object_tag}' are unavailable after "
-                f"excluding blocked key '{exclude_object_key}'.",
-            )
-            return None, ""
-
-        return result.pose, object_key
+        self._log_stage_warn(
+            "RECOVERY/BT",
+            (
+                f"No reachable instance of tag '{object_tag}' among "
+                f"{len(candidates)} candidate(s) ({resolved_count} resolved). "
+                "Degrading retry_target to give_up."
+            ),
+        )
+        return None, ""
 
     def _build_directive_from_bt_proposal(
         self,
@@ -3668,34 +2861,144 @@ class NavigationOrchestrator(Node):
         response.escalate_to_operator = False
         return response
     
+    def _maybe_update_semantic_map(
+        self,
+        *,
+        object_key: str,
+        object_tag: str,
+        object_state: str,
+        responsible_match_type: str,
+        responsible_openable: bool,
+        responsible_clearable: bool,
+        directive_action: str,
+        blockage_centroid: Point,
+        blockage_extent_m: float,
+        robot_pose: Optional[PoseStamped] = None,
+        recovery_event_id: str = "",
+    ) -> None:
+        """Write a versioned map update for an inferred semi-static blockage.
+
+        Guards (all must pass):
+          - match_type == "inferred"  (blockage near but outside mapped bbox)
+          - object_state == "semi-static"
+          - object is not openable (door / gate handled by open_door directive)
+          - object is not clearable (movable handled by clear_object directive)
+          - directive is not give_up (no reason to update map on give_up)
+          - object_key is parseable as tag:id
+          - semantic_map_path is configured and exists
+        """
+        if responsible_match_type != "inferred":
+            return
+        if not object_key:
+            return
+        if object_state != "semi-static":
+            return
+        if responsible_openable:
+            return
+        if responsible_clearable:
+            return
+        if directive_action == "give_up":
+            return
+
+        map_path = self._semantic_map_path
+        if not map_path or not os.path.exists(map_path):
+            self._log_stage_warn(
+                "RECOVERY/MAP",
+                f"semantic_map_path='{map_path}' not found; "
+                "skipping map update.",
+            )
+            return
+
+        try:
+            result = write_displaced_semistatic_map(
+                map_path=map_path,
+                object_key=object_key,
+                object_state=object_state,
+            )
+        except Exception as exc:
+            self._log_stage_error(
+                "RECOVERY/MAP",
+                f"write_displaced_semistatic_map raised: {exc}",
+            )
+            return
+
+        if result is None:
+            self._log_stage_info(
+                "RECOVERY/MAP",
+                f"No map update written for object_key='{object_key}' "
+                f"(object not found or state mismatch).",
+            )
+            return
+
+        version_str = os.path.splitext(os.path.basename(result.new_map_path))[0]
+        self._log_stage_info(
+            "RECOVERY/MAP",
+            f"Wrote displaced map: {result.new_map_path} "
+            f"(displaced_object_key='{result.displaced_object_key}', "
+            f"previous='{result.previous_map_path}')",
+        )
+
+        extent_m = float(blockage_extent_m) if blockage_extent_m > 0 else 1.0
+
+        store_msg = SemanticStoreUpdated()
+        store_msg.semantic_map_uri = result.new_map_path
+        store_msg.semantic_map_version = version_str
+        store_msg.displaced_object_key = result.displaced_object_key
+        store_msg.reason = (
+            "suspected_semi_static_displacement_from_inferred_blockage"
+        )
+        store_msg.update_center.x = float(blockage_centroid.x)
+        store_msg.update_center.y = float(blockage_centroid.y)
+        store_msg.update_center.z = float(blockage_centroid.z)
+        store_msg.update_radius_m = extent_m
+        self._semantic_store_updated_pub.publish(store_msg)
+
+        self._log_stage_info(
+            "RECOVERY/MAP",
+            f"Published /semantic_store_updated "
+            f"(semantic_map_version='{version_str}').",
+        )
+
+        now_stamp = self.get_clock().now().to_msg()
+        report = SemanticCorrectionReport()
+        report.header.stamp = now_stamp
+        report.header.frame_id = "map"
+        report.environment_id = self._environment_id
+        report.semantic_map_id = self._semantic_map_id
+        report.base_map_version = self._semantic_map_version
+        report.object_key = result.displaced_object_key
+        report.object_tag = object_tag
+        report.previous_object_state = object_state
+        report.correction_type = "suspected_displacement"
+        report.responsible_match_type = responsible_match_type
+        report.confidence = 0.7
+        report.evidence_center.x = float(blockage_centroid.x)
+        report.evidence_center.y = float(blockage_centroid.y)
+        report.evidence_center.z = float(blockage_centroid.z)
+        report.evidence_radius_m = extent_m
+        if robot_pose is not None:
+            report.robot_pose = robot_pose
+        report.frame_id = "map"
+        report.recovery_event_id = recovery_event_id
+        report.directive_action = directive_action
+        report.reason = "suspected_semi_static_displacement_from_inferred_blockage"
+        report.observed_at = now_stamp
+        report.evidence_source = "bt_recovery"
+        self._correction_report_pub.publish(report)
+
+        self._log_stage_info(
+            "RECOVERY/MAP",
+            f"Published /semantic_map/corrections "
+            f"(object_key='{result.displaced_object_key}', "
+            f"recovery_event_id='{recovery_event_id}').",
+        )
+
     def _handle_request_recovery(
         self,
         request: RequestRecovery.Request,
         response: RequestRecovery.Response,
     ) -> RequestRecovery.Response:
         trigger = self._build_trigger_from_request(request)
-
-        # ======================================================================
-        # LEGACY (standalone mode) — standalone dispatch in
-        # _handle_request_recovery().
-        # ======================================================================
-#         if self._orchestration_mode != "bt_led":
-#             status = self._on_trigger(trigger)
-# 
-#             if status == "accepted":
-#                 message = "Recovery trigger accepted by standalone orchestrator."
-#             elif status == "duplicate":
-#                 message = "Duplicate recovery trigger absorbed."
-#             elif status == "already_in_recovery":
-#                 message = "Recovery already in progress."
-#             else:
-#                 message = "Recovery trigger rejected in current standalone state."
-# 
-#             return self._fill_empty_request_recovery_response(
-#                 response=response,
-#                 status=status,
-#                 message=message,
-#             )
 
         recovery_event_id = str(uuid.uuid4())
 
@@ -3763,6 +3066,36 @@ class NavigationOrchestrator(Node):
         )
 
         try:
+            door_directive = maybe_build_closed_door_directive(
+                trigger, recovery_event_id=recovery_event_id
+            )
+            if door_directive is not None:
+                self._log_stage_info(
+                    "RECOVERY/BT",
+                    (
+                        "Closed-door deterministic directive: "
+                        f"action='{door_directive.action}' "
+                        f"tag='{trigger.responsible_object_tag}' "
+                        f"state_detail='{trigger.responsible_state_detail}' "
+                        f"traversability='"
+                        f"{trigger.responsible_traversability}'"
+                    ),
+                )
+                self._record_bt_directive_attempt(
+                    directive=door_directive,
+                    proposal=None,
+                    trigger=trigger,
+                )
+                return self._fill_request_recovery_response_from_directive(
+                    response=response,
+                    status="accepted",
+                    message=(
+                        "Closed-door deterministic directive: "
+                        f"action='{door_directive.action}'."
+                    ),
+                    directive=door_directive,
+                )
+
             proposal = self._call_propose_recovery_for_bt_request(
                 request=request,
                 trigger=trigger,
@@ -3810,6 +3143,20 @@ class NavigationOrchestrator(Node):
                 directive=directive,
                 proposal=proposal,
                 trigger=trigger,
+            )
+
+            self._maybe_update_semantic_map(
+                object_key=trigger.responsible_object_key,
+                object_tag=trigger.responsible_object_tag,
+                object_state=trigger.responsible_object_state,
+                responsible_match_type=trigger.match_type,
+                responsible_openable=bool(trigger.responsible_openable),
+                responsible_clearable=bool(trigger.responsible_clearable),
+                directive_action=directive.action,
+                blockage_centroid=trigger.blockage_centroid,
+                blockage_extent_m=trigger.blockage_extent_m,
+                robot_pose=trigger.robot_pose,
+                recovery_event_id=recovery_event_id,
             )
 
              # An accepted give_up is still an accepted directive. The BT plugin
@@ -3864,6 +3211,12 @@ class NavigationOrchestrator(Node):
                 float(msg.bbox_extent.x),
                 float(msg.bbox_extent.y),
                 float(msg.bbox_extent.z),
+            ),
+            state_detail=str(
+                getattr(msg, "state_detail", "") or ""
+            ),
+            traversability=str(
+                getattr(msg, "traversability", "") or ""
             ),
         )
 
@@ -3933,6 +3286,8 @@ class NavigationOrchestrator(Node):
         response.bbox_extent.y = float(result.bbox_extent[1])
         response.bbox_extent.z = float(result.bbox_extent[2])
 
+        response.state_detail = result.state_detail
+        response.traversability = result.traversability
         response.message = result.message
 
         self._log_stage_info(

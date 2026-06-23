@@ -25,6 +25,8 @@ class ObjectCandidate:
     clearable: bool
     bbox_center: Tuple[float, float, float]
     bbox_extent: Tuple[float, float, float]
+    state_detail: str = ""
+    traversability: str = ""
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,8 @@ class MatchResult:
     bbox_center: Tuple[float, float, float]
     bbox_extent: Tuple[float, float, float]
     message: str
+    state_detail: str = ""
+    traversability: str = ""
 
     @classmethod
     def unknown(cls, message: str = "no candidate matched") -> "MatchResult":
@@ -55,6 +59,8 @@ class MatchResult:
             bbox_center=(0.0, 0.0, 0.0),
             bbox_extent=(0.0, 0.0, 0.0),
             message=message,
+            state_detail="",
+            traversability="",
         )
 
 
@@ -103,6 +109,8 @@ def _result_from_candidate(
         bbox_center=candidate.bbox_center,
         bbox_extent=candidate.bbox_extent,
         message=message,
+        state_detail=candidate.state_detail,
+        traversability=candidate.traversability,
     )
 
 

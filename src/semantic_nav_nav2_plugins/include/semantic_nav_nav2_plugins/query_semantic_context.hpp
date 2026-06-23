@@ -70,6 +70,8 @@ private:
   void clearPendingRequests();
 
   rclcpp::Node::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
+  rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   RefreshClient::SharedPtr refresh_client_;
   MatchClient::SharedPtr match_client_;
 

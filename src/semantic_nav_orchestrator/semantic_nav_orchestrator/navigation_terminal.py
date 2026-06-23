@@ -59,6 +59,17 @@ def dim(t: str) -> str:      return _c("2", t)
 
 _OBJECT_KEY_RE = re.compile(r"[a-z][a-z0-9 _]*:\d+", re.IGNORECASE)
 
+# Friendly fallbacks when the orchestrator does not supply a failure_reason.
+_OUTCOME_HINTS = {
+    "RESOLUTION_FAILED": "That target is not in the semantic map. Check the "
+                         "object key or try a different one.",
+    "INVALID": "The command was empty or invalid.",
+    "BUSY": "A navigation is already running. Cancel it first.",
+    "SERVICE_UNAVAILABLE": "The navigation service is not up yet. Is the system "
+                           "launch running?",
+    "CANCELLED": "Navigation was cancelled.",
+}
+
 
 def _looks_like_object_key(s: str) -> bool:
     return bool(_OBJECT_KEY_RE.fullmatch(s.strip().lower()))
@@ -164,6 +175,7 @@ class NavigationTerminal(Node):
         query: str,
         nl_command: str,
         cmd_q: queue.Queue,
+        intent_hint: str = "",
     ) -> NavResult:
         """
         Send a /navigate_to_query goal and block until:
@@ -177,6 +189,7 @@ class NavigationTerminal(Node):
         req = NavigateToQuery.Request()
         req.query = query
         req.nl_command = nl_command
+        req.intent_hint = intent_hint
 
         future = None
         for attempt in range(12):
@@ -264,11 +277,10 @@ class NavigationTerminal(Node):
     # NL parsing (called from main thread)
     # ------------------------------------------------------------------
 
-    def parse_nl(self, command: str) -> Optional[str]:
+    def parse_nl(self, command: str) -> "Optional[tuple[str, str]]":
         """
         Call /parse_semantic_command.
-        Returns the resolved query string (object_key or tag), or None on
-        failure (already prints the reason).
+        Returns (query, intent_hint) on success, or None on failure.
         """
         if not self._parse_client.wait_for_service(timeout_sec=5.0):
             _emit(red("  [!] LLM parse service unavailable — is navigator_node running?"))
@@ -291,9 +303,10 @@ class NavigationTerminal(Node):
             return None
 
         query = resp.target_object_key if resp.target_object_key else resp.object_tag
+        intent_hint = resp.intent_hint or ""
         conf = resp.confidence_percent
         _emit(cyan(f"  → Parsed: {bold(query)}  confidence={conf}%"))
-        return query
+        return query, intent_hint
 
     # ------------------------------------------------------------------
     # Operator prompt (called from main thread while in navigate() loop)
@@ -361,17 +374,82 @@ def _input_thread(cmd_q: queue.Queue) -> None:
 # Command resolver
 # ---------------------------------------------------------------------------
 
-def _resolve(node: NavigationTerminal, raw: str) -> Optional[str]:
+def _resolve(node: NavigationTerminal, raw: str) -> "Optional[tuple[str, str]]":
     """
-    Turn raw user input into a query string (object key or NL-parsed tag).
+    Turn raw user input into (query, intent_hint).
     Returns None if the command should be skipped.
     """
     if _looks_like_object_key(raw):
         _emit(cyan(f"  → Direct key: {bold(raw)}"))
-        return raw
+        return raw, ""
 
     _emit(cyan(f"  → Parsing NL: \"{raw}\" …"))
     return node.parse_nl(raw)
+
+
+# ---------------------------------------------------------------------------
+# Operator escalation — invoked when the orchestrator exhausted all recovery
+# tiers (or the recovery policy returned give_up) and needs a human decision.
+# Input is funnelled through cmd_q (same single-stdin path as everything else)
+# so we never compete with the input thread's input() call.
+# ---------------------------------------------------------------------------
+
+def _operator_escalation(
+    node: NavigationTerminal,
+    cmd_q: queue.Queue,
+    query: str,
+    reason: str,
+) -> "tuple[str, Optional[str]]":
+    """
+    Returns one of:
+      ("navigate", new_destination) — operator chose a new target
+      ("abort", None)               — operator aborted / chose manual control
+      ("exit", None)                — operator signalled EOF/exit
+    """
+    _emit("")
+    _emit(red(f"  ✗ Could not reach {bold(query)}."))
+    if reason:
+        _emit(yellow(f"    {reason}"))
+    _emit(yellow("\n  ╔══════════════════════════════════════════════════╗"))
+    _emit(yellow(  "  ║ OPERATOR INPUT REQUIRED                           ║"))
+    _emit(yellow(  "  ╚══════════════════════════════════════════════════╝"))
+    _emit("  The robot tried geometric and semantic recovery and could not")
+    _emit("  find a reachable way to the goal. Choose one:")
+    _emit(f"    {bold('1')} — navigate to a different destination")
+    _emit(f"    {bold('2')} — take manual control (drive with teleop)")
+    _emit(f"    {bold('3')} — abort and return to the prompt")
+
+    while True:
+        _emit(yellow("  [operator] 1 / 2 / 3 > "))
+        choice = cmd_q.get()
+        if choice is None:
+            return "exit", None
+        choice = choice.strip().lower()
+
+        if choice in ("3", "abort", "a", "q", ""):
+            _emit(dim("  Aborted. Returning to prompt.\n"))
+            return "abort", None
+
+        if choice in ("2", "manual", "teleop"):
+            _emit(yellow("\n  Manual control: open a NEW terminal and run:"))
+            _emit(bold("    ros2 run turtlebot3_teleop teleop_keyboard"))
+            _emit(dim("  Navigation is idle. Drive the robot, then type a new"))
+            _emit(dim("  destination here when you want autonomous nav again.\n"))
+            return "abort", None
+
+        if choice in ("1", "navigate", "n"):
+            _emit("  Enter the new destination (object key like chair:2, or an NL command):")
+            _emit(yellow("  [operator] destination > "))
+            dest = cmd_q.get()
+            if dest is None:
+                return "exit", None
+            dest = dest.strip()
+            if not dest:
+                _emit(dim("  No destination entered. Returning to prompt.\n"))
+                return "abort", None
+            return "navigate", dest
+
+        _emit("  Please enter 1, 2, or 3.")
 
 
 # ---------------------------------------------------------------------------
@@ -398,14 +476,20 @@ def _controller(node: NavigationTerminal, cmd_q: queue.Queue) -> None:
         if raw == "\x03":
             continue
 
-        query = _resolve(node, raw)
-        if query is None:
+        resolved = _resolve(node, raw)
+        if resolved is None:
             continue
+        query, intent_hint = resolved
 
         # Navigate — loop handles preemption inline
         while query is not None:
             _emit(cyan(f"\n  → Navigating to {bold(query)} …"))
-            result = node.navigate(query, raw if not _looks_like_object_key(raw) else "", cmd_q)
+            result = node.navigate(
+                query,
+                raw if not _looks_like_object_key(raw) else "",
+                cmd_q,
+                intent_hint=intent_hint,
+            )
 
             if result.exit_requested:
                 return
@@ -420,15 +504,44 @@ def _controller(node: NavigationTerminal, cmd_q: queue.Queue) -> None:
 
                 # New destination typed: resolve it and loop back immediately
                 raw = preempt
-                query = _resolve(node, raw)
+                resolved = _resolve(node, raw)
+                if resolved is None:
+                    query = None
+                    continue
+                query, intent_hint = resolved
                 continue
 
             # Navigation finished
             if result.success:
                 _emit(green(f"\n  ✓ SUCCESS — reached {bold(query)}"))
-            else:
-                _emit(red(f"\n  ✗ FAILED — {result.outcome}: {result.failure_reason}"))
+                query = None
+                continue
 
+            # Recovery exhausted / give_up → hand off to the operator.
+            if result.outcome == "NEEDS_OPERATOR":
+                action, dest = _operator_escalation(
+                    node, cmd_q, query, result.failure_reason
+                )
+                if action == "exit":
+                    return
+                if action == "navigate":
+                    raw = dest
+                    resolved = _resolve(node, raw)
+                    if resolved is None:
+                        query = None
+                        continue
+                    query, intent_hint = resolved
+                    continue
+                # abort
+                query = None
+                continue
+
+            # Other failures → clear, human-readable message.
+            _emit(red(f"\n  ✗ Could not reach {bold(query)}."))
+            detail = result.failure_reason or _OUTCOME_HINTS.get(
+                result.outcome, f"outcome={result.outcome}"
+            )
+            _emit(red(f"    {detail}"))
             query = None
 
 

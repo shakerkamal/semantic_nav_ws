@@ -123,7 +123,11 @@ class SemanticStore:
         normalized = self.resolve_tag_or_alias(tag_or_alias)
         if normalized is None:
             return ()
-        return tuple(self.by_object_key[k] for k in self.by_tag.get(normalized, ()))
+        return tuple(
+            self.by_object_key[k]
+            for k in self.by_tag.get(normalized, ())
+            if self.by_object_key[k].object_state != "displaced"
+        )
     
     def query_window(
         self,
@@ -253,6 +257,72 @@ def load_object_intent_affordances(path: str) -> ObjectIntentAffordances:
         by_tag[tag] = _parse_intent_tag_metadata(raw_metadata, fallback=defaults)
 
     return ObjectIntentAffordances(defaults=defaults, by_tag=by_tag, aliases=aliases)
+
+
+def load_semantic_store_from_string(
+    json_payload: str,
+    semantic_map_version: str = "",
+    stamp: Optional[Time] = None,
+    affordances_path: str = "",
+) -> SemanticStore:
+    """Load a SemanticStore from a JSON string (provider topic payload).
+
+    db_version is derived from a SHA-256 hash of the payload bytes so it
+    changes whenever the content changes, consistent with load_semantic_store.
+    """
+    affordances = load_object_intent_affordances(affordances_path)
+
+    raw_bytes = json_payload.encode("utf-8")
+    db_version = _uint32_hash(raw_bytes)
+    db_stamp = stamp if stamp is not None else Time()
+
+    try:
+        data = json.loads(json_payload)
+    except Exception as exc:
+        raise SemanticStoreError(
+            f"failed to parse SemanticMapUpdate json_payload: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise SemanticStoreError(
+            "SemanticMapUpdate json_payload root must be a JSON object."
+        )
+
+    rows = _load_object_rows(data)
+
+    by_source_key: Dict[str, ObjectRow] = {}
+    by_object_key: Dict[str, ObjectRow] = {}
+    by_tag_lists: Dict[str, List[str]] = {}
+
+    for row in rows:
+        if row.source_key in by_source_key:
+            raise SemanticStoreError(f"duplicate source_key '{row.source_key}'.")
+        if row.object_key in by_object_key:
+            raise SemanticStoreError(f"duplicate object_key '{row.object_key}'.")
+        by_source_key[row.source_key] = row
+        by_object_key[row.object_key] = row
+        by_tag_lists.setdefault(row.normalized_tag, []).append(row.object_key)
+
+    by_tag = {
+        tag: tuple(sorted(keys, key=_object_key_sort_key))
+        for tag, keys in by_tag_lists.items()
+    }
+    tag_vocabulary = tuple(sorted(by_tag.keys()))
+    navigable_tag_vocabulary = tuple(
+        tag for tag in tag_vocabulary if affordances.tag_is_navigable(tag)
+    )
+
+    return SemanticStore(
+        db_version=db_version,
+        db_stamp=db_stamp,
+        source_path=semantic_map_version or "<provider>",
+        by_source_key=by_source_key,
+        by_object_key=by_object_key,
+        by_tag=by_tag,
+        tag_vocabulary=tag_vocabulary,
+        navigable_tag_vocabulary=navigable_tag_vocabulary,
+        affordances=affordances,
+    )
 
 
 def load_semantic_store(
@@ -389,7 +459,7 @@ def _parse_object_record(source_key: str, record: Mapping[str, object]) -> Objec
     object_state = str(
         record.get("object_state", record.get("object-state", "")) or ""
     ).strip()
-    if object_state not in {"static", "semi-static", "movable"}:
+    if object_state not in {"static", "semi-static", "movable", "displaced"}:
         raise SemanticStoreError(
             f"object '{source_key}' has invalid object_state='{object_state}'."
         )

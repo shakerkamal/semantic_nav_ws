@@ -51,6 +51,9 @@ void EscalateToLLMRecovery::on_tick()
   std::string responsible_safety_class;
   bool responsible_openable{false};
   bool responsible_clearable{false};
+  std::string responsible_match_type;
+  std::string responsible_state_detail;
+  std::string responsible_traversability;
 
   getInput("responsible_object_key", responsible_object_key);
   getInput("responsible_object_tag", responsible_object_tag);
@@ -58,6 +61,9 @@ void EscalateToLLMRecovery::on_tick()
   getInput("responsible_safety_class", responsible_safety_class);
   getInput("responsible_openable", responsible_openable);
   getInput("responsible_clearable", responsible_clearable);
+  getInput("responsible_match_type", responsible_match_type);
+  getInput("responsible_state_detail", responsible_state_detail);
+  getInput("responsible_traversability", responsible_traversability);
 
   request_->responsible_object_key = responsible_object_key;
   request_->responsible_object_tag = responsible_object_tag;
@@ -66,6 +72,10 @@ void EscalateToLLMRecovery::on_tick()
     responsible_safety_class.empty() ? "none" : responsible_safety_class;
   request_->responsible_openable = responsible_openable;
   request_->responsible_clearable = responsible_clearable;
+  request_->responsible_match_type =
+    responsible_match_type.empty() ? "none" : responsible_match_type;
+  request_->responsible_state_detail = responsible_state_detail;
+  request_->responsible_traversability = responsible_traversability;
 
   geometry_msgs::msg::Point blockage_centroid;
   getInput("blockage_centroid", blockage_centroid);
@@ -190,6 +200,9 @@ BT::PortsList EscalateToLLMRecovery::providedPorts()
     BT::InputPort<std::string>("responsible_safety_class", "none", ""),
     BT::InputPort<bool>("responsible_openable", false, ""),
     BT::InputPort<bool>("responsible_clearable", false, ""),
+    BT::InputPort<std::string>("responsible_match_type", "none", "verified | inferred | none"),
+    BT::InputPort<std::string>("responsible_state_detail", "", ""),
+    BT::InputPort<std::string>("responsible_traversability", "", ""),
 
     BT::InputPort<geometry_msgs::msg::Point>("blockage_centroid", ""),
     BT::InputPort<float>("blockage_extent_m", 0.0f, ""),

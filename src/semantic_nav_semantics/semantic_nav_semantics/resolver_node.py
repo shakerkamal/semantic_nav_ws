@@ -1,5 +1,6 @@
 import math
 import os
+import threading
 from typing import Optional, Tuple
 
 import rclpy
@@ -9,13 +10,16 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from tf2_ros import Buffer, TransformListener
 
+from semantic_nav_interfaces.msg import SemanticMapUpdate, SemanticStoreUpdated
 from semantic_nav_interfaces.srv import ResolveLocation
 from semantic_nav_semantics.caption_ranker import RankedObject
 from semantic_nav_semantics.semantic_store import (
     SemanticStore,
     load_semantic_store,
+    load_semantic_store_from_string,
     looks_like_object_key,
     normalize_object_key,
 )
@@ -80,6 +84,26 @@ class ResolverNode(Node):
         self._store: SemanticStore = load_semantic_store(
             map_path, affordances_path=sidecar_path
         )
+        self._store_lock = threading.RLock()
+        self._map_path = map_path
+        self._affordances_path = sidecar_path
+
+        store_update_qos = QoSProfile(depth=1)
+        store_update_qos.reliability = ReliabilityPolicy.RELIABLE
+        store_update_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._store_updated_sub = self.create_subscription(
+            SemanticStoreUpdated,
+            "/semantic_store_updated",
+            self._handle_store_updated,
+            store_update_qos,
+        )
+        self._provider_map_sub = self.create_subscription(
+            SemanticMapUpdate,
+            "/semantic_map/updates",
+            self._handle_provider_map_update,
+            store_update_qos,
+        )
+
         from semantic_nav_semantics.ranker_factory import RankerSpec, build_ranker
         self._llama_client = self._maybe_build_llama_client(ranker_name)
         self._ranker = build_ranker(
@@ -110,6 +134,59 @@ class ResolverNode(Node):
             f"db_version={self._store.db_version}"
         )
 
+    # ----- store reload -----
+
+    def _handle_store_updated(self, msg: SemanticStoreUpdated) -> None:
+        new_path = msg.semantic_map_uri.strip()
+        if not new_path:
+            self.get_logger().warn(
+                "[RESOLUTION] SemanticStoreUpdated with empty semantic_map_uri. Ignoring."
+            )
+            return
+        try:
+            new_store = load_semantic_store(
+                new_path, affordances_path=self._affordances_path
+            )
+        except Exception as exc:
+            self.get_logger().error(
+                f"[RESOLUTION] Failed to reload SemanticStore from '{new_path}': {exc}"
+            )
+            return
+        with self._store_lock:
+            self._store = new_store
+            self._map_path = new_path
+        self.get_logger().info(
+            f"[RESOLUTION] Reloaded SemanticStore from '{new_path}': "
+            f"objects={len(new_store.by_object_key)}, db_version={new_store.db_version}"
+        )
+
+    def _handle_provider_map_update(self, msg: SemanticMapUpdate) -> None:
+        if not msg.json_payload.strip():
+            self.get_logger().warn(
+                "[RESOLUTION] SemanticMapUpdate received with empty json_payload. Ignoring."
+            )
+            return
+        try:
+            new_store = load_semantic_store_from_string(
+                json_payload=msg.json_payload,
+                semantic_map_version=msg.semantic_map_version,
+                stamp=msg.header.stamp,
+                affordances_path=self._affordances_path,
+            )
+        except Exception as exc:
+            self.get_logger().error(
+                f"[RESOLUTION] Failed to load provider SemanticMapUpdate "
+                f"(version='{msg.semantic_map_version}'): {exc}"
+            )
+            return
+        with self._store_lock:
+            self._store = new_store
+            self._map_path = msg.semantic_map_version or "<provider>"
+        self.get_logger().info(
+            f"[RESOLUTION] Loaded provider map: version='{msg.semantic_map_version}', "
+            f"objects={len(new_store.by_object_key)}, db_version={new_store.db_version}"
+        )
+
     # ----- helpers -----
 
     def _robot_xy(self) -> Optional[Tuple[float, float]]:
@@ -134,8 +211,9 @@ class ResolverNode(Node):
         response.candidates_considered = 0
         response.top_score = 0.0
         response.pose = PoseStamped()
-        response.db_version = self._store.db_version
-        response.db_stamp = self._store.db_stamp
+        with self._store_lock:
+            response.db_version = self._store.db_version
+            response.db_stamp = self._store.db_stamp
         response.message = message
         self.get_logger().warn(f"[RESOLUTION] FAIL: {message}")
         return response
@@ -152,19 +230,29 @@ class ResolverNode(Node):
             robot_xy = (0.0, 0.0)
             self.get_logger().warn("[RESOLUTION] Using (0,0) as robot pose fallback")
 
+        # Snapshot store reference once so a concurrent reload cannot tear a call.
+        with self._store_lock:
+            store = self._store
+
         # Precedence 1: explicit object key
         if request.target_object_key:
             key = normalize_object_key(request.target_object_key)
-            row = self._store.by_object_key.get(key)
+            row = store.by_object_key.get(key)
             if row is None:
                 return self._fail(
                     response, f"unknown target_object_key '{request.target_object_key}'"
+                )
+            if row.object_state == "displaced":
+                return self._fail(
+                    response,
+                    f"target_object_key '{request.target_object_key}' is displaced "
+                    "and no longer navigable",
                 )
             ranked = [self._direct_pick(row, reason="direct object key")]
 
         # Precedence 2: object_tag + intent_hint (object-centric path)
         elif request.object_tag:
-            ranked = self._rank_by_tag(request.object_tag, request.intent_hint, robot_xy)
+            ranked = self._rank_by_tag(request.object_tag, request.intent_hint, robot_xy, store=store)
             if isinstance(ranked, str):
                 return self._fail(response, ranked)
 
@@ -172,14 +260,14 @@ class ResolverNode(Node):
         elif request.query:
             q = request.query.strip()
             if looks_like_object_key(q):
-                row = self._store.by_object_key.get(normalize_object_key(q))
+                row = store.by_object_key.get(normalize_object_key(q))
                 if row is None:
                     return self._fail(response, f"unknown object key query '{q}'")
                 ranked = [self._direct_pick(row, reason="direct query object key")]
             else:
-                resolved = self._store.affordances.resolve_alias(q)
-                if resolved in self._store.by_tag:
-                    ranked = self._rank_by_tag(resolved, q, robot_xy)
+                resolved = store.affordances.resolve_alias(q)
+                if resolved in store.by_tag:
+                    ranked = self._rank_by_tag(resolved, q, robot_xy, store=store)
                     if isinstance(ranked, str):
                         return self._fail(response, ranked)
                 else:
@@ -194,13 +282,16 @@ class ResolverNode(Node):
         pose = self._standoff.plan(pick.row, robot_xy=robot_xy)
         return self._fill_success(response, pick=pick, pose=pose, candidates=len(ranked))
 
-    def _rank_by_tag(self, tag_query: str, hint: str, robot_xy):
-        rows = self._store.rows_for_tag(tag_query)
+    def _rank_by_tag(self, tag_query: str, hint: str, robot_xy, store=None):
+        if store is None:
+            with self._store_lock:
+                store = self._store
+        rows = store.rows_for_tag(tag_query)
         if not rows:
-            norm = self._store.affordances.resolve_alias(tag_query)
+            norm = store.affordances.resolve_alias(tag_query)
             return f"no candidates for object_tag '{tag_query}' (resolved='{norm}')"
         if self._spatial_builder is not None:
-            rows = self._with_spatial_context(rows, robot_xy)
+            rows = self._with_spatial_context(rows, robot_xy, store=store)
         return self._ranker.rank(
             rows, intent_hint=hint, robot_xy=robot_xy, user_command=hint,
         )
@@ -235,10 +326,13 @@ class ResolverNode(Node):
             executor_is_running=True,
         )
 
-    def _with_spatial_context(self, rows, robot_xy):
+    def _with_spatial_context(self, rows, robot_xy, store=None):
         from dataclasses import replace
-        all_rows = list(self._store.by_object_key.values())
-        navigable = set(self._store.navigable_tag_vocabulary)
+        if store is None:
+            with self._store_lock:
+                store = self._store
+        all_rows = list(store.by_object_key.values())
+        navigable = set(store.navigable_tag_vocabulary)
         augmented = []
         for r in rows:
             suffix = self._spatial_builder.build(
@@ -282,8 +376,9 @@ class ResolverNode(Node):
         response.candidates_considered = candidates
         response.top_score = float(pick.score)
         response.pose = ps
-        response.db_version = self._store.db_version
-        response.db_stamp = self._store.db_stamp
+        with self._store_lock:
+            response.db_version = self._store.db_version
+            response.db_stamp = self._store.db_stamp
         response.message = (
             f"Resolved object_key='{row.object_key}' from {candidates} candidate(s); "
             f"top_score={pick.score:.3f}; reasons={list(pick.reasons)}"

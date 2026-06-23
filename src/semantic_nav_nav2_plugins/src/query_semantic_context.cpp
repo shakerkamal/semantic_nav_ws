@@ -21,8 +21,18 @@ QuerySemanticContext::QuerySemanticContext(
   getInput("refresh_service", refresh_service);
   getInput("match_service", match_service);
 
-  refresh_client_ = node_->create_client<RefreshSrv>(refresh_service);
-  match_client_ = node_->create_client<MatchSrv>(match_service);
+  // Dedicated callback group + executor so spin_some() in onRunning() resolves
+  // service futures without relying on bt_navigator's main executor to tick at
+  // the right moment.
+  callback_group_ = node_->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  callback_group_executor_.add_callback_group(
+    callback_group_, node_->get_node_base_interface());
+
+  refresh_client_ = node_->create_client<RefreshSrv>(
+    refresh_service, rmw_qos_profile_services_default, callback_group_);
+  match_client_ = node_->create_client<MatchSrv>(
+    match_service, rmw_qos_profile_services_default, callback_group_);
 }
 
 BT::NodeStatus QuerySemanticContext::onStart()
@@ -49,6 +59,9 @@ BT::NodeStatus QuerySemanticContext::onStart()
 
 BT::NodeStatus QuerySemanticContext::onRunning()
 {
+  // Drain any pending service responses before checking futures.
+  callback_group_executor_.spin_some(std::chrono::nanoseconds(0));
+
   const auto now = std::chrono::steady_clock::now();
 
   switch (phase_) {
@@ -178,6 +191,9 @@ BT::NodeStatus QuerySemanticContext::onRunning()
         setOutput("responsible_safety_class", response->safety_class);
         setOutput("responsible_openable", response->openable);
         setOutput("responsible_clearable", response->clearable);
+        setOutput("responsible_match_type", response->match_type);
+        setOutput("responsible_state_detail", response->state_detail);
+        setOutput("responsible_traversability", response->traversability);
 
         RCLCPP_DEBUG(
           node_->get_logger(),
@@ -297,6 +313,9 @@ void QuerySemanticContext::writeDefaultObjectOutputs()
   setOutput("responsible_safety_class", std::string("none"));
   setOutput("responsible_openable", false);
   setOutput("responsible_clearable", false);
+  setOutput("responsible_match_type", std::string(""));
+  setOutput("responsible_state_detail", std::string(""));
+  setOutput("responsible_traversability", std::string(""));
 }
 
 void QuerySemanticContext::writeDbOutputsFromRefresh()
@@ -370,6 +389,9 @@ BT::PortsList QuerySemanticContext::providedPorts()
     BT::OutputPort<std::string>("responsible_safety_class", ""),
     BT::OutputPort<bool>("responsible_openable", ""),
     BT::OutputPort<bool>("responsible_clearable", ""),
+    BT::OutputPort<std::string>("responsible_match_type", ""),
+    BT::OutputPort<std::string>("responsible_state_detail", ""),
+    BT::OutputPort<std::string>("responsible_traversability", ""),
     BT::OutputPort<int>("local_db_version", ""),
     BT::OutputPort<std::string>("local_db_source", ""),
   };

@@ -12,4 +12,6 @@ bool openable
 bool clearable
 geometry_msgs/Point bbox_center
 geometry_msgs/Vector3 bbox_extent
+string state_detail
+string traversability
 string message

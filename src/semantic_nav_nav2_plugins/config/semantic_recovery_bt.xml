@@ -16,8 +16,14 @@
     has accurate spatial context. Then EscalateToLLMRecovery → directive
     branch (retry_target, wait_then_replan, give_up, operator actions).
 
-  RoundRobin cycles with RecoveryNode(number_of_retries=3):
-    attempt 1 → Geometric, attempt 2 → Semantic, attempt 3 → Geometric.
+  RecoveryNode(number_of_retries=3) with a RoundRobin recovery child alternates:
+    attempt 1 = Geometric, attempt 2 = Semantic (LLM picks a *reachability-
+    validated* retry_target — the orchestrator only returns alternatives the
+    planner can reach now), attempt 3 = Geometric again. Attempt 3 gives the
+    chosen reachable alternative a second navigation attempt with a freshly
+    cleared costmap before the run is aborted. No second LLM cycle is spent, so
+    recovery stays responsive. When no reachable alternative exists the semantic
+    tier degrades to give_up and the orchestrator escalates to the operator.
 
   PathClearCondition is kept ONLY inside SignalWaitRecheck for per-attempt
   clear-path checking during the animate-blocker retry loop.
@@ -102,6 +108,9 @@
               responsible_safety_class="{responsible_safety_class}"
               responsible_openable="{responsible_openable}"
               responsible_clearable="{responsible_clearable}"
+              responsible_match_type="{responsible_match_type}"
+              responsible_state_detail="{responsible_state_detail}"
+              responsible_traversability="{responsible_traversability}"
               local_db_version="{local_db_version}"
               local_db_source="{local_db_source}"/>
 
@@ -119,6 +128,9 @@
               responsible_safety_class="{responsible_safety_class}"
               responsible_openable="{responsible_openable}"
               responsible_clearable="{responsible_clearable}"
+              responsible_match_type="{responsible_match_type}"
+              responsible_state_detail="{responsible_state_detail}"
+              responsible_traversability="{responsible_traversability}"
               blockage_centroid="{blockage_centroid}"
               blockage_extent_m="{blockage_extent_m}"
               local_db_version="{local_db_version}"

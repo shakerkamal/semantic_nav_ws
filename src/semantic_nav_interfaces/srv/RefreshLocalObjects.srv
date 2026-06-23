@@ -1,9 +1,12 @@
 geometry_msgs/PoseStamped robot_pose
 geometry_msgs/Point blockage_centroid
 float32 radius_m
+string semantic_map_id           # "" = not specified; passthrough to provider when wired
+string base_map_version          # "" = not specified; passthrough to provider when wired
 ---
 semantic_nav_interfaces/ObjectInstance[] objects
 uint32 db_version
 builtin_interfaces/Time db_stamp
+string semantic_map_version      # "" = local snapshot; provider sets this when available
 string source
 string message

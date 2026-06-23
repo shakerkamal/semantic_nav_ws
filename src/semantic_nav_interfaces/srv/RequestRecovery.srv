@@ -20,6 +20,15 @@ string responsible_safety_class
 bool responsible_openable
 bool responsible_clearable
 
+# Match quality from MatchResponsibleObject: "verified" | "inferred" | "none"
+# verified  = blockage centroid inside inflated mapped bbox (object at mapped pose)
+# inferred  = blockage near but outside mapped bbox (displacement candidate)
+string responsible_match_type
+
+# Door-state overlay fields (M5C). Empty when responsible object is not a door.
+string responsible_state_detail    # e.g. open | closed | unknown
+string responsible_traversability  # passable | blocked | unknown
+
 geometry_msgs/Point blockage_centroid
 float32 blockage_extent_m
 
