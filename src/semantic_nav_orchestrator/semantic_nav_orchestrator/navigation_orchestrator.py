@@ -2105,6 +2105,11 @@ class NavigationOrchestrator(Node):
             if success:
                 response.outcome = "REACHED"
                 response.failure_reason = ""
+                # Surface the actual target reached: when BT recovery rerouted to
+                # a reachable alternative, report that key instead of the original
+                # query so the terminal does not claim the original was reached.
+                redirected = self._last_redirected_target_key()
+                response.reached_target = redirected if redirected else query
             elif self._last_failure_kind == "resolution":
                 response.outcome = "RESOLUTION_FAILED"
                 response.failure_reason = (
@@ -2775,6 +2780,25 @@ class NavigationOrchestrator(Node):
                 message=proposal.message if proposal is not None else "",
             )
         )
+
+    def _last_redirected_target_key(self) -> str:
+        """Return the alternative object key the run was rerouted to, or "".
+
+        Scans this run's attempt records for the most recent ``retry_target``
+        directive and returns its target key when it differs from the originally
+        resolved target. Returns "" when no reroute happened (no retry_target, or
+        the retry pointed back at the original target after a transient block
+        cleared) so callers can fall back to the original query string.
+        """
+        original_key = getattr(self, "_active_current_target_object_key", "") or ""
+        for record in reversed(self._attempt_records):
+            if record.action != "retry_target":
+                continue
+            value = (record.value or "").strip()
+            if value and value != original_key:
+                return value
+            return ""
+        return ""
 
     def _fill_request_recovery_response_from_directive(
         self,

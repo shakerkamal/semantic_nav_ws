@@ -83,6 +83,7 @@ class NavResult:
     success: bool
     outcome: str
     failure_reason: str
+    reached_target: str = ""             # actual target reached (may differ from query)
     preempt_cmd: Optional[str] = None   # non-None → user typed new command
     exit_requested: bool = False         # user typed Ctrl-D / sent None
 
@@ -262,6 +263,7 @@ class NavigationTerminal(Node):
             success=resp.success,
             outcome=resp.outcome,
             failure_reason=resp.failure_reason,
+            reached_target=getattr(resp, "reached_target", "") or "",
         )
 
     def _fire_cancel(self) -> None:
@@ -513,7 +515,14 @@ def _controller(node: NavigationTerminal, cmd_q: queue.Queue) -> None:
 
             # Navigation finished
             if result.success:
-                _emit(green(f"\n  ✓ SUCCESS — reached {bold(query)}"))
+                reached = result.reached_target
+                if reached and reached != query:
+                    _emit(green(
+                        f"\n  ✓ SUCCESS — reached {bold(reached)} "
+                        f"(rerouted from {query})"
+                    ))
+                else:
+                    _emit(green(f"\n  ✓ SUCCESS — reached {bold(query)}"))
                 query = None
                 continue
 

@@ -52,7 +52,7 @@ class ResolverNode(Node):
         self.declare_parameter("require_robot_pose_for_standoff", True)
         self.declare_parameter("robot_footprint_radius", 0.22)
         self.declare_parameter("clearance_margin", 0.20)
-        self.declare_parameter("ranker", "bm25")
+        self.declare_parameter("ranker", "hybrid")
         self.declare_parameter("spatial_context", False)
         self.declare_parameter("hybrid_tiebreak_delta", 0.5)
         self.declare_parameter("hybrid_top_k", 4)

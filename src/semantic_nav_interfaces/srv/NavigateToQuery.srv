@@ -5,3 +5,4 @@ string intent_hint    # short semantic hint from LLM parse; empty for direct com
 bool success
 string outcome        # REACHED | RESOLUTION_FAILED | NEEDS_OPERATOR | EXECUTION_FAILED | BUSY | INVALID
 string failure_reason
+string reached_target  # actual target reached; differs from query when recovery rerouted to an alternative
