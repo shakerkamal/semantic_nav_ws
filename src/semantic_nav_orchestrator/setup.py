@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'navigation_orchestrator = semantic_nav_orchestrator.navigation_orchestrator:main',
             'navigation_terminal = semantic_nav_orchestrator.navigation_terminal:main',
+            'diagnose_blockage_demo = semantic_nav_orchestrator.diagnose_blockage_demo:main',
         ],
     },
 )
