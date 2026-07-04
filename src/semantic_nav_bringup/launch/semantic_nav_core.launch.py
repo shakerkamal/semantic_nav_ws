@@ -62,6 +62,16 @@ def generate_launch_description():
         }]
     )
 
+    door_state_monitor_node = Node(
+        package='semantic_nav_semantics',
+        executable='door_state_monitor_node',
+        name='door_state_monitor_node',
+        output='screen',
+        parameters=[{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }]
+    )
+
     return LaunchDescription([
         use_sim_time_arg,
         resolve_service_arg,
@@ -70,4 +80,5 @@ def generate_launch_description():
         validator_node,
         executor_node,
         local_object_query_node,
+        door_state_monitor_node,
     ])

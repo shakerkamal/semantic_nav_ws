@@ -31,6 +31,7 @@ setup(
             'ranker_eval = semantic_nav_semantics.eval.run_ranker_eval:main',
             'plot_ranker_eval = semantic_nav_semantics.eval.plot_results:main',
             'local_object_query_node = semantic_nav_semantics.local_object_query_node:main',
+            'door_state_monitor_node = semantic_nav_semantics.door_state_monitor_node:main',
             'mock_map_provider = semantic_nav_semantics.mock_map_provider_node:main',
         ],
     },

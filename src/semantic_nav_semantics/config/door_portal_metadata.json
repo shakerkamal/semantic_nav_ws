@@ -1,0 +1,10 @@
+{
+  "door:119": {
+    "normal_yaw": 0.0,
+    "standoff_distance_m": 1.0,
+    "aliases": ["door near fridge", "kitchen-side door", "door near counter"],
+    "nearby_object_keys": [],
+    "side_a_standoff_pose": { "frame_id": "map", "x": 3.15, "y": -1.83, "yaw": 0.0 },
+    "side_b_standoff_pose": { "frame_id": "map", "x": 5.10, "y": -1.83, "yaw": 3.14 }
+  }
+}
