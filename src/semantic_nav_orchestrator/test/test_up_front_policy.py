@@ -2,8 +2,10 @@
 """Unit tests for the deterministic up-front affordance policy."""
 
 from semantic_nav_orchestrator.up_front_policy import (
+    STANDOFF_OBJECT_KEY,
     ResponsibleAffordances,
     barrier_cleared_status,
+    behavior_tree_for_target,
     choose_directive,
     eligible_directives,
 )
@@ -84,3 +86,29 @@ def test_barrier_too_few_cells_is_unconfirmed():
     assert barrier_cleared_status(
         None, observed_cells=0, clear_max_lethal_fraction=0.15, min_observed_cells=8
     ) == "unconfirmed"
+
+
+# --- behavior-tree selection: keep the standoff approach LLM-free ---
+
+def test_standoff_target_gets_plain_bt():
+    # The deterministic standoff maneuver must NOT carry the semantic (LLM) BT.
+    bt = behavior_tree_for_target(
+        STANDOFF_OBJECT_KEY, semantic_bt="/sem.xml", standoff_bt="",
+    )
+    assert bt == ""  # empty -> Nav2 default (geometric recovery, no LLM)
+
+
+def test_real_target_keeps_semantic_bt():
+    # The real goal (incl. re-dispatch after the barrier clears) keeps the
+    # semantic recovery BT so its Tier-3 LLM escalation is still available.
+    bt = behavior_tree_for_target(
+        "refrigerator:6", semantic_bt="/sem.xml", standoff_bt="",
+    )
+    assert bt == "/sem.xml"
+
+
+def test_standoff_plain_bt_can_be_an_explicit_path():
+    bt = behavior_tree_for_target(
+        STANDOFF_OBJECT_KEY, semantic_bt="/sem.xml", standoff_bt="/plain.xml",
+    )
+    assert bt == "/plain.xml"

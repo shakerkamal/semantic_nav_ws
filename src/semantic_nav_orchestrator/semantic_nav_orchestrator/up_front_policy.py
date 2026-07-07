@@ -12,6 +12,31 @@ from typing import List, Optional
 
 _ANIMATE = {"human", "animal"}
 
+# object_key stamped on the internal standoff sub-goal of the up-front layer.
+STANDOFF_OBJECT_KEY = "__standoff__"
+
+
+def behavior_tree_for_target(
+    object_key: str,
+    semantic_bt: str,
+    standoff_bt: str,
+    standoff_object_key: str = STANDOFF_OBJECT_KEY,
+) -> str:
+    """Pick the Nav2 behavior_tree for a goal, keeping the up-front recovery
+    DETERMINISTIC (no LLM).
+
+    The standoff approach is an internal maneuver of the deterministic up-front
+    layer, so it must NOT run the semantic recovery BT -- whose Tier-3
+    EscalateToLLMRecovery would pull the LLM into a path documented "no LLM"
+    and, when the LLM is down, block ~30 s then abort the approach. The standoff
+    uses ``standoff_bt`` (a plain BT: geometric recovery only; empty string ->
+    Nav2's configured default). Every other goal -- including the real target
+    re-dispatched once the barrier clears -- keeps ``semantic_bt``.
+    """
+    if object_key == standoff_object_key:
+        return standoff_bt
+    return semantic_bt
+
 
 def barrier_cleared_status(
     lethal_fraction: Optional[float],

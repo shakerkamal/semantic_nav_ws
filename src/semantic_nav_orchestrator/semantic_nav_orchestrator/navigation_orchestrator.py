@@ -49,8 +49,10 @@ from semantic_nav_orchestrator.responsible_object_matcher import (
 )
 from semantic_nav_orchestrator.costmap_adapter import occupancygrid_to_costgrid
 from semantic_nav_orchestrator.up_front_policy import (
+    STANDOFF_OBJECT_KEY,
     ResponsibleAffordances,
     barrier_cleared_status,
+    behavior_tree_for_target,
     choose_directive,
 )
 from semantic_nav_orchestrator.global_blockage_diagnosis import (
@@ -254,6 +256,10 @@ class NavigationOrchestrator(Node):
 
         self.declare_parameter('planner_id', '')
         self.declare_parameter('behavior_tree', default_bt_xml_path)
+        # BT for the deterministic up-front standoff approach. Empty -> Nav2's
+        # configured default (stock geometric recovery); it must NOT be the
+        # semantic recovery BT, so the "no LLM" up-front layer stays LLM-free.
+        self.declare_parameter('standoff_behavior_tree', '')
         self.declare_parameter('enable_validation', True)
 
         self.declare_parameter('service_wait_timeout_sec', 30.0)
@@ -372,6 +378,8 @@ class NavigationOrchestrator(Node):
 
         self._planner_id = self.get_parameter('planner_id').get_parameter_value().string_value
         self._behavior_tree = self.get_parameter('behavior_tree').get_parameter_value().string_value
+        self._standoff_behavior_tree = self.get_parameter(
+            'standoff_behavior_tree').get_parameter_value().string_value
         self._enable_validation = self.get_parameter('enable_validation').get_parameter_value().bool_value
 
         self._recovery_cap = self.get_parameter('recovery_cap').get_parameter_value().integer_value
@@ -1080,10 +1088,14 @@ class NavigationOrchestrator(Node):
     def _run_up_front_recovery(self, target, initial_query: str) -> bool:
         """Diagnose an up-front blockage and run an approach-and-recheck loop.
 
-        Deterministic (no LLM). Bounded by up_front_cap. Returns True only if the
-        original goal is ultimately reached; False escalates via the
-        NavigateToQuery NEEDS_OPERATOR outcome (the orchestrator has no operator
-        client of its own).
+        Deterministic (no LLM): directives come from up_front_policy (a pure
+        function), and the standoff approach is dispatched with a plain BT (see
+        behavior_tree_for_target) so its Nav2 recovery never escalates to the
+        LLM. Bounded by up_front_cap. Returns True only if the original goal is
+        ultimately reached; False escalates via the NavigateToQuery
+        NEEDS_OPERATOR outcome (the orchestrator has no operator client of its
+        own). The real goal, re-dispatched once the barrier clears, keeps the
+        semantic recovery BT.
         """
         self._last_failure_kind = "execution"
         goal_ps = target.pose
@@ -1156,11 +1168,11 @@ class NavigationOrchestrator(Node):
 
             if action == "approach_and_recheck":
                 standoff_target = ResolvedTarget(
-                    query="__standoff__",
+                    query=STANDOFF_OBJECT_KEY,
                     pose=standoff_ps,
                     db_version=target.db_version,
                     db_stamp=target.db_stamp,
-                    object_key="__standoff__",
+                    object_key=STANDOFF_OBJECT_KEY,
                 )
                 if not self._execute_pose(standoff_target):
                     self._log_stage_warn(
@@ -2248,7 +2260,11 @@ class NavigationOrchestrator(Node):
 
         goal_msg = ExecutePose.Goal()
         goal_msg.pose = pose
-        goal_msg.behavior_tree = self._behavior_tree
+        # Keep the deterministic standoff maneuver LLM-free: it gets a plain BT,
+        # the real goal keeps the semantic recovery BT (see behavior_tree_for_target).
+        goal_msg.behavior_tree = behavior_tree_for_target(
+            target.object_key, self._behavior_tree, self._standoff_behavior_tree
+        )
 
         self._log_stage_info(
             "EXECUTION",
