@@ -47,12 +47,31 @@ def occupied_fraction(
     grid: GridView,
     footprint: DoorFootprint,
     lethal_threshold: int,
+    margin_frac: float = 0.0,
 ) -> Tuple[float, int]:
-    """Fraction of KNOWN cells inside the door footprint that are >= lethal.
+    """Fraction of the door's WIDTH that is blocked by a lethal obstacle.
 
-    Returns (occupied_fraction, observed_cells). Unknown cells (value < 0) are
-    skipped and not counted in observed_cells. Returns (0.0, 0) if the grid has
-    no positive resolution or no known cells fall inside the footprint.
+    Returns (blocked_width_fraction, observed_lines). A door is a thin barrier
+    across an opening, so its closure is "how much of the WIDTH (long axis) is
+    blocked", NOT how much of the 2-D bbox AREA is occupied. A laser sees only
+    the near FACE, so a fully-closed thin slab marks just one lethal cell across
+    its THICKNESS (short axis); measuring 2-D area would dilute that to
+    ~1/thickness and never reach the "blocked" band. So we collapse the
+    thickness: we scan each line across the width and count it *blocked* if ANY
+    cell along the thickness is lethal (>= lethal_threshold), *observed* if it
+    has any KNOWN cell (value >= 0). The result is blocked_lines / observed_lines
+    — 0.0 for a clear opening, ~1.0 for a closed door, regardless of which side
+    the laser observed or how thick the slab is.
+
+    ``margin_frac`` insets the WIDTH axis by this fraction of its half-extent so
+    sampling targets the *clear opening* the slab fills, skipping the frame posts
+    that overlap the bbox ends. The thickness axis is always sampled in full (its
+    single observed face is the closure signal — never shrink it). A fraction,
+    not absolute metres, scales to any door. The width half-extent is clamped to
+    ``[min(half, res), half]`` so the inset never inverts or expands the box.
+
+    Returns (0.0, 0) if the grid has no positive resolution or no known cells
+    fall inside the footprint.
     """
     res = grid.resolution
     if res <= 0.0:
@@ -60,26 +79,46 @@ def occupied_fraction(
 
     half_x = footprint.extent_x / 2.0
     half_y = footprint.extent_y / 2.0
-    min_i = int((footprint.center_x - half_x - grid.origin_x) / res)
-    max_i = int((footprint.center_x + half_x - grid.origin_x) / res)
-    min_j = int((footprint.center_y - half_y - grid.origin_y) / res)
-    max_j = int((footprint.center_y + half_y - grid.origin_y) / res)
+    # The door's WIDTH is its longer horizontal extent (frame posts sit at its
+    # ends); the THICKNESS is the shorter one (only its near face is observed).
+    width_is_x = footprint.extent_x >= footprint.extent_y
+    if width_is_x:
+        half_w, center_w, origin_w, n_w = half_x, footprint.center_x, grid.origin_x, grid.width
+        half_t, center_t, origin_t, n_t = half_y, footprint.center_y, grid.origin_y, grid.height
+    else:
+        half_w, center_w, origin_w, n_w = half_y, footprint.center_y, grid.origin_y, grid.height
+        half_t, center_t, origin_t, n_t = half_x, footprint.center_x, grid.origin_x, grid.width
 
-    occ = 0
-    observed = 0
-    for j in range(max(0, min_j), min(grid.height, max_j + 1)):
-        row = j * grid.width
-        for i in range(max(0, min_i), min(grid.width, max_i + 1)):
-            v = grid.data[row + i]
+    if margin_frac > 0.0:
+        half_w = max(half_w * (1.0 - margin_frac), min(half_w, res))
+
+    min_w = int((center_w - half_w - origin_w) / res)
+    max_w = int((center_w + half_w - origin_w) / res)
+    min_t = int((center_t - half_t - origin_t) / res)
+    max_t = int((center_t + half_t - origin_t) / res)
+
+    blocked_lines = 0
+    observed_lines = 0
+    for w in range(max(0, min_w), min(n_w, max_w + 1)):
+        line_observed = False
+        line_blocked = False
+        for t in range(max(0, min_t), min(n_t, max_t + 1)):
+            i, j = (w, t) if width_is_x else (t, w)
+            v = grid.data[j * grid.width + i]
             if v < 0:
                 continue
-            observed += 1
+            line_observed = True
             if v >= lethal_threshold:
-                occ += 1
+                line_blocked = True
+                break
+        if line_observed:
+            observed_lines += 1
+            if line_blocked:
+                blocked_lines += 1
 
-    if observed == 0:
+    if observed_lines == 0:
         return 0.0, 0
-    return occ / observed, observed
+    return blocked_lines / observed_lines, observed_lines
 
 
 def classify_door_state(

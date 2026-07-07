@@ -43,10 +43,20 @@ class DoorStateMonitorNode(Node):
         self.declare_parameter("door_states_topic", "/semantic_door_states")
         self.declare_parameter("publish_hz", 2.0)
         self.declare_parameter("ttl_sec", 3.0)
-        self.declare_parameter("lethal_threshold", 90)
+        # 100 (not 90): count only true obstacles (cost 100), never the
+        # inflation halo (<=99). A door slab marks as a genuine obstacle; the
+        # frame's inflation must not read as "closed".
+        self.declare_parameter("lethal_threshold", 100)
         self.declare_parameter("blocked_fraction", 0.30)
         self.declare_parameter("open_fraction", 0.10)
         self.declare_parameter("min_observed_cells", 3)
+        # Inset each side of a door's sampled footprint by this FRACTION of its
+        # half-extent, so we read the CLEAR OPENING (which the moving slab fills)
+        # rather than the door object's bbox, whose ends overlap the frame posts.
+        # A fraction (not absolute metres) is one rule that scales to any door:
+        # 0.25 samples the central half, where the slab always is and frames
+        # never are.
+        self.declare_parameter("footprint_margin_frac", 0.25)
         self.declare_parameter("robot_openable", False)
 
         p = self.get_parameter
@@ -59,6 +69,7 @@ class DoorStateMonitorNode(Node):
         self._blocked_fraction = float(p("blocked_fraction").value)
         self._open_fraction = float(p("open_fraction").value)
         self._min_observed_cells = int(p("min_observed_cells").value)
+        self._footprint_margin_frac = float(p("footprint_margin_frac").value)
         self._robot_openable = bool(p("robot_openable").value)
 
         with open(map_path, "r", encoding="utf-8") as f:
@@ -101,7 +112,9 @@ class DoorStateMonitorNode(Node):
         arr.header.stamp = self.get_clock().now().to_msg()
         arr.header.frame_id = "map"
         for fp in self._doors:
-            frac, observed = occupied_fraction(view, fp, self._lethal)
+            frac, observed = occupied_fraction(
+                view, fp, self._lethal, margin_frac=self._footprint_margin_frac
+            )
             est = classify_door_state(
                 frac, observed,
                 blocked_fraction=self._blocked_fraction,

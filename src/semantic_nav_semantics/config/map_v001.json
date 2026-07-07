@@ -2010,8 +2010,16 @@
     "object_tag": "door",
     "object_caption": "The doorway connecting the hallway to the kitchen, near the refrigerator and counter.",
     "object_state": "semi-static",
-    "bbox_center": [4.12, -1.83, 1.0],
-    "bbox_extent": [0.85, 0.12, 2.0],
-    "bbox_volume": 0.20
+    "bbox_center": [
+      4.86223,
+      -0.677227,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
   }
 }

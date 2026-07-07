@@ -3,6 +3,7 @@
 
 from semantic_nav_orchestrator.global_blockage_diagnosis import (
     CostGrid,
+    barrier_lethal_fraction,
     cell_to_world,
     flood_fill_free,
     is_free,
@@ -255,3 +256,61 @@ def test_diagnose_goal_unmapped_when_goal_in_lethal():
         grid, (0.5, 1.5), (2.5, 1.5), goal_tolerance_cells=0
     )
     assert d.diagnosis == DIAG_GOAL_UNMAPPED
+
+
+def test_diagnose_blocked_for_inflated_thick_barrier():
+    # Regression for the live E2E: Nav2 costmap inflation makes the wall+door a
+    # THICK blocked band (here cols 3-6, 4 cells). No blocked cell is 8-adjacent
+    # to BOTH free rooms, so the old thin-cut heuristic returned no_thin_barrier
+    # -> give_up. With a realistic resolution the free-frontier gap (~0.5 m) is a
+    # doorway-width, so the fix must classify it 'blocked' and localize a centroid
+    # inside the band, with a standoff on the robot side.
+    W, H = 10, 5
+    data = [100 if 3 <= i <= 6 else 0 for j in range(H) for i in range(W)]
+    grid = CostGrid(0.1, W, H, 0.0, 0.0, data)
+    d = diagnose_global_blockage(grid, (0.15, 0.25), (0.85, 0.25))
+    assert d.diagnosis == DIAG_BLOCKED
+    assert d.barrier_centroid is not None
+    cx, _ = d.barrier_centroid
+    assert 0.3 <= cx <= 0.7          # centroid inside the blocked band
+    assert d.standoff_pose is not None
+    assert d.standoff_pose[0] < cx   # standoff backed off toward the robot
+
+
+# --- barrier_lethal_fraction (generic footprint-clear sampling) ---
+
+def test_barrier_lethal_fraction_all_free_is_zero():
+    grid = _uniform_grid(11, 11, 0, resolution=0.1, ox=0.0, oy=0.0)
+    frac, observed = barrier_lethal_fraction(
+        grid, (0.5, 0.5), radius_m=0.2, lethal_threshold=100
+    )
+    assert frac == 0.0
+    assert observed > 0
+
+
+def test_barrier_lethal_fraction_counts_true_obstacles_only():
+    # A 5x5 grid; center column is lethal(100), the rest is inflation(99).
+    cells = [99] * 25
+    for j in range(5):
+        cells[j * 5 + 2] = 100
+    grid = CostGrid(0.1, 5, 5, 0.0, 0.0, cells)
+    # threshold 100 -> only the true-lethal column counts (5 of 25 = 0.2).
+    frac, observed = barrier_lethal_fraction(
+        grid, (0.25, 0.25), radius_m=1.0, lethal_threshold=100
+    )
+    assert observed == 25
+    assert abs(frac - 0.2) < 1e-9
+
+
+def test_barrier_lethal_fraction_skips_unknown_cells():
+    cells = [-1] * 25
+    grid = CostGrid(0.1, 5, 5, 0.0, 0.0, cells)
+    frac, observed = barrier_lethal_fraction(
+        grid, (0.25, 0.25), radius_m=1.0, lethal_threshold=100
+    )
+    assert (frac, observed) == (0.0, 0)
+
+
+def test_barrier_lethal_fraction_zero_resolution_safe():
+    grid = CostGrid(0.0, 5, 5, 0.0, 0.0, [0] * 25)
+    assert barrier_lethal_fraction(grid, (0.0, 0.0), 0.2, 100) == (0.0, 0)

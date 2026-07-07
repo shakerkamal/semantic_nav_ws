@@ -11,7 +11,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
-    aws_small_house_path = LaunchConfiguration('aws_small_house_path')
+    world = LaunchConfiguration('world')
 
     os.environ['TURTLEBOT3_MODEL'] = 'waffle'
 
@@ -19,17 +19,12 @@ def generate_launch_description():
     turtlebot3_gazebo_share = get_package_share_directory('turtlebot3_gazebo')
     turtlebot3_launch_dir = os.path.join(turtlebot3_gazebo_share, 'launch')
 
-    aws_world = [
-        aws_small_house_path,
-        '/worlds/small_house.world'
-    ]
-
     gzserver = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_ros_share, 'launch', 'gzserver.launch.py')
         ),
         launch_arguments={
-            'world': aws_world,
+            'world': world,
             'verbose': 'true'
         }.items()
     )
@@ -83,6 +78,16 @@ def generate_launch_description():
                 '/home/shaker/Thesis/Implementation/demo_bringup/aws-robomaker-small-house-world'
             ),
             description='Absolute path to aws-robomaker-small-house-world'
+        ),
+
+        DeclareLaunchArgument(
+            'world',
+            default_value=os.path.join(
+                get_package_share_directory('semantic_nav_bringup'),
+                'worlds', 'small_house_semantic.world'
+            ),
+            description='Gazebo world file (default: baked semantic scenario '
+                        'with the closed-door walls at door:119)'
         ),
 
         SetEnvironmentVariable('TURTLEBOT3_MODEL', 'waffle'),

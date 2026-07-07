@@ -20,6 +20,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import Point, PoseStamped, Vector3
+from nav_msgs.msg import OccupancyGrid
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
 from rclpy.duration import Duration
@@ -30,6 +31,7 @@ from std_srvs.srv import Trigger
 
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
+from nav2_msgs.action import Spin
 from semantic_nav_interfaces.action import ExecutePose
 from semantic_nav_interfaces.msg import SemanticCorrectionReport, SemanticStoreUpdated
 from semantic_nav_interfaces.srv import (
@@ -44,6 +46,17 @@ from semantic_nav_interfaces.srv import (
 from semantic_nav_orchestrator.responsible_object_matcher import (
     ObjectCandidate,
     match_responsible_object,
+)
+from semantic_nav_orchestrator.costmap_adapter import occupancygrid_to_costgrid
+from semantic_nav_orchestrator.up_front_policy import (
+    ResponsibleAffordances,
+    barrier_cleared_status,
+    choose_directive,
+)
+from semantic_nav_orchestrator.global_blockage_diagnosis import (
+    DIAG_REACHABLE,
+    barrier_lethal_fraction,
+    diagnose_global_blockage,
 )
 from semantic_nav_orchestrator.recovery_directives import (
     LLMProposal as DirectiveLLMProposal,
@@ -436,6 +449,90 @@ class NavigationOrchestrator(Node):
             SemanticCorrectionReport,
             "/semantic_map/corrections",
             10,
+        )
+
+        # --- M3: global costmap subscription for up-front blockage diagnosis ---
+        self.declare_parameter('global_costmap_topic', '/global_costmap/costmap')
+        self.declare_parameter('up_front_recovery_enabled', True)
+        self.declare_parameter('up_front_cap', 2)
+        self.declare_parameter('up_front_standoff_distance_m', 1.0)
+        self.declare_parameter('up_front_recheck_polls', 6)
+        self.declare_parameter('up_front_recheck_interval_s', 2.0)
+        self._up_front_recovery_enabled = bool(
+            self.get_parameter('up_front_recovery_enabled')
+            .get_parameter_value().bool_value)
+        self._up_front_cap = int(
+            self.get_parameter('up_front_cap')
+            .get_parameter_value().integer_value)
+        self._up_front_standoff_distance_m = float(
+            self.get_parameter('up_front_standoff_distance_m')
+            .get_parameter_value().double_value)
+        self._up_front_recheck_polls = int(
+            self.get_parameter('up_front_recheck_polls')
+            .get_parameter_value().integer_value)
+        self._up_front_recheck_interval_s = float(
+            self.get_parameter('up_front_recheck_interval_s')
+            .get_parameter_value().double_value)
+        # Generic (object-agnostic) confirmation gate: at the standoff, before
+        # committing to the original goal, re-observe (spin) so SLAM + costmap
+        # re-sense the passage, then require BOTH a valid plan AND the
+        # responsible barrier's footprint to read clear on the costmap. Works
+        # for any dynamic obstacle that opened/moved/was removed -- not just
+        # doors. Deterministic; no LLM. Disable to fall back to plan-only.
+        self.declare_parameter('up_front_require_barrier_clear', True)
+        self.declare_parameter('barrier_clear_radius_m', 0.30)
+        self.declare_parameter('barrier_clear_max_lethal_fraction', 0.15)
+        self.declare_parameter('barrier_clear_lethal_threshold', 100)
+        self.declare_parameter('barrier_clear_min_observed_cells', 8)
+        self.declare_parameter('up_front_reobserve_enabled', True)
+        self.declare_parameter('up_front_reobserve_yaw_rad', 0.7)
+        self.declare_parameter('up_front_reobserve_time_allowance_s', 10.0)
+        self._up_front_require_barrier_clear = bool(
+            self.get_parameter('up_front_require_barrier_clear')
+            .get_parameter_value().bool_value)
+        self._barrier_clear_radius_m = float(
+            self.get_parameter('barrier_clear_radius_m')
+            .get_parameter_value().double_value)
+        self._barrier_clear_max_lethal_fraction = float(
+            self.get_parameter('barrier_clear_max_lethal_fraction')
+            .get_parameter_value().double_value)
+        self._barrier_clear_lethal_threshold = int(
+            self.get_parameter('barrier_clear_lethal_threshold')
+            .get_parameter_value().integer_value)
+        self._barrier_clear_min_observed_cells = int(
+            self.get_parameter('barrier_clear_min_observed_cells')
+            .get_parameter_value().integer_value)
+        self._up_front_reobserve_enabled = bool(
+            self.get_parameter('up_front_reobserve_enabled')
+            .get_parameter_value().bool_value)
+        self._up_front_reobserve_yaw_rad = float(
+            self.get_parameter('up_front_reobserve_yaw_rad')
+            .get_parameter_value().double_value)
+        self._up_front_reobserve_time_allowance_s = float(
+            self.get_parameter('up_front_reobserve_time_allowance_s')
+            .get_parameter_value().double_value)
+        self._latest_global_costmap = None
+        self.create_subscription(
+            OccupancyGrid,
+            self.get_parameter('global_costmap_topic')
+            .get_parameter_value().string_value,
+            self._on_global_costmap,
+            store_update_qos,
+            callback_group=self._callback_group,
+        )
+        self._clear_global_costmap_client = self.create_client(
+            ClearEntireCostmap,
+            '/global_costmap/clear_entirely_global_costmap',
+            callback_group=self._callback_group,
+        )
+        self._clear_local_costmap_client = self.create_client(
+            ClearEntireCostmap,
+            '/local_costmap/clear_entirely_local_costmap',
+            callback_group=self._callback_group,
+        )
+        # /spin behavior for the standoff re-observation maneuver.
+        self._spin_client = ActionClient(
+            self, Spin, '/spin', callback_group=self._callback_group,
         )
 
         # /navigate_to_query: one navigation at a time; terminal is the caller.
@@ -897,6 +994,238 @@ class NavigationOrchestrator(Node):
             ),
         )
 
+    def _on_global_costmap(self, msg):
+        """Cache the latest global costmap for up-front blockage diagnosis."""
+        self._latest_global_costmap = msg
+
+    def _standoff_tuple_to_pose(self, standoff) -> PoseStamped:
+        """Convert an (x, y, yaw) standoff tuple into a map-frame PoseStamped."""
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.pose.position.x = float(standoff[0])
+        pose.pose.position.y = float(standoff[1])
+        yaw = float(standoff[2])
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        return pose
+
+    def _clear_costmaps(self) -> None:
+        """Fire-and-forget clear of local + global costmaps (best-effort).
+
+        Wipes stale obstacle marks so a barrier that has physically cleared
+        (e.g. a door opening) gets re-observed on the next costmap update.
+        """
+        for client in (
+            self._clear_local_costmap_client,
+            self._clear_global_costmap_client,
+        ):
+            if client.service_is_ready():
+                client.call_async(ClearEntireCostmap.Request())
+
+    def _barrier_confirmation(self, barrier_xy, radius_m: float) -> str:
+        """Generic costmap footprint check for the standoff recheck.
+
+        Samples the freshest global costmap around the barrier centroid and
+        delegates to up_front_policy.barrier_cleared_status. Object-agnostic:
+        returns "cleared" / "still_blocked" / "unconfirmed".
+        """
+        grid_msg = self._latest_global_costmap
+        if grid_msg is None or barrier_xy is None:
+            return "unconfirmed"
+        grid = occupancygrid_to_costgrid(grid_msg)
+        frac, observed = barrier_lethal_fraction(
+            grid, barrier_xy, radius_m, self._barrier_clear_lethal_threshold
+        )
+        return barrier_cleared_status(
+            frac, observed,
+            self._barrier_clear_max_lethal_fraction,
+            self._barrier_clear_min_observed_cells,
+        )
+
+    def _reobserve(self) -> None:
+        """Rotate left-right in place so SLAM + costmap re-sense a freshly-opened
+        doorway before the confirmation gate reads it. Perception grounding, not
+        a decision; no LLM."""
+        if not self._up_front_reobserve_enabled:
+            return
+        yaw = self._up_front_reobserve_yaw_rad
+        for target_yaw in (yaw, -2.0 * yaw, yaw):  # left, right, recenter
+            self._send_spin(target_yaw)
+
+    def _send_spin(self, target_yaw: float) -> None:
+        """Fire one Nav2 /spin of target_yaw radians and wait for it (best-effort)."""
+        if not self._spin_client.wait_for_server(
+            timeout_sec=self._action_server_wait_timeout_sec
+        ):
+            self._log_stage_warn(
+                "UP_FRONT", "Spin behavior server unavailable; skipping re-observe."
+            )
+            return
+        goal = Spin.Goal()
+        goal.target_yaw = float(target_yaw)
+        goal.time_allowance = Duration(
+            seconds=self._up_front_reobserve_time_allowance_s
+        ).to_msg()
+        send_future = self._spin_client.send_goal_async(goal)
+        if not self._wait_for_future(send_future, self._action_send_goal_timeout_sec):
+            return
+        handle = send_future.result()
+        if handle is None or not handle.accepted:
+            return
+        result_future = handle.get_result_async()
+        self._wait_for_future(
+            result_future, self._up_front_reobserve_time_allowance_s + 5.0
+        )
+
+    def _run_up_front_recovery(self, target, initial_query: str) -> bool:
+        """Diagnose an up-front blockage and run an approach-and-recheck loop.
+
+        Deterministic (no LLM). Bounded by up_front_cap. Returns True only if the
+        original goal is ultimately reached; False escalates via the
+        NavigateToQuery NEEDS_OPERATOR outcome (the orchestrator has no operator
+        client of its own).
+        """
+        self._last_failure_kind = "execution"
+        goal_ps = target.pose
+        goal_xy = (goal_ps.pose.position.x, goal_ps.pose.position.y)
+
+        for attempt in range(int(self._up_front_cap)):
+            grid_msg = self._latest_global_costmap
+            robot = self._lookup_robot_pose()
+            if grid_msg is None or robot is None:
+                self._log_stage_error(
+                    "UP_FRONT",
+                    "No global costmap or robot pose available; escalating.",
+                )
+                return False
+
+            grid = occupancygrid_to_costgrid(grid_msg)
+            robot_xy = (robot.pose.position.x, robot.pose.position.y)
+            diag = diagnose_global_blockage(
+                grid, robot_xy, goal_xy,
+                standoff_distance_m=float(self._up_front_standoff_distance_m),
+            )
+            self._log_stage_info(
+                "UP_FRONT",
+                f"attempt={attempt} diagnosis={diag.diagnosis} "
+                f"centroid={diag.barrier_centroid}",
+            )
+            if diag.diagnosis == DIAG_REACHABLE:
+                self._log_stage_warn(
+                    "UP_FRONT",
+                    "Goal region is reachable but the planner still failed; "
+                    "not a topological blockage. Escalating.",
+                )
+                return False
+
+            center = diag.barrier_centroid or diag.approach_frontier
+            if center is None:
+                return False
+
+            centroid_point = Point()
+            centroid_point.x = float(center[0])
+            centroid_point.y = float(center[1])
+            match = self._match_responsible_object(centroid_point)
+            obj = match.object
+            if obj is None:
+                aff = ResponsibleAffordances(
+                    tag="", openable=False, clearable=False,
+                    safety_class="none", match_type="none",
+                )
+            else:
+                aff = ResponsibleAffordances(
+                    tag=obj.tag,
+                    openable=bool(obj.openable),
+                    clearable=bool(obj.clearable),
+                    safety_class=obj.safety_class or "none",
+                    match_type=match.match_type or "none",
+                )
+
+            standoff_ps = None
+            has_standoff = False
+            if diag.standoff_pose is not None:
+                standoff_ps = self._standoff_tuple_to_pose(diag.standoff_pose)
+                has_standoff = self._pose_is_reachable(standoff_ps)
+
+            action = choose_directive(diag.diagnosis, aff, has_standoff)
+            self._log_stage_info(
+                "UP_FRONT",
+                f"directive={action} responsible_tag='{aff.tag}' "
+                f"match_type={aff.match_type} has_standoff={has_standoff}",
+            )
+
+            if action == "approach_and_recheck":
+                standoff_target = ResolvedTarget(
+                    query="__standoff__",
+                    pose=standoff_ps,
+                    db_version=target.db_version,
+                    db_stamp=target.db_stamp,
+                    object_key="__standoff__",
+                )
+                if not self._execute_pose(standoff_target):
+                    self._log_stage_warn(
+                        "UP_FRONT",
+                        "Failed to reach the standoff pose; escalating.",
+                    )
+                    return False
+                # Wait-and-recheck at the standoff. Each poll: re-observe (spin)
+                # so SLAM + costmap re-sense the passage, clear stale marks, then
+                # GATE on grounded perception -- a valid plan AND the responsible
+                # barrier's footprint reading CLEAR on the costmap. Object-
+                # agnostic: any dynamic obstacle that opened/moved/was removed
+                # passes; we never commit on a plan alone (which could be a
+                # transient) without confirming the blocker is actually gone.
+                barrier_xy = diag.barrier_centroid or center
+                clear_radius = max(
+                    self._barrier_clear_radius_m, diag.barrier_extent_m / 2.0
+                )
+                for poll in range(int(self._up_front_recheck_polls)):
+                    self._reobserve()
+                    self._clear_costmaps()
+                    time.sleep(float(self._up_front_recheck_interval_s))
+                    barrier = self._barrier_confirmation(barrier_xy, clear_radius)
+                    plan_ok = self._validate_pose(target)
+                    barrier_ok = (
+                        barrier == "cleared"
+                        or not self._up_front_require_barrier_clear
+                    )
+                    self._log_stage_info(
+                        "UP_FRONT",
+                        f"Recheck poll={poll}: barrier={barrier} plan_ok={plan_ok} "
+                        f"barrier_ok={barrier_ok}",
+                    )
+                    if plan_ok and barrier_ok:
+                        self._log_stage_info(
+                            "UP_FRONT",
+                            f"Goal reachable and barrier footprint clear after "
+                            f"approach (poll={poll}); dispatching.",
+                        )
+                        return self._execute_pose(target)
+                self._log_stage_info(
+                    "UP_FRONT",
+                    "Still blocked (barrier not confirmed clear) after approach "
+                    "+ wait; re-diagnosing.",
+                )
+                continue
+
+            if action == "wait_then_replan":
+                time.sleep(5.0)
+                if self._validate_pose(target):
+                    return self._execute_pose(target)
+                continue
+
+            # open_door / clear_object / give_up / retry_target-without-alternative:
+            # no orchestrator operator client -> hand off via NEEDS_OPERATOR.
+            self._log_stage_info(
+                "UP_FRONT",
+                f"Directive '{action}' needs operator action; escalating.",
+            )
+            return False
+
+        self._log_stage_info(
+            "UP_FRONT", "Up-front recovery cap reached; escalating to operator.")
+        return False
+
     def _run_bt_led_once(
         self,
         initial_query: str,
@@ -955,12 +1284,18 @@ class NavigationOrchestrator(Node):
                 f"Dispatching ExecutePose with behavior_tree='{self._behavior_tree}'.",
             )
 
+        if self._up_front_recovery_enabled and not self._validate_pose(target):
+            self._log_stage_info(
+                "UP_FRONT",
+                "Pre-flight validation failed; entering up-front blockage recovery.",
+            )
+            return self._run_up_front_recovery(target, initial_query)
+
         self._log_stage_info(
             "BT_LED",
             (
-                "Skipping orchestrator pre-dispatch planner validation. "
-                "ValidateSemantic and ComputePathToPose inside semantic_recovery_bt.xml "
-                "will perform the geometric veto."
+                "Pre-flight validation passed (or up-front recovery disabled); "
+                "dispatching ExecutePose. The Nav2 BT owns further recovery."
             ),
         )
 

@@ -60,6 +60,43 @@ def world_to_cell(grid: CostGrid, x: float, y: float) -> Cell:
     return i, j
 
 
+def barrier_lethal_fraction(
+    grid: CostGrid,
+    centroid_xy: Tuple[float, float],
+    radius_m: float,
+    lethal_threshold: int,
+) -> Tuple[float, int]:
+    """Fraction of KNOWN cells within radius_m of a point that are >= lethal.
+
+    Object-agnostic footprint check: measures whether the responsible barrier is
+    still physically present at its centroid, regardless of what it is. Unknown
+    cells (< 0) are skipped and not counted. Returns (lethal_fraction,
+    observed_cells); (0.0, 0) if resolution is non-positive or nothing known was
+    sampled. Use a lethal_threshold that counts only TRUE obstacles (e.g. 100),
+    so inflation from adjacent structure does not read as "still blocked".
+    """
+    if grid.resolution <= 0.0:
+        return 0.0, 0
+    ci, cj = world_to_cell(grid, centroid_xy[0], centroid_xy[1])
+    rc = max(1, int(radius_m / grid.resolution))
+    lethal = 0
+    observed = 0
+    for dj in range(-rc, rc + 1):
+        for di in range(-rc, rc + 1):
+            i, j = ci + di, cj + dj
+            if not grid.in_bounds(i, j):
+                continue
+            v = grid.value(i, j)
+            if v < 0:
+                continue
+            observed += 1
+            if v >= lethal_threshold:
+                lethal += 1
+    if observed == 0:
+        return 0.0, 0
+    return lethal / observed, observed
+
+
 def cell_to_world(grid: CostGrid, i: float, j: float) -> Tuple[float, float]:
     """Convert cell indices to the world coordinate of the cell center."""
     x = grid.origin_x + (i + 0.5) * grid.resolution
@@ -186,6 +223,103 @@ def unknown_fraction(grid: CostGrid, cells: Set[Cell]) -> float:
     return unknown / len(cells)
 
 
+def _free_frontier(
+    grid: CostGrid, region: Set[Cell], lethal_threshold: int
+) -> Set[Cell]:
+    """Return free cells in region that are 8-adjacent to a blocked/unknown cell."""
+    frontier: Set[Cell] = set()
+    for i, j in region:
+        for di, dj in _NEIGHBORS8:
+            ni, nj = i + di, j + dj
+            if grid.in_bounds(ni, nj) and _is_blocked_or_unknown(
+                grid, ni, nj, lethal_threshold
+            ):
+                frontier.add((i, j))
+                break
+    return frontier
+
+
+def locate_barrier(
+    grid: CostGrid,
+    region_r: Set[Cell],
+    region_g: Set[Cell],
+    lethal_threshold: int,
+    gap_tolerance_cells: float = 2.0,
+    cluster_window_cells: float = 10.0,
+):
+    """Localize the narrowest gap between R and G (the doorway).
+
+    Finds the single closest free-frontier pair (the narrowest crossing), then
+    averages the midpoints of near-minimum pairs that lie within
+    cluster_window_cells of that crossing — centering the centroid WITHIN the
+    doorway without letting a long wall (whose band thickness ~ the doorway's
+    under inflation) drag the centroid toward the wall's center of mass. Robust
+    to costmap inflation. Returns (centroid_xy, gap_m), or None if either region
+    has no blocked boundary. All-pairs over frontier cells; runs once/recovery.
+    """
+    rf = _free_frontier(grid, region_r, lethal_threshold)
+    gf = _free_frontier(grid, region_g, lethal_threshold)
+    if not rf or not gf:
+        return None
+
+    min_d2 = None
+    anchor = None
+    for ri, rj in rf:
+        for gi, gj in gf:
+            d2 = (ri - gi) ** 2 + (rj - gj) ** 2
+            if min_d2 is None or d2 < min_d2:
+                min_d2 = d2
+                anchor = ((ri, rj), (gi, gj))
+
+    (ar, ag) = anchor
+    arx, ary = cell_to_world(grid, *ar)
+    agx, agy = cell_to_world(grid, *ag)
+    anchor_x = (arx + agx) / 2.0
+    anchor_y = (ary + agy) / 2.0
+
+    min_d = min_d2 ** 0.5
+    thresh_d2 = (min_d + gap_tolerance_cells) ** 2
+    window_m2 = (cluster_window_cells * grid.resolution) ** 2
+    sum_x = 0.0
+    sum_y = 0.0
+    count = 0
+    for ri, rj in rf:
+        for gi, gj in gf:
+            if (ri - gi) ** 2 + (rj - gj) ** 2 > thresh_d2:
+                continue
+            rx, ry = cell_to_world(grid, ri, rj)
+            gx, gy = cell_to_world(grid, gi, gj)
+            mx = (rx + gx) / 2.0
+            my = (ry + gy) / 2.0
+            if (mx - anchor_x) ** 2 + (my - anchor_y) ** 2 <= window_m2:
+                sum_x += mx
+                sum_y += my
+                count += 1
+
+    centroid = (sum_x / count, sum_y / count)
+    gap_m = min_d * grid.resolution
+    return centroid, gap_m
+
+
+def _blocked_cells_near(
+    grid: CostGrid,
+    centroid_xy: Tuple[float, float],
+    radius_cells: int,
+    lethal_threshold: int,
+) -> Set[Cell]:
+    """Return blocked/unknown cells within Chebyshev radius of a world point."""
+    ci, cj = world_to_cell(grid, centroid_xy[0], centroid_xy[1])
+    cells: Set[Cell] = set()
+    for dj in range(-radius_cells, radius_cells + 1):
+        for di in range(-radius_cells, radius_cells + 1):
+            ni, nj = ci + di, cj + dj
+            if grid.in_bounds(ni, nj) and _is_blocked_or_unknown(
+                grid, ni, nj, lethal_threshold
+            ):
+                cells.add((ni, nj))
+    return cells
+
+
 def compute_standoff(
     grid: CostGrid,
     barrier_xy: Tuple[float, float],
@@ -308,6 +442,8 @@ def diagnose_global_blockage(
     goal_tolerance_cells: int = 3,
     standoff_distance_m: float = 1.0,
     unknown_fraction_threshold: float = 0.5,
+    max_gap_m: float = 2.0,
+    barrier_sample_radius_cells: int = 4,
 ) -> GlobalBlockageDiagnosis:
     """Diagnose why the goal is unreachable from the robot on the grid.
 
@@ -330,9 +466,9 @@ def diagnose_global_blockage(
         return GlobalBlockageDiagnosis(diagnosis=DIAG_REACHABLE)
 
     region_g = flood_fill_free(grid, goal_free, lethal_threshold)
-    barrier = barrier_cells(grid, region_r, region_g, lethal_threshold)
+    located = locate_barrier(grid, region_r, region_g, lethal_threshold)
 
-    if not barrier:
+    if located is None or located[1] > max_gap_m:
         frontier_cell = _nearest_region_cell_to_point(
             grid, region_r, goal_cell
         )
@@ -345,9 +481,12 @@ def diagnose_global_blockage(
             diagnosis=DIAG_NO_THIN_BARRIER, approach_frontier=frontier
         )
 
-    centroid = barrier_centroid_world(grid, barrier)
-    extent = barrier_extent_m(grid, barrier)
-    unk_frac = unknown_fraction(grid, barrier)
+    centroid, _gap_m = located
+    near = _blocked_cells_near(
+        grid, centroid, barrier_sample_radius_cells, lethal_threshold
+    )
+    extent = barrier_extent_m(grid, near) if near else _gap_m
+    unk_frac = unknown_fraction(grid, near)
     blocked_frac = 1.0 - unk_frac
     standoff = compute_standoff(
         grid, centroid, robot_xy, region_r,
