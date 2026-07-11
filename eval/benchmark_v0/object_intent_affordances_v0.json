@@ -1,0 +1,125 @@
+{
+  "defaults": {
+    "navigable": true,
+    "affordances": [],
+    "query_hints": [],
+    "caption_boost_terms": []
+  },
+  "aliases": {
+    "fridge": "refrigerator",
+    "food": "refrigerator",
+    "kitchen": "refrigerator",
+    "eat": "refrigerator",
+    "dining": "chair",
+    "seat": "chair",
+    "sofa": "sofa chair",
+    "couch": "sofa chair",
+    "trash can": "bucket",
+    "trash bin": "bucket",
+    "garbage bin": "bucket",
+    "plant": "potted plant",
+    "work table": "desk",
+    "table": "desk"
+  },
+  "by_tag": {
+    "refrigerator": {
+      "navigable": true,
+      "affordances": ["food_storage", "food_access", "kitchen"],
+      "query_hints": ["hungry", "food", "eat", "drink", "cold storage", "refrigeration"],
+      "caption_boost_terms": ["food", "refrigeration", "freezing", "kitchen"]
+    },
+    "cabinet": {
+      "navigable": true,
+      "affordances": ["storage", "kitchen_storage"],
+      "query_hints": ["storage", "cabinet", "counter", "kitchen", "food storage"],
+      "caption_boost_terms": ["kitchen", "counter", "food", "stove", "storage"]
+    },
+    "chair": {
+      "navigable": true,
+      "affordances": ["sitting", "seating", "dining"],
+      "query_hints": ["sit", "seat", "chair", "dining", "eat"],
+      "caption_boost_terms": ["chair", "seated", "dining", "kitchen", "table"]
+    },
+    "sofa chair": {
+      "navigable": true,
+      "affordances": ["sitting", "rest", "living_space"],
+      "query_hints": ["sit", "rest", "sofa", "couch", "living"],
+      "caption_boost_terms": ["sofa", "chair", "living"]
+    },
+    "bed": {
+      "navigable": true,
+      "affordances": ["sleep", "rest"],
+      "query_hints": ["tired", "sleep", "sleepy", "rest", "bed"],
+      "caption_boost_terms": ["bed", "sleep", "bedroom"]
+    },
+    "desk": {
+      "navigable": true,
+      "affordances": ["work", "study", "reading", "writing"],
+      "query_hints": ["work", "study", "read", "write", "desk"],
+      "caption_boost_terms": ["desk", "work", "office", "reading", "writing"]
+    },
+    "closet door": {
+      "navigable": true,
+      "affordances": ["door", "closet_access", "openable_context"],
+      "query_hints": ["closet", "door", "open closet"],
+      "caption_boost_terms": ["closet", "door", "handle"]
+    },
+    "bucket": {
+      "navigable": true,
+      "affordances": ["disposal", "waste", "container"],
+      "query_hints": ["trash", "waste", "garbage", "bucket", "bin"],
+      "caption_boost_terms": ["waste", "trash", "container", "bin"]
+    },
+    "storage bin": {
+      "navigable": true,
+      "affordances": ["storage", "container"],
+      "query_hints": ["storage", "container", "bin"],
+      "caption_boost_terms": ["storage", "container", "bin"]
+    },
+    "potted plant": {
+      "navigable": true,
+      "affordances": ["plant", "decoration"],
+      "query_hints": ["plant", "potted plant", "green plant"],
+      "caption_boost_terms": ["plant", "green", "pot"]
+    },
+    "shelf": {
+      "navigable": true,
+      "affordances": ["storage", "display"],
+      "query_hints": ["shelf", "storage", "display"],
+      "caption_boost_terms": ["shelf", "storage", "display"]
+    },
+    "bench": {
+      "navigable": true,
+      "affordances": ["sitting", "furniture"],
+      "query_hints": ["bench", "sit", "seat"],
+      "caption_boost_terms": ["bench", "seat", "wooden"]
+    },
+    "lamp": { "navigable": false },
+    "ladder": {
+      "navigable": true,
+      "affordances": ["climbing", "tool"],
+      "query_hints": ["ladder", "climb", "reach high"],
+      "caption_boost_terms": ["ladder", "steps", "folding"]
+    },
+    "bottle": { "navigable": false },
+    "end table": {
+      "navigable": true,
+      "affordances": ["table", "surface"],
+      "query_hints": ["table", "surface", "end table"],
+      "caption_boost_terms": ["table", "surface"]
+    },
+    "speaker": { "navigable": false },
+    "candle": { "navigable": false },
+    "pillow": { "navigable": false },
+
+    "floor": {"navigable": false},
+    "vent": {"navigable": false},
+    "picture": {"navigable": false},
+    "closet wall": {"navigable": false},
+    "blinds": {"navigable": false},
+    "wall": {"navigable": false},
+    "range hood": {"navigable": false},
+    "stair rail": {"navigable": false},
+    "person": {"navigable": false}
+  }
+}

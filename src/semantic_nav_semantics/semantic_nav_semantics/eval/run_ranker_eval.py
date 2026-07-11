@@ -158,6 +158,13 @@ def main():
     p.add_argument("--delta", default="0.5",
                    help="Comma-separated delta values for hybrid; e.g. 0.2,0.5,1.0,2.0,inf")
     p.add_argument("--fixtures", default=None)
+    p.add_argument("--map", dest="map_path", default=None,
+                   help="Semantic map JSON to rank against (default: installed "
+                        "map_v001.json). Use eval/benchmark_v0/map_v0_noisy.json "
+                        "for the frozen v0 ranker benchmark.")
+    p.add_argument("--affordances", dest="affordances_path", default=None,
+                   help="Intent-affordance sidecar matching the map (default: "
+                        "installed object_intent_affordances.json).")
     p.add_argument("--out", default=None)
     args = p.parse_args()
 
@@ -169,8 +176,9 @@ def main():
         ts = time.strftime("%Y%m%d-%H%M%S")
         out_path = f"eval/results_{ts}.csv"
 
-    map_path = os.path.join(share, "config", "map_v001.json")
-    sidecar_path = os.path.join(share, "config", "object_intent_affordances.json")
+    map_path = args.map_path or os.path.join(share, "config", "map_v001.json")
+    sidecar_path = args.affordances_path or os.path.join(
+        share, "config", "object_intent_affordances.json")
     store = load_semantic_store(map_path, affordances_path=sidecar_path)
 
     sb = SpatialContextBuilder()

@@ -1,0 +1,38 @@
+tag,caption,gt_openable,gt_clearable,gt_safety,inf_openable,inf_clearable,inf_safety,confidence,correct,gt_directive,inf_directive,directive_correct
+stove,A kitchen cooking bench with a stovetop.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+chair,A dining chair with a padded seat and four legs.,False,True,none,False,False,none,80,False,clear_object_then_replan,wait_or_approach,False
+chair,A dining chair with a padded seat and four legs.,False,True,none,False,False,none,80,False,clear_object_then_replan,wait_or_approach,False
+refrigerator,A tall white residential refrigerator with a hinged door.,True,False,none,True,False,none,90,True,open_door_then_replan,open_door_then_replan,True
+table,A rectangular kitchen dining table.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+seasoning box,A small seasoning and condiment box sitting on the counter.,False,True,none,False,True,none,80,True,clear_object_then_replan,clear_object_then_replan,True
+chair,A dining chair with a padded seat and four legs.,False,True,none,False,False,none,80,False,clear_object_then_replan,wait_or_approach,False
+range hood,A stainless-steel range hood fixed above the stove.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+kitchen utensils,A cluster of loose kitchen utensils resting on the counter.,False,True,none,False,False,none,80,False,clear_object_then_replan,wait_or_approach,False
+picture,A framed picture hanging on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+fitness equipment,A piece of portable fitness equipment resting on the floor.,False,True,none,False,False,none,80,False,clear_object_then_replan,wait_or_approach,False
+picture,A framed picture hanging on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+security camera,A small security camera mounted high on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+picture,A framed picture hanging on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+trash bin,A small freestanding trash bin.,False,True,none,False,True,none,80,True,clear_object_then_replan,clear_object_then_replan,True
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+wall,A section of interior room wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+television,A flat-screen television.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+vase,A decorative vase standing on a surface.,False,True,none,False,False,none,100,False,clear_object_then_replan,wait_or_approach,False
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+picture,A small framed photo standing on a desk or shelf.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+door,A hinged interior door with a metal handle.,True,False,none,True,False,none,90,True,open_door_then_replan,open_door_then_replan,True
+picture,A framed picture hanging on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+door,A folding door panel across a doorway.,True,False,none,True,False,none,100,True,open_door_then_replan,open_door_then_replan,True
+cabinet,A kitchen cabinet with hinged doors set beneath the countertop.,True,False,none,True,False,none,80,True,open_door_then_replan,open_door_then_replan,True
+cabinet,A low media cabinet with hinged doors beneath the television.,True,False,none,True,False,none,80,True,open_door_then_replan,open_door_then_replan,True
+air conditioner,A wall-mounted air-conditioning unit.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+door,A folding door panel across a doorway.,True,False,none,True,False,none,100,True,open_door_then_replan,open_door_then_replan,True
+board,A flat decorative board mounted on the wall.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+air conditioner,A wall-mounted air-conditioning unit.,False,False,none,False,False,none,100,True,wait_or_approach,wait_or_approach,True
+tablet,A tablet device resting flat on a surface.,False,True,none,False,False,none,100,False,clear_object_then_replan,wait_or_approach,False
+door,"The doorway connecting the hallway to the kitchen, near the refrigerator and counter.",True,False,none,True,False,none,90,True,open_door_then_replan,open_door_then_replan,True
+bed,A double bed with a mattress and frame.,False,False,none,False,False,human,80,False,wait_or_approach,wait_no_move,False
+door,A folding door panel across a doorway.,True,False,none,True,False,none,100,True,open_door_then_replan,open_door_then_replan,True
