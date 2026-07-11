@@ -1,8 +1,8 @@
 {
   "object_1": {
     "id": 0,
-    "object_tag": "vent",
-    "object_caption": "A rectangular vent set into the wall.",
+    "object_tag": "stove",
+    "object_caption": "A kitchen cooking bench with a stovetop.",
     "object_state": "static",
     "bbox_extent": [
       1.05,
@@ -16,27 +16,10 @@
     ],
     "bbox_volume": 0.28
   },
-  "object_2": {
-    "id": 1,
-    "object_tag": "lamp",
-    "object_caption": "A standing desk or floor lamp with adjustable lighting and possibly outdoor use.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.0,
-      0.9,
-      0.4
-    ],
-    "bbox_center": [
-      7.79,
-      -1.6,
-      1.96
-    ],
-    "bbox_volume": 0.36
-  },
   "object_3": {
     "id": 2,
     "object_tag": "chair",
-    "object_caption": "A padded wooden single-seated chair suitable for dining or kitchen use.",
+    "object_caption": "A dining chair with a padded seat and four legs.",
     "object_state": "movable",
     "bbox_extent": [
       1.04,
@@ -53,7 +36,7 @@
   "object_4": {
     "id": 3,
     "object_tag": "chair",
-    "object_caption": "A dark-colored upholstered office chair with wheels underneath, located near another set of cabinets.",
+    "object_caption": "A dining chair with a padded seat and four legs.",
     "object_state": "movable",
     "bbox_extent": [
       1.05,
@@ -67,44 +50,10 @@
     ],
     "bbox_volume": 0.55
   },
-  "object_5": {
-    "id": 4,
-    "object_tag": "bucket",
-    "object_caption": "A small, portable container for holding waste.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.35,
-      0.27,
-      0.15
-    ],
-    "bbox_center": [
-      2.3,
-      -0.77,
-      0.21
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_6": {
-    "id": 5,
-    "object_tag": "picture",
-    "object_caption": "A rectangular framed picture or artwork hanging on the wall for decoration.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.71,
-      0.54,
-      0.04
-    ],
-    "bbox_center": [
-      7.93,
-      3.11,
-      0.75
-    ],
-    "bbox_volume": 0.02
-  },
   "object_7": {
     "id": 6,
     "object_tag": "refrigerator",
-    "object_caption": "A white, freestanding residential refrigeration unit with separate compartments for refrigeration and freezing food preservation.",
+    "object_caption": "A tall white residential refrigerator with a hinged door.",
     "object_state": "semi-static",
     "bbox_extent": [
       2.14,
@@ -120,8 +69,8 @@
   },
   "object_8": {
     "id": 7,
-    "object_tag": "desk",
-    "object_caption": "A rectangular work surface or desk used for writing, reading, or placing items.",
+    "object_tag": "table",
+    "object_caption": "A rectangular kitchen dining table.",
     "object_state": "semi-static",
     "bbox_extent": [
       1.83,
@@ -135,27 +84,10 @@
     ],
     "bbox_volume": 1.6
   },
-  "object_9": {
-    "id": 8,
-    "object_tag": "closet wall",
-    "object_caption": "A medium-sized shelving unit made of wood against the wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      2.7,
-      1.91,
-      0.17
-    ],
-    "bbox_center": [
-      9.35,
-      0.99,
-      1.61
-    ],
-    "bbox_volume": 0.88
-  },
   "object_10": {
     "id": 9,
-    "object_tag": "cabinet",
-    "object_caption": "A door or enclosure that covers an opening to a room or closet space.",
+    "object_tag": "seasoning box",
+    "object_caption": "A small seasoning and condiment box sitting on the counter.",
     "object_state": "semi-static",
     "bbox_extent": [
       1.35,
@@ -169,44 +101,10 @@
     ],
     "bbox_volume": 1.15
   },
-  "object_11": {
-    "id": 10,
-    "object_tag": "cabinet",
-    "object_caption": "Container for storing items",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.86,
-      0.6,
-      0.04
-    ],
-    "bbox_center": [
-      8.43,
-      -4.83,
-      0.56
-    ],
-    "bbox_volume": 0.02
-  },
-  "object_12": {
-    "id": 11,
-    "object_tag": "picture",
-    "object_caption": "A rectangular framed picture or photograph hanging on the wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.07,
-      0.55,
-      0.1
-    ],
-    "bbox_center": [
-      6.85,
-      3.11,
-      1.82
-    ],
-    "bbox_volume": 0.06
-  },
   "object_13": {
     "id": 12,
     "object_tag": "chair",
-    "object_caption": "a blue patterned folding chair, part of a set, sitting against the wall.",
+    "object_caption": "A dining chair with a padded seat and four legs.",
     "object_state": "movable",
     "bbox_extent": [
       0.82,
@@ -222,8 +120,8 @@
   },
   "object_14": {
     "id": 13,
-    "object_tag": "vent",
-    "object_caption": "A vent positioned above the stove top area next to another vent, closer to the wall and near a corner of the kitchen.",
+    "object_tag": "range hood",
+    "object_caption": "A stainless-steel range hood fixed above the stove.",
     "object_state": "static",
     "bbox_extent": [
       1.26,
@@ -237,27 +135,10 @@
     ],
     "bbox_volume": 0.17
   },
-  "object_15": {
-    "id": 14,
-    "object_tag": "cabinet",
-    "object_caption": "A silver plated trophy on top of the dresser.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.13,
-      1.2,
-      0.05
-    ],
-    "bbox_center": [
-      8.73,
-      -4.39,
-      0.52
-    ],
-    "bbox_volume": 0.07
-  },
   "object_16": {
     "id": 15,
-    "object_tag": "lamp",
-    "object_caption": "A small cigar box on top of the side cabinet or near it.",
+    "object_tag": "kitchen utensils",
+    "object_caption": "A cluster of loose kitchen utensils resting on the counter.",
     "object_state": "static",
     "bbox_extent": [
       0.43,
@@ -271,112 +152,10 @@
     ],
     "bbox_volume": 0.01
   },
-  "object_17": {
-    "id": 16,
-    "object_tag": "shelf",
-    "object_caption": "built-in range hood above a white kitchen stove",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.04,
-      0.92,
-      0.05
-    ],
-    "bbox_center": [
-      8.7,
-      -3.47,
-      0.56
-    ],
-    "bbox_volume": 0.05
-  },
-  "object_18": {
-    "id": 17,
-    "object_tag": "cabinet",
-    "object_caption": "A silver pocket watch on a chain inside a leather wallet on top of the dresser.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.6,
-      0.22,
-      0.02
-    ],
-    "bbox_center": [
-      8.7,
-      -4.1,
-      0.57
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_19": {
-    "id": 18,
-    "object_tag": "cabinet",
-    "object_caption": "A kitchen cabinet underneath the counter space.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.16,
-      1.13,
-      0.05
-    ],
-    "bbox_center": [
-      8.71,
-      -4.43,
-      0.56
-    ],
-    "bbox_volume": 0.07
-  },
-  "object_20": {
-    "id": 19,
-    "object_tag": "closet wall",
-    "object_caption": "A white, vertically oriented, rectangular wooden closet door painted and bordered by a black line at the bottom.",
-    "object_state": "static",
-    "bbox_extent": [
-      2.03,
-      0.91,
-      0.11
-    ],
-    "bbox_center": [
-      7.71,
-      -4.88,
-      0.5
-    ],
-    "bbox_volume": 0.2
-  },
-  "object_21": {
-    "id": 20,
-    "object_tag": "vent",
-    "object_caption": "White air vent near a wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.98,
-      0.4,
-      0.09
-    ],
-    "bbox_center": [
-      9.11,
-      -3.3,
-      2.3
-    ],
-    "bbox_volume": 0.04
-  },
-  "object_22": {
-    "id": 21,
-    "object_tag": "cabinet",
-    "object_caption": "A cabinet with a small countertop located in the corner of the kitchen.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.96,
-      1.07,
-      0.55
-    ],
-    "bbox_center": [
-      8.78,
-      -2.63,
-      0.53
-    ],
-    "bbox_volume": 0.56
-  },
   "object_23": {
     "id": 22,
     "object_tag": "picture",
-    "object_caption": "A picture in a silver picture frame is mounted on the wall.",
+    "object_caption": "A framed picture hanging on the wall.",
     "object_state": "static",
     "bbox_extent": [
       1.07,
@@ -390,27 +169,10 @@
     ],
     "bbox_volume": 0.03
   },
-  "object_24": {
-    "id": 23,
-    "object_tag": "picture",
-    "object_caption": "A framed picture hanging on a wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.76,
-      0.61,
-      0.07
-    ],
-    "bbox_center": [
-      7.98,
-      3.05,
-      0.62
-    ],
-    "bbox_volume": 0.03
-  },
   "object_25": {
     "id": 24,
-    "object_tag": "chair",
-    "object_caption": "A chair is on the left side of the frame.",
+    "object_tag": "fitness equipment",
+    "object_caption": "A piece of portable fitness equipment resting on the floor.",
     "object_state": "movable",
     "bbox_extent": [
       0.8,
@@ -427,7 +189,7 @@
   "object_26": {
     "id": 25,
     "object_tag": "picture",
-    "object_caption": "a framed photograph of a person set as a display",
+    "object_caption": "A framed picture hanging on the wall.",
     "object_state": "static",
     "bbox_extent": [
       0.7,
@@ -443,8 +205,8 @@
   },
   "object_27": {
     "id": 26,
-    "object_tag": "closet wall",
-    "object_caption": "A simple, wooden chair with a round backrest and one leg.",
+    "object_tag": "window",
+    "object_caption": "A glazed window set into the wall.",
     "object_state": "static",
     "bbox_extent": [
       2.47,
@@ -458,95 +220,10 @@
     ],
     "bbox_volume": 0.57
   },
-  "object_28": {
-    "id": 27,
-    "object_tag": "chair",
-    "object_caption": "A small rectangular cigar box on the side cabinet near a coffeepot.",
-    "object_state": "movable",
-    "bbox_extent": [
-      1.02,
-      0.31,
-      0.06
-    ],
-    "bbox_center": [
-      8.68,
-      -0.46,
-      0.57
-    ],
-    "bbox_volume": 0.02
-  },
-  "object_29": {
-    "id": 28,
-    "object_tag": "closet wall",
-    "object_caption": "A rectangular box with a slot on top and a hinge to the side.",
-    "object_state": "static",
-    "bbox_extent": [
-      2.44,
-      1.1,
-      0.11
-    ],
-    "bbox_center": [
-      9.44,
-      1.06,
-      0.98
-    ],
-    "bbox_volume": 0.3
-  },
-  "object_30": {
-    "id": 29,
-    "object_tag": "chair",
-    "object_caption": "The table has chairs underneath and its surface appears to be made of wood or a material with some wooden grain details.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.7,
-      0.59,
-      0.23
-    ],
-    "bbox_center": [
-      6.42,
-      0.24,
-      0.34
-    ],
-    "bbox_volume": 0.09
-  },
-  "object_31": {
-    "id": 30,
-    "object_tag": "closet wall",
-    "object_caption": "white wall part",
-    "object_state": "static",
-    "bbox_extent": [
-      2.62,
-      1.29,
-      0.15
-    ],
-    "bbox_center": [
-      9.33,
-      0.34,
-      0.49
-    ],
-    "bbox_volume": 0.51
-  },
-  "object_32": {
-    "id": 31,
-    "object_tag": "closet door",
-    "object_caption": "A cigar box near an elephant figurine.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.23,
-      1.05,
-      0.13
-    ],
-    "bbox_center": [
-      5.71,
-      -5.41,
-      1.19
-    ],
-    "bbox_volume": 0.3
-  },
   "object_33": {
     "id": 32,
-    "object_tag": "closet door",
-    "object_caption": "White closet doors.",
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "semi-static",
     "bbox_extent": [
       2.61,
@@ -560,146 +237,10 @@
     ],
     "bbox_volume": 0.46
   },
-  "object_34": {
-    "id": 33,
-    "object_tag": "bench",
-    "object_caption": "Part of a dark bench.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.22,
-      0.12,
-      0.08
-    ],
-    "bbox_center": [
-      8.5,
-      -0.57,
-      0.09
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_35": {
-    "id": 34,
-    "object_tag": "picture",
-    "object_caption": "A small cigar box on the side cabinet.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.0,
-      0.51,
-      0.05
-    ],
-    "bbox_center": [
-      0.87,
-      -5.57,
-      2.16
-    ],
-    "bbox_volume": 0.03
-  },
-  "object_36": {
-    "id": 35,
-    "object_tag": "picture",
-    "object_caption": "A box on the dresser",
-    "object_state": "static",
-    "bbox_extent": [
-      1.39,
-      0.99,
-      0.1
-    ],
-    "bbox_center": [
-      0.87,
-      -5.54,
-      1.18
-    ],
-    "bbox_volume": 0.14
-  },
-  "object_37": {
-    "id": 36,
-    "object_tag": "picture",
-    "object_caption": "brown wooden cigar box on a shelf",
-    "object_state": "static",
-    "bbox_extent": [
-      0.48,
-      0.61,
-      0.03
-    ],
-    "bbox_center": [
-      3.13,
-      -5.49,
-      0.46
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_38": {
-    "id": 37,
-    "object_tag": "picture",
-    "object_caption": "large cylindrical vase on the side cabinet",
-    "object_state": "static",
-    "bbox_extent": [
-      0.23,
-      0.17,
-      0.1
-    ],
-    "bbox_center": [
-      2.53,
-      -5.23,
-      0.19
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_39": {
-    "id": 38,
-    "object_tag": "storage bin",
-    "object_caption": "A small white ceramic coffee mug on the nightstand.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.35,
-      0.2,
-      0.05
-    ],
-    "bbox_center": [
-      2.43,
-      -0.8,
-      0.25
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_40": {
-    "id": 39,
-    "object_tag": "picture",
-    "object_caption": "A rectangular cigar box on the side cabinet near the coffeepot.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.23,
-      0.17,
-      0.01
-    ],
-    "bbox_center": [
-      3.6,
-      -5.16,
-      0.2
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_41": {
-    "id": 40,
-    "object_tag": "closet door",
-    "object_caption": "A small rectangular wooden box on top of a dresser.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.23,
-      0.63,
-      0.12
-    ],
-    "bbox_center": [
-      5.85,
-      -5.59,
-      1.18
-    ],
-    "bbox_volume": 0.17
-  },
   "object_42": {
     "id": 41,
-    "object_tag": "desk",
-    "object_caption": "A small rectangular box on top of a dresser.",
+    "object_tag": "security camera",
+    "object_caption": "A small security camera mounted high on the wall.",
     "object_state": "semi-static",
     "bbox_extent": [
       2.45,
@@ -713,95 +254,10 @@
     ],
     "bbox_volume": 1.1
   },
-  "object_43": {
-    "id": 42,
-    "object_tag": "picture",
-    "object_caption": "Silver cufflinks on the dresser next to the coffee maker and coffeepot.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.23,
-      0.17,
-      0.0
-    ],
-    "bbox_center": [
-      0.03,
-      -5.18,
-      0.73
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_44": {
-    "id": 43,
-    "object_tag": "picture",
-    "object_caption": "A small glass vase on the kitchen island.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.67,
-      0.37,
-      0.31
-    ],
-    "bbox_center": [
-      1.88,
-      -2.02,
-      0.3
-    ],
-    "bbox_volume": 0.08
-  },
-  "object_45": {
-    "id": 44,
-    "object_tag": "stair rail",
-    "object_caption": "A rectangular box on the side cabinet.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.62,
-      1.33,
-      0.62
-    ],
-    "bbox_center": [
-      4.75,
-      -5.05,
-      0.65
-    ],
-    "bbox_volume": 1.34
-  },
-  "object_46": {
-    "id": 45,
-    "object_tag": "shelf",
-    "object_caption": "Small rectangular wooden jewelry box on top of the dresser.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.12,
-      0.21,
-      0.1
-    ],
-    "bbox_center": [
-      2.85,
-      -5.46,
-      1.68
-    ],
-    "bbox_volume": 0.02
-  },
-  "object_47": {
-    "id": 46,
-    "object_tag": "picture",
-    "object_caption": "An item placed against a closet door's side.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.38,
-      1.03,
-      0.13
-    ],
-    "bbox_center": [
-      0.8,
-      -5.44,
-      1.13
-    ],
-    "bbox_volume": 0.18
-  },
   "object_48": {
     "id": 47,
     "object_tag": "picture",
-    "object_caption": "a long rectangular double door on the wall.",
+    "object_caption": "A framed picture hanging on the wall.",
     "object_state": "static",
     "bbox_extent": [
       1.1,
@@ -817,8 +273,8 @@
   },
   "object_49": {
     "id": 48,
-    "object_tag": "ladder",
-    "object_caption": "A foldable ladder hanging from the ceiling.",
+    "object_tag": "shelf",
+    "object_caption": "A low open shoe rack with several shelves.",
     "object_state": "movable",
     "bbox_extent": [
       1.42,
@@ -834,8 +290,8 @@
   },
   "object_50": {
     "id": 49,
-    "object_tag": "bucket",
-    "object_caption": "black and white checkered pattern chair opposite the trash can",
+    "object_tag": "trash bin",
+    "object_caption": "A small freestanding trash bin.",
     "object_state": "movable",
     "bbox_extent": [
       0.47,
@@ -852,7 +308,7 @@
   "object_51": {
     "id": 50,
     "object_tag": "picture",
-    "object_caption": "Abstract painting on wall at end of hallway.",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "static",
     "bbox_extent": [
       0.74,
@@ -866,27 +322,10 @@
     ],
     "bbox_volume": 0.17
   },
-  "object_52": {
-    "id": 51,
-    "object_tag": "shelf",
-    "object_caption": "A flat horizontal surface, usually standing or attached to a wall, for displaying and storing items.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.23,
-      0.32,
-      0.17
-    ],
-    "bbox_center": [
-      2.75,
-      -5.36,
-      1.7
-    ],
-    "bbox_volume": 0.07
-  },
   "object_53": {
     "id": 52,
     "object_tag": "picture",
-    "object_caption": "A table featuring a checked pattern of purple and white, often located or surrounded by secondary storage, mounted high on walls.",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "static",
     "bbox_extent": [
       0.24,
@@ -903,7 +342,7 @@
   "object_54": {
     "id": 53,
     "object_tag": "picture",
-    "object_caption": "a rectangular box on the table",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "static",
     "bbox_extent": [
       0.33,
@@ -919,8 +358,8 @@
   },
   "object_55": {
     "id": 54,
-    "object_tag": "picture",
-    "object_caption": "A small rectangular box with cigars found on or near the dresser.",
+    "object_tag": "wall",
+    "object_caption": "A section of interior room wall.",
     "object_state": "static",
     "bbox_extent": [
       0.79,
@@ -934,27 +373,10 @@
     ],
     "bbox_volume": 0.01
   },
-  "object_56": {
-    "id": 55,
-    "object_tag": "potted plant",
-    "object_caption": "",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.33,
-      0.26,
-      0.11
-    ],
-    "bbox_center": [
-      3.02,
-      -5.46,
-      1.85
-    ],
-    "bbox_volume": 0.01
-  },
   "object_57": {
     "id": 56,
-    "object_tag": "picture",
-    "object_caption": "A framed item on the wall, possibly artwork or a family photo, although it could also be an ornate frame on a closet door.",
+    "object_tag": "television",
+    "object_caption": "A flat-screen television.",
     "object_state": "static",
     "bbox_extent": [
       1.43,
@@ -968,27 +390,10 @@
     ],
     "bbox_volume": 0.16
   },
-  "object_58": {
-    "id": 57,
-    "object_tag": "picture",
-    "object_caption": "A rectangular picture frame hung or mounted on the wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.06,
-      0.58,
-      0.06
-    ],
-    "bbox_center": [
-      0.77,
-      -5.43,
-      2.15
-    ],
-    "bbox_volume": 0.04
-  },
   "object_59": {
     "id": 58,
-    "object_tag": "picture",
-    "object_caption": "A small, brown chair.",
+    "object_tag": "vase",
+    "object_caption": "A decorative vase standing on a surface.",
     "object_state": "static",
     "bbox_extent": [
       0.69,
@@ -1005,7 +410,7 @@
   "object_60": {
     "id": 59,
     "object_tag": "picture",
-    "object_caption": "The vertical house door on the wall.",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "static",
     "bbox_extent": [
       0.26,
@@ -1022,7 +427,7 @@
   "object_61": {
     "id": 60,
     "object_tag": "picture",
-    "object_caption": "Indoor plant placed against a wall",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
     "object_state": "static",
     "bbox_extent": [
       0.27,
@@ -1036,95 +441,10 @@
     ],
     "bbox_volume": 0.01
   },
-  "object_62": {
-    "id": 61,
-    "object_tag": "potted plant",
-    "object_caption": "A small potted green houseplant is located next to a desk.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.32,
-      0.26,
-      0.12
-    ],
-    "bbox_center": [
-      3.0,
-      -5.42,
-      1.85
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_63": {
-    "id": 62,
-    "object_tag": "ladder",
-    "object_caption": "A ladder with steps and supporting braces used for reaching high places or climbing.",
-    "object_state": "movable",
-    "bbox_extent": [
-      1.59,
-      1.37,
-      0.73
-    ],
-    "bbox_center": [
-      4.66,
-      -4.98,
-      0.7
-    ],
-    "bbox_volume": 1.59
-  },
-  "object_64": {
-    "id": 63,
-    "object_tag": "bottle",
-    "object_caption": "a container for liquids",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.15,
-      0.1,
-      0.11
-    ],
-    "bbox_center": [
-      1.24,
-      -1.54,
-      2.66
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_65": {
-    "id": 64,
-    "object_tag": "picture",
-    "object_caption": "An image with blue contouring, likely hung on the wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.23,
-      0.17,
-      0.01
-    ],
-    "bbox_center": [
-      -0.07,
-      -5.02,
-      0.73
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_66": {
-    "id": 65,
-    "object_tag": "desk",
-    "object_caption": "A low and wide unit for storing electronics and components.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.87,
-      0.71,
-      0.79
-    ],
-    "bbox_center": [
-      0.65,
-      -5.01,
-      0.3
-    ],
-    "bbox_volume": 1.61
-  },
   "object_67": {
     "id": 66,
-    "object_tag": "closet door",
-    "object_caption": "A brown wooden closet door with a metal handle and a vertical line down the center.",
+    "object_tag": "door",
+    "object_caption": "A hinged interior door with a metal handle.",
     "object_state": "semi-static",
     "bbox_extent": [
       2.33,
@@ -1138,61 +458,10 @@
     ],
     "bbox_volume": 0.48
   },
-  "object_68": {
-    "id": 67,
-    "object_tag": "lamp",
-    "object_caption": "A set or sets of lamps mounted on the wall above a folding chair.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.25,
-      0.18,
-      0.11
-    ],
-    "bbox_center": [
-      1.74,
-      -5.46,
-      2.22
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_69": {
-    "id": 68,
-    "object_tag": "picture",
-    "object_caption": "A large rectangular painting mounted on the wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.28,
-      0.8,
-      0.02
-    ],
-    "bbox_center": [
-      0.73,
-      -5.29,
-      1.19
-    ],
-    "bbox_volume": 0.02
-  },
-  "object_70": {
-    "id": 69,
-    "object_tag": "picture",
-    "object_caption": "A small square picture on a hook.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.99,
-      0.5,
-      0.04
-    ],
-    "bbox_center": [
-      0.72,
-      -5.36,
-      2.16
-    ],
-    "bbox_volume": 0.02
-  },
   "object_71": {
     "id": 70,
     "object_tag": "picture",
-    "object_caption": "a framed print of a person on the wall above a shelf.",
+    "object_caption": "A framed picture hanging on the wall.",
     "object_state": "static",
     "bbox_extent": [
       0.48,
@@ -1206,163 +475,10 @@
     ],
     "bbox_volume": 0.01
   },
-  "object_72": {
-    "id": 71,
-    "object_tag": "picture",
-    "object_caption": "A small rectangular picture with a blue border is located under the desk.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.25,
-      0.18,
-      0.1
-    ],
-    "bbox_center": [
-      2.39,
-      -5.06,
-      0.2
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_73": {
-    "id": 72,
-    "object_tag": "desk",
-    "object_caption": "a long and narrow two-tiered desk located in the corner of an office.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.61,
-      0.64,
-      0.66
-    ],
-    "bbox_center": [
-      0.68,
-      -4.93,
-      0.44
-    ],
-    "bbox_volume": 1.1
-  },
-  "object_74": {
-    "id": 73,
-    "object_tag": "picture",
-    "object_caption": "Small metal box on top of the dresser.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.24,
-      0.17,
-      0.02
-    ],
-    "bbox_center": [
-      3.46,
-      -5.02,
-      0.2
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_75": {
-    "id": 74,
-    "object_tag": "potted plant",
-    "object_caption": "A pot with a green plant on a wooden desk.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.3,
-      0.23,
-      0.09
-    ],
-    "bbox_center": [
-      2.93,
-      -5.38,
-      1.85
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_76": {
-    "id": 75,
-    "object_tag": "ladder",
-    "object_caption": "A folding wooden step ladder is leaned against the closet door.",
-    "object_state": "movable",
-    "bbox_extent": [
-      1.54,
-      1.32,
-      0.45
-    ],
-    "bbox_center": [
-      4.69,
-      -4.92,
-      0.64
-    ],
-    "bbox_volume": 0.91
-  },
-  "object_77": {
-    "id": 76,
-    "object_tag": "lamp",
-    "object_caption": "A modern-looking lamp with a circular shade on the desk.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.22,
-      0.13,
-      0.1
-    ],
-    "bbox_center": [
-      1.68,
-      -5.35,
-      2.22
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_78": {
-    "id": 77,
-    "object_tag": "picture",
-    "object_caption": "Abstract picture framed and mounted above the desk.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.24,
-      0.17,
-      0.08
-    ],
-    "bbox_center": [
-      -0.12,
-      -4.98,
-      0.72
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_79": {
-    "id": 78,
-    "object_tag": "bed",
-    "object_caption": "A simple rectangular bed frame against the white wall next to the office door.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.14,
-      0.9,
-      0.88
-    ],
-    "bbox_center": [
-      1.12,
-      -2.51,
-      0.66
-    ],
-    "bbox_volume": 0.9
-  },
-  "object_80": {
-    "id": 79,
-    "object_tag": "speaker",
-    "object_caption": "A rectangular cigar box on the side cabinet.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.14,
-      0.04,
-      0.01
-    ],
-    "bbox_center": [
-      8.32,
-      -1.06,
-      0.63
-    ],
-    "bbox_volume": 0.0
-  },
   "object_81": {
     "id": 80,
-    "object_tag": "ladder",
-    "object_caption": "part of the doorframe",
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
     "object_state": "movable",
     "bbox_extent": [
       1.74,
@@ -1376,61 +492,10 @@
     ],
     "bbox_volume": 1.37
   },
-  "object_82": {
-    "id": 81,
-    "object_tag": "ladder",
-    "object_caption": "A small rectangular cigar box on the side cabinet or dresser.",
-    "object_state": "movable",
-    "bbox_extent": [
-      2.58,
-      1.4,
-      0.9
-    ],
-    "bbox_center": [
-      4.77,
-      -5.06,
-      1.35
-    ],
-    "bbox_volume": 3.25
-  },
-  "object_83": {
-    "id": 82,
-    "object_tag": "cabinet",
-    "object_caption": "A wooden cabinet with two doors on it",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.1,
-      0.87,
-      0.04
-    ],
-    "bbox_center": [
-      8.66,
-      -4.46,
-      0.52
-    ],
-    "bbox_volume": 0.04
-  },
-  "object_84": {
-    "id": 83,
-    "object_tag": "closet wall",
-    "object_caption": "White surface.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.0,
-      0.59,
-      0.02
-    ],
-    "bbox_center": [
-      8.59,
-      -3.23,
-      0.34
-    ],
-    "bbox_volume": 0.01
-  },
   "object_85": {
     "id": 84,
     "object_tag": "cabinet",
-    "object_caption": "white cabinets in the room",
+    "object_caption": "A kitchen cabinet with hinged doors set beneath the countertop.",
     "object_state": "semi-static",
     "bbox_extent": [
       0.67,
@@ -1444,129 +509,10 @@
     ],
     "bbox_volume": 0.0
   },
-  "object_86": {
-    "id": 85,
-    "object_tag": "closet wall",
-    "object_caption": "lap or waist",
-    "object_state": "static",
-    "bbox_extent": [
-      0.79,
-      0.39,
-      0.02
-    ],
-    "bbox_center": [
-      8.71,
-      -2.62,
-      0.28
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_87": {
-    "id": 86,
-    "object_tag": "lamp",
-    "object_caption": "A bronze desk lamp.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.16,
-      0.16,
-      0.12
-    ],
-    "bbox_center": [
-      8.99,
-      -1.53,
-      0.09
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_88": {
-    "id": 87,
-    "object_tag": "bed",
-    "object_caption": "An unmade bed.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.39,
-      1.06,
-      0.0
-    ],
-    "bbox_center": [
-      9.02,
-      -1.69,
-      0.02
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_89": {
-    "id": 88,
-    "object_tag": "bench",
-    "object_caption": "A tall, antique, wooden cigar humidor on an office desk.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.21,
-      0.13,
-      0.1
-    ],
-    "bbox_center": [
-      8.53,
-      -1.55,
-      0.09
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_90": {
-    "id": 89,
-    "object_tag": "closet door",
-    "object_caption": "a wooden desk calendar dated 1973 on the edge of the dresser.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.56,
-      0.47,
-      0.02
-    ],
-    "bbox_center": [
-      8.75,
-      -2.83,
-      0.35
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_91": {
-    "id": 90,
-    "object_tag": "closet door",
-    "object_caption": "vase with a white flower in it on the edge of the table",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.72,
-      0.69,
-      0.02
-    ],
-    "bbox_center": [
-      8.79,
-      -3.24,
-      0.38
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_92": {
-    "id": 91,
-    "object_tag": "picture",
-    "object_caption": "a framed picture hanging on the wall",
-    "object_state": "static",
-    "bbox_extent": [
-      1.04,
-      0.58,
-      0.04
-    ],
-    "bbox_center": [
-      0.63,
-      -5.2,
-      2.01
-    ],
-    "bbox_volume": 0.02
-  },
   "object_93": {
     "id": 92,
-    "object_tag": "picture",
-    "object_caption": "A rectangular picture displaying part of its frame and corner is leaning against the wall.",
+    "object_tag": "cabinet",
+    "object_caption": "A low media cabinet with hinged doors beneath the television.",
     "object_state": "static",
     "bbox_extent": [
       1.4,
@@ -1580,180 +526,10 @@
     ],
     "bbox_volume": 0.03
   },
-  "object_94": {
-    "id": 93,
-    "object_tag": "desk",
-    "object_caption": "clean white desk.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.75,
-      0.63,
-      0.61
-    ],
-    "bbox_center": [
-      0.54,
-      -4.74,
-      0.23
-    ],
-    "bbox_volume": 1.06
-  },
-  "object_95": {
-    "id": 94,
-    "object_tag": "picture",
-    "object_caption": "Small, rectangular wooden decorative box or storage box on a table.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.69,
-      0.48,
-      0.03
-    ],
-    "bbox_center": [
-      2.89,
-      -5.22,
-      0.31
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_96": {
-    "id": 95,
-    "object_tag": "picture",
-    "object_caption": "Artwork on a wall with no frame, partially visible.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.23,
-      0.17,
-      0.1
-    ],
-    "bbox_center": [
-      3.4,
-      -4.96,
-      0.08
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_97": {
-    "id": 96,
-    "object_tag": "picture",
-    "object_caption": "Picture frame with an indistinct texture white panel",
-    "object_state": "static",
-    "bbox_extent": [
-      0.24,
-      0.17,
-      0.1
-    ],
-    "bbox_center": [
-      2.34,
-      -4.93,
-      0.07
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_98": {
-    "id": 97,
-    "object_tag": "potted plant",
-    "object_caption": "Small potted green plant in a simple terracotta pot on the wall.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.34,
-      0.27,
-      0.08
-    ],
-    "bbox_center": [
-      2.82,
-      -5.29,
-      1.75
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_99": {
-    "id": 98,
-    "object_tag": "closet door",
-    "object_caption": "A dark-colored closet door with a knob.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      2.53,
-      1.7,
-      0.0
-    ],
-    "bbox_center": [
-      3.89,
-      -5.37,
-      1.23
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_100": {
-    "id": 99,
-    "object_tag": "picture",
-    "object_caption": "A picture frame on a wall.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.73,
-      0.63,
-      0.13
-    ],
-    "bbox_center": [
-      2.99,
-      -5.42,
-      0.3
-    ],
-    "bbox_volume": 0.06
-  },
-  "object_101": {
-    "id": 100,
-    "object_tag": "picture",
-    "object_caption": "A small rectangular cigar box on the side cabinet.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.25,
-      0.19,
-      0.1
-    ],
-    "bbox_center": [
-      3.53,
-      -5.14,
-      0.09
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_102": {
-    "id": 101,
-    "object_tag": "picture",
-    "object_caption": "A framed picture on the wall, possibly serving as decoration.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.26,
-      0.2,
-      0.12
-    ],
-    "bbox_center": [
-      2.47,
-      -5.16,
-      0.09
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_103": {
-    "id": 102,
-    "object_tag": "potted plant",
-    "object_caption": "A small rectangular cigar box on the side cabinet.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.36,
-      0.28,
-      0.11
-    ],
-    "bbox_center": [
-      2.96,
-      -5.49,
-      1.77
-    ],
-    "bbox_volume": 0.01
-  },
   "object_104": {
     "id": 103,
-    "object_tag": "closet door",
-    "object_caption": "A sofa chair, possibly in an entertainment area or adjacent to another living space.",
+    "object_tag": "air conditioner",
+    "object_caption": "A wall-mounted air-conditioning unit.",
     "object_state": "semi-static",
     "bbox_extent": [
       2.03,
@@ -1769,8 +545,8 @@
   },
   "object_105": {
     "id": 104,
-    "object_tag": "blinds",
-    "object_caption": "A small wooden rocking chair with a high backrest and armrests.",
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
     "object_state": "semi-static",
     "bbox_extent": [
       3.12,
@@ -1786,8 +562,8 @@
   },
   "object_106": {
     "id": 105,
-    "object_tag": "pillow",
-    "object_caption": "Candle with holder.",
+    "object_tag": "couch",
+    "object_caption": "A large upholstered sofa.",
     "object_state": "movable",
     "bbox_extent": [
       1.7,
@@ -1801,27 +577,10 @@
     ],
     "bbox_volume": 2.16
   },
-  "object_107": {
-    "id": 106,
-    "object_tag": "sofa chair",
-    "object_caption": "Candle with holder",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.49,
-      0.97,
-      1.06
-    ],
-    "bbox_center": [
-      1.05,
-      -2.7,
-      0.41
-    ],
-    "bbox_volume": 1.53
-  },
   "object_108": {
     "id": 107,
-    "object_tag": "shelf",
-    "object_caption": "A rectangular wooden picture frame on a shelf.",
+    "object_tag": "board",
+    "object_caption": "A flat decorative board mounted on the wall.",
     "object_state": "semi-static",
     "bbox_extent": [
       1.14,
@@ -1835,95 +594,10 @@
     ],
     "bbox_volume": 0.03
   },
-  "object_109": {
-    "id": 108,
-    "object_tag": "picture",
-    "object_caption": "A small cylindrical bottle on the table.",
-    "object_state": "static",
-    "bbox_extent": [
-      0.22,
-      0.16,
-      0.06
-    ],
-    "bbox_center": [
-      -0.06,
-      -5.11,
-      0.59
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_110": {
-    "id": 109,
-    "object_tag": "lamp",
-    "object_caption": "A rectangular container or box on the top shelf.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.25,
-      0.19,
-      0.13
-    ],
-    "bbox_center": [
-      -0.2,
-      -5.47,
-      2.05
-    ],
-    "bbox_volume": 0.01
-  },
-  "object_111": {
-    "id": 110,
-    "object_tag": "end table",
-    "object_caption": "The golden pocket watch hangs from a chain around a neck.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.94,
-      0.33,
-      0.0
-    ],
-    "bbox_center": [
-      1.38,
-      -2.07,
-      0.19
-    ],
-    "bbox_volume": 0.0
-  },
-  "object_112": {
-    "id": 111,
-    "object_tag": "lamp",
-    "object_caption": "a blurry lamp",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      0.88,
-      0.87,
-      0.32
-    ],
-    "bbox_center": [
-      1.23,
-      -1.61,
-      1.93
-    ],
-    "bbox_volume": 0.24
-  },
-  "object_113": {
-    "id": 112,
-    "object_tag": "lamp",
-    "object_caption": "A modern-style lamp.",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.84,
-      0.36,
-      0.32
-    ],
-    "bbox_center": [
-      -6.21,
-      -0.78,
-      1.95
-    ],
-    "bbox_volume": 0.1
-  },
   "object_114": {
     "id": 113,
-    "object_tag": "range hood",
-    "object_caption": "A trash bin on another wall.",
+    "object_tag": "air conditioner",
+    "object_caption": "A wall-mounted air-conditioning unit.",
     "object_state": "static",
     "bbox_extent": [
       0.81,
@@ -1937,61 +611,10 @@
     ],
     "bbox_volume": 0.05
   },
-  "object_115": {
-    "id": 114,
-    "object_tag": "sofa chair",
-    "object_caption": "A sofa positioned along a wall on display near furniture or a closet.",
-    "object_state": "semi-static",
-    "bbox_extent": [
-      1.89,
-      0.64,
-      0.49
-    ],
-    "bbox_center": [
-      -6.05,
-      1.13,
-      0.32
-    ],
-    "bbox_volume": 0.59
-  },
-  "object_116": {
-    "id": 115,
-    "object_tag": "candle",
-    "object_caption": "Durable blinds",
-    "object_state": "movable",
-    "bbox_extent": [
-      0.24,
-      0.18,
-      0.09
-    ],
-    "bbox_center": [
-      1.73,
-      -5.48,
-      2.11
-    ],
-    "bbox_volume": 0.0
-  },
   "object_117": {
     "id": 116,
-    "object_tag": "picture",
-    "object_caption": "A shelf for living space use.",
-    "object_state": "static",
-    "bbox_extent": [
-      1.08,
-      0.4,
-      0.39
-    ],
-    "bbox_center": [
-      1.66,
-      -1.93,
-      0.21
-    ],
-    "bbox_volume": 0.17
-  },
-  "object_118": {
-    "id": 117,
-    "object_tag": "person",
-    "object_caption": "A person standing in the room, possibly near the center or in a specific area of the space.",
+    "object_tag": "tablet",
+    "object_caption": "A tablet device resting flat on a surface.",
     "object_state": "static",
     "bbox_extent": [
       1.08,
@@ -2013,6 +636,57 @@
     "bbox_center": [
       4.86223,
       -0.677227,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
+  },
+  "object_120": {
+    "id": 120,
+    "object_tag": "bed",
+    "object_caption": "A double bed with a mattress and frame.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      -6.16507,
+      2.03056,
+      0.3
+    ],
+    "bbox_extent": [
+      1.8,
+      1.4,
+      0.6
+    ],
+    "bbox_volume": 1.51
+  },
+  "object_121": {
+    "id": 121,
+    "object_tag": "room partition",
+    "object_caption": "A folding room partition / privacy screen standing across the bedroom doorway; it can be slid or folded aside to pass through.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      -2.4611,
+      1.84422,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
+  },
+  "object_122": {
+    "id": 122,
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      4.6742,
+      2.4645,
       1.0
     ],
     "bbox_extent": [

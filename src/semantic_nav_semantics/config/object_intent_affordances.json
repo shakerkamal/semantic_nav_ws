@@ -12,14 +12,18 @@
     "eat": "refrigerator",
     "dining": "chair",
     "seat": "chair",
-    "sofa": "sofa chair",
-    "couch": "sofa chair",
-    "trash can": "bucket",
-    "trash bin": "bucket",
-    "garbage bin": "bucket",
+    "sofa": "couch",
+    "sofa chair": "couch",
+    "trash can": "trash bin",
+    "garbage bin": "trash bin",
+    "bucket": "trash bin",
     "plant": "potted plant",
-    "work table": "desk",
-    "table": "desk"
+    "work table": "table",
+    "desk": "table",
+    "dining table": "table",
+    "tv": "television",
+    "privacy screen": "room partition",
+    "folding screen": "room partition"
   },
   "by_tag": {
     "refrigerator": {
@@ -40,11 +44,11 @@
       "query_hints": ["sit", "seat", "chair", "dining", "eat"],
       "caption_boost_terms": ["chair", "seated", "dining", "kitchen", "table"]
     },
-    "sofa chair": {
+    "couch": {
       "navigable": true,
       "affordances": ["sitting", "rest", "living_space"],
-      "query_hints": ["sit", "rest", "sofa", "couch", "living"],
-      "caption_boost_terms": ["sofa", "chair", "living"]
+      "query_hints": ["sit", "rest", "sofa", "couch", "living", "lounge"],
+      "caption_boost_terms": ["sofa", "upholstered", "living"]
     },
     "bed": {
       "navigable": true,
@@ -52,11 +56,11 @@
       "query_hints": ["tired", "sleep", "sleepy", "rest", "bed"],
       "caption_boost_terms": ["bed", "sleep", "bedroom"]
     },
-    "desk": {
+    "table": {
       "navigable": true,
-      "affordances": ["work", "study", "reading", "writing"],
-      "query_hints": ["work", "study", "read", "write", "desk"],
-      "caption_boost_terms": ["desk", "work", "office", "reading", "writing"]
+      "affordances": ["dining", "surface", "work"],
+      "query_hints": ["table", "dinner", "dining", "eat", "meal", "surface"],
+      "caption_boost_terms": ["table", "dining", "kitchen", "rectangular"]
     },
     "closet door": {
       "navigable": true,
@@ -64,11 +68,11 @@
       "query_hints": ["closet", "door", "open closet"],
       "caption_boost_terms": ["closet", "door", "handle"]
     },
-    "bucket": {
+    "trash bin": {
       "navigable": true,
       "affordances": ["disposal", "waste", "container"],
-      "query_hints": ["trash", "waste", "garbage", "bucket", "bin"],
-      "caption_boost_terms": ["waste", "trash", "container", "bin"]
+      "query_hints": ["trash", "waste", "garbage", "bin", "throw away"],
+      "caption_boost_terms": ["waste", "trash", "bin", "freestanding"]
     },
     "storage bin": {
       "navigable": true,
@@ -112,6 +116,61 @@
     "candle": { "navigable": false },
     "pillow": { "navigable": false },
 
+    "door": {
+      "navigable": true,
+      "affordances": ["passage", "openable_context"],
+      "query_hints": ["door", "doorway", "entrance", "opening", "passage"],
+      "caption_boost_terms": ["door", "doorway", "folding", "hinged", "handle"]
+    },
+    "room partition": {
+      "navigable": true,
+      "affordances": ["passage", "openable_context"],
+      "query_hints": ["partition", "screen", "divider", "privacy"],
+      "caption_boost_terms": ["partition", "screen", "folding", "doorway"]
+    },
+    "television": {
+      "navigable": true,
+      "affordances": ["entertainment", "display"],
+      "query_hints": ["tv", "television", "watch", "movie", "screen"],
+      "caption_boost_terms": ["television", "flat-screen", "screen"]
+    },
+    "stove": {
+      "navigable": true,
+      "affordances": ["cooking", "kitchen"],
+      "query_hints": ["stove", "cook", "cooking", "meal", "stovetop"],
+      "caption_boost_terms": ["stove", "cooking", "stovetop", "kitchen"]
+    },
+    "tablet": {
+      "navigable": true,
+      "affordances": ["device", "screen"],
+      "query_hints": ["tablet", "device", "screen"],
+      "caption_boost_terms": ["tablet", "device", "flat"]
+    },
+    "fitness equipment": {
+      "navigable": true,
+      "affordances": ["exercise"],
+      "query_hints": ["fitness", "exercise", "workout", "gym"],
+      "caption_boost_terms": ["fitness", "portable", "equipment"]
+    },
+    "seasoning box": {
+      "navigable": true,
+      "affordances": ["kitchen", "condiment"],
+      "query_hints": ["seasoning", "condiment", "spice"],
+      "caption_boost_terms": ["seasoning", "condiment", "counter"]
+    },
+    "kitchen utensils": {
+      "navigable": true,
+      "affordances": ["kitchen", "cooking_tools"],
+      "query_hints": ["utensils", "cooking tools", "cutlery"],
+      "caption_boost_terms": ["utensils", "kitchen", "counter"]
+    },
+    "vase": {
+      "navigable": true,
+      "affordances": ["decoration"],
+      "query_hints": ["vase", "decoration", "flowers"],
+      "caption_boost_terms": ["vase", "decorative"]
+    },
+
     "floor": {"navigable": false},
     "vent": {"navigable": false},
     "picture": {"navigable": false},
@@ -120,6 +179,10 @@
     "wall": {"navigable": false},
     "range hood": {"navigable": false},
     "stair rail": {"navigable": false},
-    "person": {"navigable": false}
+    "person": {"navigable": false},
+    "security camera": {"navigable": false},
+    "board": {"navigable": false},
+    "window": {"navigable": false},
+    "air conditioner": {"navigable": false}
   }
 }

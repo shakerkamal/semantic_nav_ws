@@ -47,6 +47,24 @@
     "person":       { "openable": false, "safety_class": "human",    "clearable": false },
     "human":        { "openable": false, "safety_class": "human",    "clearable": false },
     "cat":          { "openable": false, "safety_class": "animal",   "clearable": false },
-    "dog":          { "openable": false, "safety_class": "animal",   "clearable": false }
+    "dog":          { "openable": false, "safety_class": "animal",   "clearable": false },
+
+    "curtain":          { "openable": true,  "safety_class": "none",     "clearable": false },
+
+    "vase":             { "openable": false, "safety_class": "none",     "clearable": true  },
+    "tablet":           { "openable": false, "safety_class": "none",     "clearable": true  },
+    "kitchen utensils": { "openable": false, "safety_class": "none",     "clearable": true  },
+    "seasoning box":    { "openable": false, "safety_class": "none",     "clearable": true  },
+    "fitness equipment":{ "openable": false, "safety_class": "none",     "clearable": true  },
+
+    "table":            { "openable": false, "safety_class": "none",     "clearable": false },
+    "light fixture":    { "openable": false, "safety_class": "none",     "clearable": false },
+    "chandelier":       { "openable": false, "safety_class": "none",     "clearable": false },
+    "air conditioner":  { "openable": false, "safety_class": "none",     "clearable": false },
+    "security camera":  { "openable": false, "safety_class": "none",     "clearable": false },
+    "board":            { "openable": false, "safety_class": "none",     "clearable": false },
+    "television":       { "openable": false, "safety_class": "none",     "clearable": false },
+    "stove":            { "openable": false, "safety_class": "none",     "clearable": false },
+    "wall":             { "openable": false, "safety_class": "none",     "clearable": false }
   }
 }
