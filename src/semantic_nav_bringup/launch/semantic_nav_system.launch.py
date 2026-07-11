@@ -43,6 +43,10 @@ def generate_launch_description():
     operator_auto_ack_for_dev = LaunchConfiguration('operator_auto_ack_for_dev')
     operator_prompt_timeout_sec = LaunchConfiguration('operator_prompt_timeout_sec')
 
+    # Recovery ablation switches (A1 = deterministic baseline, A2 = LLM).
+    up_front_llm_enabled = LaunchConfiguration('up_front_llm_enabled')
+    open_set_inference_enabled = LaunchConfiguration('open_set_inference_enabled')
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
@@ -196,6 +200,18 @@ def generate_launch_description():
         default_value='0.0',
         description='Stdin timeout (sec) for operator prompts; 0.0 disables timeout.',
     )
+    up_front_llm_enabled_arg = DeclareLaunchArgument(
+        'up_front_llm_enabled',
+        default_value='true',
+        description='M4 ablation: true=LLM selects the up-front recovery directive '
+                    '(A2); false=deterministic default only (A1).',
+    )
+    open_set_inference_enabled_arg = DeclareLaunchArgument(
+        'open_set_inference_enabled',
+        default_value='true',
+        description='Open-set ablation (spec 21.4): true=LLM infers affordances for '
+                    'unclassifiable blocker tags (A2); false=table-only default (A1).',
+    )
 
     aws_small_house_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -302,6 +318,10 @@ def generate_launch_description():
         executable='navigation_orchestrator',
         name='navigation_orchestrator',
         output='screen',
+        parameters=[{
+            'up_front_llm_enabled': up_front_llm_enabled,
+            'open_set_inference_enabled': open_set_inference_enabled,
+        }],
     )
 
     operator_io_node = Node(
@@ -342,6 +362,8 @@ def generate_launch_description():
         enable_operator_io_arg,
         operator_auto_ack_for_dev_arg,
         operator_prompt_timeout_sec_arg,
+        up_front_llm_enabled_arg,
+        open_set_inference_enabled_arg,
 
         aws_small_house_sim_launch,
 

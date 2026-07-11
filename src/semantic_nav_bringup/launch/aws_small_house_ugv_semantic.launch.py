@@ -48,8 +48,14 @@ def generate_launch_description():
     y_pose = LaunchConfiguration('y_pose')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
     enable_llm = LaunchConfiguration('enable_llm')
+    llama_action = LaunchConfiguration('llama_action')
     auto_ack_for_dev = LaunchConfiguration('auto_ack_for_dev')
     start_orchestrator = LaunchConfiguration('start_orchestrator')
+
+    # Recovery ablation switches (A1 = deterministic baseline, A2 = LLM),
+    # mirroring semantic_nav_system.launch.py.
+    up_front_llm_enabled = LaunchConfiguration('up_front_llm_enabled')
+    open_set_inference_enabled = LaunchConfiguration('open_set_inference_enabled')
 
     use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value='true')
     rviz_arg = DeclareLaunchArgument('rviz', default_value='true', description='Launch Nav2-view RViz')
@@ -66,6 +72,21 @@ def generate_launch_description():
         'enable_llm', default_value='true',
         description='Launch navigator_node (NL parsing + LLM recovery proposals). '
                     'Requires llama_ros (/llama/generate_response) running separately.',
+    )
+    llama_action_arg = DeclareLaunchArgument(
+        'llama_action', default_value='/llama/generate_response',
+        description='llama_ros GenerateResponse action endpoint. On the rover the '
+                    'model may run on a remote server; override if remapped.',
+    )
+    up_front_llm_enabled_arg = DeclareLaunchArgument(
+        'up_front_llm_enabled', default_value='true',
+        description='M4 ablation: true=LLM selects the up-front recovery directive '
+                    '(A2); false=deterministic default only (A1).',
+    )
+    open_set_inference_enabled_arg = DeclareLaunchArgument(
+        'open_set_inference_enabled', default_value='true',
+        description='Open-set ablation (spec 21.4): true=LLM infers affordances for '
+                    'unclassifiable blocker tags (A2); false=table-only default (A1).',
     )
     operator_mode_arg = DeclareLaunchArgument(
         'operator_mode', default_value='terminal',
@@ -134,6 +155,9 @@ def generate_launch_description():
             os.path.join(bringup_dir, 'launch', 'semantic_nav_llm.launch.py')
         ),
         condition=IfCondition(enable_llm),
+        launch_arguments={
+            'llama_action': llama_action,
+        }.items()
     )
 
     # Optional operator I/O for the OperatorPrompt branch — only when operator_mode=auto.
@@ -161,6 +185,8 @@ def generate_launch_description():
         parameters=[{
             'use_sim_time': use_sim_time,
             'start_idle': True,
+            'up_front_llm_enabled': up_front_llm_enabled,
+            'open_set_inference_enabled': open_set_inference_enabled,
         }],
         condition=IfCondition(start_orchestrator),
     )
@@ -186,9 +212,12 @@ def generate_launch_description():
         y_pose_arg,
         nav2_params_file_arg,
         enable_llm_arg,
+        llama_action_arg,
         operator_mode_arg,
         auto_ack_for_dev_arg,
         start_orchestrator_arg,
+        up_front_llm_enabled_arg,
+        open_set_inference_enabled_arg,
 
         aws_ugv,
         TimerAction(period=6.0, actions=[rtabmap]),
