@@ -3,6 +3,7 @@
 from semantic_nav_orchestrator.recovery_directives import (
     LLMProposal,
     ProposalContext,
+    build_approach_and_recheck_directive,
     build_retry_target_directive,
     build_wait_then_replan_directive,
     OverrideConfig,
@@ -459,3 +460,30 @@ def test_clear_object_directive_strips_whitespace_from_key():
     proposal = LLMProposal(action="wait_then_replan", confidence_percent=55)
     directive = build_clear_object_directive(proposal, _ctx(), responsible_object_key=" box:2 ")
     assert directive.responsible_object_key == "box:2"
+
+# --- approach_and_recheck directive builder (spec 8.3) ---
+
+def test_approach_directive_carries_standoff():
+    proposal = LLMProposal(
+        action="approach_and_recheck", rationale="r", confidence_percent=60
+    )
+    ctx = ProposalContext(0, 3, "none", "semi-static", "evt-1")
+    d = build_approach_and_recheck_directive(
+        proposal, ctx,
+        target_pose=("map", 3.9, -1.3, 0.0),
+        responsible_object_key="door:119",
+    )
+    assert d.action == "approach_and_recheck"
+    assert d.target_pose == ("map", 3.9, -1.3, 0.0)
+    assert d.responsible_object_key == "door:119"
+    assert d.escalate_to_operator is False
+
+
+def test_approach_directive_without_standoff_gives_up():
+    proposal = LLMProposal(action="approach_and_recheck", confidence_percent=60)
+    ctx = ProposalContext(0, 3, "none", "semi-static", "evt-1")
+    d = build_approach_and_recheck_directive(
+        proposal, ctx, target_pose=None, responsible_object_key=""
+    )
+    assert d.action == "give_up"
+    assert d.escalate_to_operator is True

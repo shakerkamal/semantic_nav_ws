@@ -7,7 +7,7 @@ import uuid
 import time
 import threading
 from datetime import datetime, timezone
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, replace
 from typing import Optional, List, Tuple
 from enum import Enum
 
@@ -35,8 +35,10 @@ from nav2_msgs.action import Spin
 from semantic_nav_interfaces.action import ExecutePose
 from semantic_nav_interfaces.msg import SemanticCorrectionReport, SemanticStoreUpdated
 from semantic_nav_interfaces.srv import (
+    InferAffordance,
     MatchResponsibleObject,
     NavigateToQuery,
+    OperatorDecision,
     ParseSemanticCommand,
     ProposeRecovery,
     RequestRecovery,
@@ -48,12 +50,20 @@ from semantic_nav_orchestrator.responsible_object_matcher import (
     match_responsible_object,
 )
 from semantic_nav_orchestrator.costmap_adapter import occupancygrid_to_costgrid
+from semantic_nav_orchestrator.affordance_classification import (
+    InferredAffordance,
+    accept_inference,
+    tag_is_classifiable,
+)
 from semantic_nav_orchestrator.up_front_policy import (
     STANDOFF_OBJECT_KEY,
     ResponsibleAffordances,
     barrier_cleared_status,
     behavior_tree_for_target,
-    choose_directive,
+    eligible_after_attempts,
+    eligible_directives,
+    operator_prompt_for,
+    select_and_override_directive,
 )
 from semantic_nav_orchestrator.global_blockage_diagnosis import (
     DIAG_REACHABLE,
@@ -69,7 +79,6 @@ from semantic_nav_orchestrator.recovery_directives import (
     build_clear_object_directive,
     build_retry_target_directive,
     build_wait_then_replan_directive,
-    maybe_build_closed_door_directive,
 )
 from semantic_nav_orchestrator.semantic_map_updates import (
     write_displaced_semistatic_map,
@@ -519,6 +528,57 @@ class NavigationOrchestrator(Node):
         self._up_front_reobserve_time_allowance_s = float(
             self.get_parameter('up_front_reobserve_time_allowance_s')
             .get_parameter_value().double_value)
+        # Up-front operator directives (open_door/clear_object): prompt the
+        # operator via /operator_decision, wait for confirmation, then re-scan
+        # + re-validate. Disable to escalate (NEEDS_OPERATOR) instead.
+        self.declare_parameter('up_front_operator_enabled', True)
+        self.declare_parameter('operator_decision_service', '/operator_decision')
+        self.declare_parameter('operator_prompt_timeout_sec', 120.0)
+        self._up_front_operator_enabled = bool(
+            self.get_parameter('up_front_operator_enabled')
+            .get_parameter_value().bool_value)
+        self._operator_prompt_timeout_sec = float(
+            self.get_parameter('operator_prompt_timeout_sec')
+            .get_parameter_value().double_value)
+        # Dedicated (short) timeout for the up-front LLM strategy call, so a
+        # slow/hung LLM fails fast to the deterministic default instead of
+        # freezing the robot for the whole service_call_timeout_sec (240s).
+        # 45s: headroom above observed inference (~9-32s), far below 240s.
+        self.declare_parameter('up_front_llm_timeout_sec', 45.0)
+        self._up_front_llm_timeout_sec = float(
+            self.get_parameter('up_front_llm_timeout_sec')
+            .get_parameter_value().double_value)
+        # Ablation switch (A1 vs A2): when False the up-front loop skips the LLM
+        # strategy call and uses the deterministic default from
+        # select_and_override_directive -- i.e. the deterministic-only baseline.
+        # True = LLM selects among the eligible set (the M4 contribution).
+        # Read live at use-time (see _up_front_llm_enabled) so `ros2 param set`
+        # flips A1<->A2 on the same SLAM map without a relaunch.
+        self.declare_parameter('up_front_llm_enabled', True)
+        # Open-set affordance inference (spec 21.4): for a blocker whose tag the
+        # affordance table cannot classify, ask the LLM to infer its affordances
+        # from the caption. Ablation switch (A1 vs A2 for the open-set case):
+        # False = table-only, unclassifiable tags keep the restrictive default.
+        # Also read live at use-time (see _open_set_inference_enabled).
+        self.declare_parameter('open_set_inference_enabled', True)
+        self.declare_parameter('affordance_confidence_floor', 60)
+        self._affordance_confidence_floor = int(
+            self.get_parameter('affordance_confidence_floor')
+            .get_parameter_value().integer_value)
+        self.declare_parameter('infer_affordance_service', '/infer_affordance')
+        self._infer_affordance_service_name = (
+            self.get_parameter('infer_affordance_service')
+            .get_parameter_value().string_value)
+        # The set of tags the affordance table already covers -- inference runs
+        # only for tags absent from this set (and not matched by the door rule).
+        self._affordance_table_tags = {
+            str(k).strip().lower() for k in self._object_action_by_tag
+        }
+        self._infer_affordance_client = self.create_client(
+            InferAffordance,
+            self._infer_affordance_service_name,
+            callback_group=self._callback_group,
+        )
         self._latest_global_costmap = None
         self.create_subscription(
             OccupancyGrid,
@@ -541,6 +601,14 @@ class NavigationOrchestrator(Node):
         # /spin behavior for the standoff re-observation maneuver.
         self._spin_client = ActionClient(
             self, Spin, '/spin', callback_group=self._callback_group,
+        )
+        # /operator_decision (semantic_nav_operator_io) for up-front operator
+        # directives (open the door / clear the object, then confirm).
+        self._operator_decision_client = self.create_client(
+            OperatorDecision,
+            self.get_parameter('operator_decision_service')
+            .get_parameter_value().string_value,
+            callback_group=self._callback_group,
         )
 
         # /navigate_to_query: one navigation at a time; terminal is the caller.
@@ -1050,6 +1118,72 @@ class NavigationOrchestrator(Node):
             self._barrier_clear_min_observed_cells,
         )
 
+    def _rescan_confirm_and_validate(self, target, barrier_xy, clear_radius) -> bool:
+        """Re-scan at the standoff and confirm the goal is reachable.
+
+        Each poll: re-observe (spin) so SLAM + costmap re-sense the passage,
+        clear stale marks, then GATE on grounded perception -- a valid plan AND
+        the responsible barrier's footprint reading CLEAR on the costmap.
+        Object-agnostic; shared by the approach_and_recheck and the operator
+        (open_door/clear_object) branches. Returns True if the goal became
+        reachable within up_front_recheck_polls.
+        """
+        for poll in range(int(self._up_front_recheck_polls)):
+            self._reobserve()
+            self._clear_costmaps()
+            time.sleep(float(self._up_front_recheck_interval_s))
+            barrier = self._barrier_confirmation(barrier_xy, clear_radius)
+            plan_ok = self._validate_pose(target)
+            barrier_ok = (
+                barrier == "cleared"
+                or not self._up_front_require_barrier_clear
+            )
+            self._log_stage_info(
+                "UP_FRONT",
+                f"Recheck poll={poll}: barrier={barrier} plan_ok={plan_ok} "
+                f"barrier_ok={barrier_ok}",
+            )
+            if plan_ok and barrier_ok:
+                return True
+        return False
+
+    def _prompt_operator(self, action: str, obj) -> bool:
+        """Prompt the operator via /operator_decision; return True if acknowledged.
+
+        Deterministic; no LLM. The operator confirms they performed the physical
+        action (opened the door / cleared the object) -- the robot then re-scans
+        and re-validates rather than trusting the confirmation.
+        """
+        key = obj.key if obj is not None else ""
+        if not self._operator_decision_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_warn(
+                "UP_FRONT", "Operator decision service unavailable; escalating."
+            )
+            return False
+        req = OperatorDecision.Request()
+        req.prompt_text = operator_prompt_for(action, key)
+        req.responsible_object_key = key
+        req.failure_stage = "validation"
+        req.directive_action = action
+        req.recovery_event_id = self._session_id
+        future = self._operator_decision_client.call_async(req)
+        if not self._wait_for_future(future, self._operator_prompt_timeout_sec):
+            self._log_stage_warn(
+                "UP_FRONT", "Operator decision timed out; escalating."
+            )
+            return False
+        resp = future.result() if future.exception() is None else None
+        if resp is None:
+            return False
+        self._log_stage_info(
+            "UP_FRONT",
+            f"Operator decision for '{action}': acknowledged={resp.acknowledged} "
+            f"note='{resp.operator_note}'",
+        )
+        return bool(resp.acknowledged)
+
     def _reobserve(self) -> None:
         """Rotate left-right in place so SLAM + costmap re-sense a freshly-opened
         doorway before the confirmation gate reads it. Perception grounding, not
@@ -1101,6 +1235,11 @@ class NavigationOrchestrator(Node):
         goal_ps = target.pose
         goal_xy = (goal_ps.pose.position.x, goal_ps.pose.position.y)
 
+        # (action, outcome) of prior up-front attempts, fed to the LLM so it can
+        # escalate (e.g. approach_and_recheck exhausted -> open_door_then_replan)
+        # instead of repeating the same choice.
+        up_front_attempts = []
+
         for attempt in range(int(self._up_front_cap)):
             grid_msg = self._latest_global_costmap
             robot = self._lookup_robot_pose()
@@ -1145,11 +1284,19 @@ class NavigationOrchestrator(Node):
                     safety_class="none", match_type="none",
                 )
             else:
+                # Open-set inference (spec 21.4): if the affordance table can't
+                # classify this tag, ask the LLM to infer the affordances from
+                # the caption; otherwise use the table-driven object attributes.
+                inferred = None
+                if (self._open_set_inference_enabled()
+                        and not tag_is_classifiable(obj.tag, self._affordance_table_tags)):
+                    inferred = self._infer_affordance(obj.tag, obj.caption)
                 aff = ResponsibleAffordances(
                     tag=obj.tag,
-                    openable=bool(obj.openable),
-                    clearable=bool(obj.clearable),
-                    safety_class=obj.safety_class or "none",
+                    openable=inferred.openable if inferred else bool(obj.openable),
+                    clearable=inferred.clearable if inferred else bool(obj.clearable),
+                    safety_class=(inferred.safety_class if inferred
+                                  else (obj.safety_class or "none")),
                     match_type=match.match_type or "none",
                 )
 
@@ -1159,11 +1306,32 @@ class NavigationOrchestrator(Node):
                 standoff_ps = self._standoff_tuple_to_pose(diag.standoff_pose)
                 has_standoff = self._pose_is_reachable(standoff_ps)
 
-            action = choose_directive(diag.diagnosis, aff, has_standoff)
+            # M4 filter-not-policy (spec 21.3/9): the deterministic layer filters
+            # to the eligible set; the LLM selects among it when >=2 remain; the
+            # deterministic override coerces invalid/unavailable picks. Actions
+            # already tried this recovery are dropped (exhaustion) so the LLM
+            # can't keep re-picking approach_and_recheck and is forced to escalate.
+            tried_actions = {a for (a, _o) in up_front_attempts}
+            eligible = eligible_after_attempts(
+                eligible_directives(diag.diagnosis, aff, has_standoff),
+                tried_actions,
+            )
+            llm_action = ""
+            if len(eligible) >= 2 and self._up_front_llm_enabled():
+                llm_action = self._request_up_front_llm_choice(
+                    diag, aff, obj, eligible, target, initial_query,
+                    up_front_attempts,
+                )
+            selection = select_and_override_directive(
+                eligible, llm_action, aff, has_standoff
+            )
+            action = selection.action
             self._log_stage_info(
                 "UP_FRONT",
-                f"directive={action} responsible_tag='{aff.tag}' "
-                f"match_type={aff.match_type} has_standoff={has_standoff}",
+                f"eligible={eligible} llm='{llm_action}' -> directive={action} "
+                f"(overridden={selection.overridden} reason={selection.reason}) "
+                f"responsible_tag='{aff.tag}' match_type={aff.match_type} "
+                f"has_standoff={has_standoff}",
             )
 
             if action == "approach_and_recheck":
@@ -1180,43 +1348,28 @@ class NavigationOrchestrator(Node):
                         "Failed to reach the standoff pose; escalating.",
                     )
                     return False
-                # Wait-and-recheck at the standoff. Each poll: re-observe (spin)
-                # so SLAM + costmap re-sense the passage, clear stale marks, then
-                # GATE on grounded perception -- a valid plan AND the responsible
-                # barrier's footprint reading CLEAR on the costmap. Object-
-                # agnostic: any dynamic obstacle that opened/moved/was removed
-                # passes; we never commit on a plan alone (which could be a
-                # transient) without confirming the blocker is actually gone.
+                # Re-scan and re-validate at the standoff (spin -> clear ->
+                # barrier-clear confirm -> validate; see the helper).
                 barrier_xy = diag.barrier_centroid or center
                 clear_radius = max(
                     self._barrier_clear_radius_m, diag.barrier_extent_m / 2.0
                 )
-                for poll in range(int(self._up_front_recheck_polls)):
-                    self._reobserve()
-                    self._clear_costmaps()
-                    time.sleep(float(self._up_front_recheck_interval_s))
-                    barrier = self._barrier_confirmation(barrier_xy, clear_radius)
-                    plan_ok = self._validate_pose(target)
-                    barrier_ok = (
-                        barrier == "cleared"
-                        or not self._up_front_require_barrier_clear
-                    )
+                if self._rescan_confirm_and_validate(
+                    target, barrier_xy, clear_radius
+                ):
                     self._log_stage_info(
                         "UP_FRONT",
-                        f"Recheck poll={poll}: barrier={barrier} plan_ok={plan_ok} "
-                        f"barrier_ok={barrier_ok}",
+                        "Goal reachable and barrier clear after approach; "
+                        "dispatching.",
                     )
-                    if plan_ok and barrier_ok:
-                        self._log_stage_info(
-                            "UP_FRONT",
-                            f"Goal reachable and barrier footprint clear after "
-                            f"approach (poll={poll}); dispatching.",
-                        )
-                        return self._execute_pose(target)
+                    return self._execute_pose(target)
                 self._log_stage_info(
                     "UP_FRONT",
                     "Still blocked (barrier not confirmed clear) after approach "
                     "+ wait; re-diagnosing.",
+                )
+                up_front_attempts.append(
+                    ("approach_and_recheck", "approached_still_blocked")
                 )
                 continue
 
@@ -1224,10 +1377,48 @@ class NavigationOrchestrator(Node):
                 time.sleep(5.0)
                 if self._validate_pose(target):
                     return self._execute_pose(target)
+                up_front_attempts.append(("wait_then_replan", "waited_still_blocked"))
                 continue
 
-            # open_door / clear_object / give_up / retry_target-without-alternative:
-            # no orchestrator operator client -> hand off via NEEDS_OPERATOR.
+            if action in ("open_door_then_replan", "clear_object_then_replan"):
+                # Execute the operator directive up-front: prompt the operator,
+                # wait for confirmation, then re-scan + re-validate (same gate as
+                # approach). No operator client / declined -> escalate.
+                if not self._up_front_operator_enabled:
+                    self._log_stage_info(
+                        "UP_FRONT",
+                        f"Directive '{action}' needs operator action "
+                        "(up_front_operator_enabled=false); escalating.",
+                    )
+                    return False
+                if not self._prompt_operator(action, obj):
+                    self._log_stage_info(
+                        "UP_FRONT",
+                        f"Operator declined/unavailable for '{action}'; "
+                        "escalating.",
+                    )
+                    return False
+                barrier_xy = diag.barrier_centroid or center
+                clear_radius = max(
+                    self._barrier_clear_radius_m, diag.barrier_extent_m / 2.0
+                )
+                if self._rescan_confirm_and_validate(
+                    target, barrier_xy, clear_radius
+                ):
+                    self._log_stage_info(
+                        "UP_FRONT",
+                        f"Goal reachable after operator '{action}'; dispatching.",
+                    )
+                    return self._execute_pose(target)
+                self._log_stage_info(
+                    "UP_FRONT",
+                    f"Still blocked after operator '{action}' + rescan; "
+                    "re-diagnosing.",
+                )
+                up_front_attempts.append((action, "operator_confirmed_still_blocked"))
+                continue
+
+            # give_up / retry_target-without-alternative -> escalate.
             self._log_stage_info(
                 "UP_FRONT",
                 f"Directive '{action}' needs operator action; escalating.",
@@ -2700,6 +2891,173 @@ class NavigationOrchestrator(Node):
             current_target_object_key,
         )
 
+    def _trigger_to_affordances(self, trigger: TriggerInfo) -> ResponsibleAffordances:
+        """Build the deterministic affordance view from an en-route BT trigger."""
+        return ResponsibleAffordances(
+            tag=trigger.responsible_object_tag or "",
+            openable=bool(trigger.responsible_openable),
+            clearable=bool(trigger.responsible_clearable),
+            safety_class=trigger.responsible_safety_class or "none",
+            match_type=trigger.match_type or "none",
+        )
+
+    def _eligible_for_trigger(self, trigger: TriggerInfo) -> list:
+        """Eligible directive set for the en-route BT path (spec 21.3).
+
+        No standoff is computed en-route (the geometric tier only backs up), so
+        has_reachable_standoff=False -> approach_and_recheck is naturally
+        excluded; it belongs to the up-front loop.
+        """
+        return eligible_directives(
+            "blocked",
+            self._trigger_to_affordances(trigger),
+            has_reachable_standoff=False,
+        )
+
+    def _up_front_llm_enabled(self) -> bool:
+        """Read the M4 ablation switch live so `ros2 param set` flips A1<->A2
+        without a relaunch."""
+        return bool(self.get_parameter('up_front_llm_enabled')
+                    .get_parameter_value().bool_value)
+
+    def _open_set_inference_enabled(self) -> bool:
+        """Read the open-set ablation switch live (spec 21.4)."""
+        return bool(self.get_parameter('open_set_inference_enabled')
+                    .get_parameter_value().bool_value)
+
+    def _infer_affordance(self, tag, caption):
+        """Return an InferredAffordance from the LLM, or None (fall back to
+        table default). Runs only for unclassifiable tags (spec 21.4)."""
+        if not self._infer_affordance_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_warn("UP_FRONT", "infer_affordance unavailable; table default.")
+            return None
+        req = InferAffordance.Request()
+        req.object_tag = tag or ""
+        req.object_caption = caption or ""
+        future = self._infer_affordance_client.call_async(req)
+        if not self._wait_for_future(future, self._up_front_llm_timeout_sec):
+            self._log_stage_warn("UP_FRONT", "infer_affordance timed out; table default.")
+            return None
+        resp = future.result() if future.exception() is None else None
+        if resp is None or not bool(resp.success):
+            return None
+        inf = InferredAffordance(
+            bool(resp.openable), bool(resp.clearable),
+            str(resp.safety_class or "none"), int(resp.confidence_percent),
+        )
+        self._log_stage_info(
+            "UP_FRONT",
+            f"open-set affordance inferred for tag='{tag}': openable={inf.openable} "
+            f"clearable={inf.clearable} safety={inf.safety_class} conf={inf.confidence}",
+        )
+        if not accept_inference(inf, self._affordance_confidence_floor):
+            self._log_stage_info("UP_FRONT", "inference below floor; table default.")
+            return None
+        return inf
+
+    def _request_up_front_llm_choice(
+        self, diag, aff, obj, eligible, target, initial_query: str, attempts=None
+    ) -> str:
+        """Ask the LLM to pick one action from the eligible set (spec 21.3).
+
+        Returns the chosen action string, or "" on failure/timeout so the caller
+        falls back to the deterministic default. The standoff pose is never
+        requested from the LLM -- the orchestrator computes it. ``attempts`` is a
+        list of (action, outcome) from prior up-front attempts so the LLM can
+        escalate (e.g. approach exhausted -> ask the operator) instead of
+        repeating the same choice.
+        """
+        if not self._propose_recovery_client.wait_for_service(
+            timeout_sec=self._service_wait_timeout_sec
+        ):
+            self._log_stage_warn(
+                "UP_FRONT",
+                "Propose recovery service unavailable; deterministic fallback.",
+            )
+            return ""
+
+        req = ProposeRecovery.Request()
+        req.failure_stage = "validation"
+        req.nav2_message = "up-front global blockage"
+        req.original_nl_command = self._active_nl_command or (initial_query or "")
+        req.original_object_tag = self._active_original_object_tag or aff.tag
+        req.original_intent_hint = self._active_original_intent_hint
+        req.current_target_object_key = getattr(target, "object_key", "") or ""
+        req.original_target = (
+            req.current_target_object_key or req.original_object_tag
+        )
+
+        req.responsible_object_key = obj.key if obj is not None else ""
+        req.match_type = aff.match_type or "unknown"
+        req.responsible_object_tag = aff.tag
+        req.responsible_object_state = obj.state if obj is not None else ""
+        req.responsible_safety_class = aff.safety_class or "none"
+        req.responsible_openable = bool(aff.openable)
+        req.responsible_clearable = bool(aff.clearable)
+
+        if diag.barrier_centroid is not None:
+            req.blockage_centroid = Point(
+                x=float(diag.barrier_centroid[0]),
+                y=float(diag.barrier_centroid[1]),
+                z=0.0,
+            )
+        req.blockage_extent_m = float(diag.barrier_extent_m)
+
+        req.allowed_actions = list(eligible)
+        # Prior up-front attempts -> the LLM's "Already tried" context, so it
+        # escalates instead of repeating an exhausted action.
+        history = list(attempts or [])
+        req.attempted_actions = [a for (a, _o) in history]
+        req.attempt_outcomes = [o for (_a, o) in history]
+        req.attempted_values = ["" for _ in history]
+        req.attempt_rationales = ["" for _ in history]
+        req.remaining_retry_budget = int(self._up_front_cap)
+        req.db_version = int(self._db_version)
+        if self._db_stamp is not None:
+            req.db_stamp = self._db_stamp
+
+        self._log_stage_info(
+            "UP_FRONT",
+            f"Requesting LLM recovery choice via /propose_recovery "
+            f"(allowed={list(eligible)}, "
+            f"timeout={self._up_front_llm_timeout_sec:.0f}s).",
+        )
+        t0 = time.monotonic()
+        future = self._propose_recovery_client.call_async(req)
+        if not self._wait_for_future(future, self._up_front_llm_timeout_sec):
+            self._log_stage_warn(
+                "UP_FRONT",
+                f"Propose recovery did not return within "
+                f"{self._up_front_llm_timeout_sec:.0f}s "
+                f"(waited {time.monotonic() - t0:.1f}s); deterministic fallback.",
+            )
+            return ""
+        elapsed = time.monotonic() - t0
+        if future.exception() is not None:
+            self._log_stage_warn(
+                "UP_FRONT",
+                f"Propose recovery raised after {elapsed:.1f}s: "
+                f"{future.exception()}; deterministic fallback.",
+            )
+            return ""
+        response = future.result()
+        if response is None:
+            self._log_stage_warn(
+                "UP_FRONT", "Propose recovery returned no response object."
+            )
+            return ""
+        self._log_stage_info(
+            "UP_FRONT",
+            f"LLM recovery response in {elapsed:.1f}s: success={response.success} "
+            f"action='{response.action}' rationale='{response.rationale}' "
+            f"message='{response.message}'",
+        )
+        if not bool(response.success):
+            return ""
+        return str(response.action or "")
+
     def _call_propose_recovery_for_bt_request(
         self,
         request: RequestRecovery.Request,
@@ -2766,6 +3124,9 @@ class NavigationOrchestrator(Node):
         req.responsible_safety_class = trigger.responsible_safety_class or "none"
         req.responsible_openable = bool(trigger.responsible_openable)
         req.responsible_clearable = bool(trigger.responsible_clearable)
+
+        # M4: filter-not-policy. Hand the LLM exactly the eligible actions.
+        req.allowed_actions = self._eligible_for_trigger(trigger)
 
         req.blockage_centroid = trigger.blockage_centroid
         req.blockage_extent_m = float(trigger.blockage_extent_m)
@@ -3024,7 +3385,31 @@ class NavigationOrchestrator(Node):
                 ),
             )
 
-        if proposal.action == "retry_target":
+        # M4 filter-not-policy (spec 21.3): the LLM selects among the eligible
+        # set; the deterministic layer overrides only invalid/ineligible picks.
+        # No forced open_door/clear_object overrides -- those are eligible
+        # actions the LLM selects (or the priority default falls back to).
+        aff = self._trigger_to_affordances(trigger)
+        eligible = self._eligible_for_trigger(trigger)
+        selection = select_and_override_directive(
+            eligible, proposal.action, aff, has_reachable_standoff=False
+        )
+        self._log_stage_info(
+            "RECOVERY/BT",
+            (
+                f"eligible={eligible} llm='{proposal.action}' -> "
+                f"action={selection.action} (overridden={selection.overridden} "
+                f"reason={selection.reason})"
+            ),
+        )
+
+        overrides = OverrideConfig(
+            signal_attempts_default=self._signal_attempts_default,
+            short_signal_wait_seconds=self._short_signal_wait_seconds,
+            passive_wait_seconds_default=self._passive_wait_seconds_default,
+        )
+
+        if selection.action == "retry_target":
             _, _, blocked_key = self._bt_request_object_context(request)
             return build_retry_target_directive(
                 directive_proposal,
@@ -3034,67 +3419,39 @@ class NavigationOrchestrator(Node):
                 ),
             )
 
-        if proposal.action == "wait_then_replan":
-            tag = (trigger.responsible_object_tag or "").strip().lower()
-            safety_class = (trigger.responsible_safety_class or "").strip().lower()
-            _animate_tags = {"human", "person", "animal", "dog", "cat"}
-            if trigger.responsible_openable and "door" in tag:
-                return build_open_door_directive(
+        if selection.action == "open_door_then_replan":
+            return build_open_door_directive(
+                directive_proposal,
+                context,
+                responsible_object_key=trigger.responsible_object_key or "",
+            )
+
+        if selection.action == "clear_object_then_replan":
+            return build_clear_object_directive(
+                directive_proposal,
+                context,
+                responsible_object_key=trigger.responsible_object_key or "",
+            )
+
+        if selection.action == "wait_then_replan":
+            # Floor the wait when the action was overridden in (the LLM may not
+            # have supplied wait_seconds for a different action).
+            wait_proposal = directive_proposal
+            if int(getattr(directive_proposal, "wait_seconds", 0) or 0) <= 0:
+                wait_proposal = replace(
                     directive_proposal,
-                    context,
-                    responsible_object_key=trigger.responsible_object_key or "",
-                )
-            if (trigger.responsible_clearable
-                    and safety_class not in {"human", "animal"}
-                    and tag not in _animate_tags):
-                return build_clear_object_directive(
-                    directive_proposal,
-                    context,
-                    responsible_object_key=trigger.responsible_object_key or "",
+                    wait_seconds=int(self._passive_wait_seconds_default),
                 )
             return build_wait_then_replan_directive(
-                directive_proposal,
+                wait_proposal,
                 context,
                 signal_attempts_default=self._signal_attempts_default,
                 max_wait_seconds=self._max_wait_seconds,
             )
 
-        if proposal.action == "give_up":
-            return build_give_up_directive(
-                directive_proposal,
-                context,
-                overrides=OverrideConfig(
-                    signal_attempts_default=self._signal_attempts_default,
-                    short_signal_wait_seconds=self._short_signal_wait_seconds,
-                    passive_wait_seconds_default=self._passive_wait_seconds_default,
-                ),
-            )
-
-        self._log_stage_warn(
-            "RECOVERY/BT",
-            (
-                f"Unsupported BT-led proposal action='{proposal.action}'. "
-                "Returning terminal give_up directive."
-            ),
-        )
-
-        unsupported = DirectiveLLMProposal(
-            action="give_up",
-            rationale=(
-                f"Unsupported BT-led recovery action='{proposal.action}' in M1D."
-            ),
-            confidence_percent=int(proposal.confidence_percent),
-        )
-
-        return build_give_up_directive(
-            unsupported,
-            context,
-            overrides=OverrideConfig(
-                signal_attempts_default=self._signal_attempts_default,
-                short_signal_wait_seconds=self._short_signal_wait_seconds,
-                passive_wait_seconds_default=self._passive_wait_seconds_default,
-            ),
-        )
+        # give_up, plus any residual (e.g. approach_and_recheck, which is
+        # up-front-only and never eligible on the en-route BT path).
+        return build_give_up_directive(directive_proposal, context, overrides=overrides)
 
     def _record_bt_directive_attempt(
         self,
@@ -3441,36 +3798,9 @@ class NavigationOrchestrator(Node):
         )
 
         try:
-            door_directive = maybe_build_closed_door_directive(
-                trigger, recovery_event_id=recovery_event_id
-            )
-            if door_directive is not None:
-                self._log_stage_info(
-                    "RECOVERY/BT",
-                    (
-                        "Closed-door deterministic directive: "
-                        f"action='{door_directive.action}' "
-                        f"tag='{trigger.responsible_object_tag}' "
-                        f"state_detail='{trigger.responsible_state_detail}' "
-                        f"traversability='"
-                        f"{trigger.responsible_traversability}'"
-                    ),
-                )
-                self._record_bt_directive_attempt(
-                    directive=door_directive,
-                    proposal=None,
-                    trigger=trigger,
-                )
-                return self._fill_request_recovery_response_from_directive(
-                    response=response,
-                    status="accepted",
-                    message=(
-                        "Closed-door deterministic directive: "
-                        f"action='{door_directive.action}'."
-                    ),
-                    directive=door_directive,
-                )
-
+            # M4 (spec 21.3): no closed-door deterministic short-circuit. A
+            # closed door yields >=2 eligible actions and the LLM selects; the
+            # deterministic layer only filters + overrides invalid picks.
             proposal = self._call_propose_recovery_for_bt_request(
                 request=request,
                 trigger=trigger,

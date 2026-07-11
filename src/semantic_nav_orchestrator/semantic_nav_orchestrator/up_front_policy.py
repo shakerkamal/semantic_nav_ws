@@ -38,6 +38,21 @@ def behavior_tree_for_target(
     return semantic_bt
 
 
+def operator_prompt_for(action: str, object_key: str) -> str:
+    """Operator prompt text for an up-front operator directive.
+
+    Deterministic (no LLM). Used when the up-front loop executes an
+    ``open_door_then_replan`` / ``clear_object_then_replan`` directive: prompt
+    the operator, then re-scan and re-validate after they confirm.
+    """
+    key = (object_key or "").strip() or "the responsible object"
+    if action == "open_door_then_replan":
+        return f"Please open the door blocking the path (object: {key}), then confirm."
+    if action == "clear_object_then_replan":
+        return f"Please clear the object blocking the path (object: {key}), then confirm."
+    return f"Operator action required for '{action}' (object: {key}), then confirm."
+
+
 def barrier_cleared_status(
     lethal_fraction: Optional[float],
     observed_cells: int,
@@ -103,6 +118,76 @@ def eligible_directives(
     elig.append("retry_target")
     elig.append("give_up")
     return elig
+
+
+_DIRECTIVE_PRIORITY = [
+    "approach_and_recheck",
+    "open_door_then_replan",
+    "clear_object_then_replan",
+    "wait_then_replan",
+    "retry_target",
+    "give_up",
+]
+
+
+@dataclass(frozen=True)
+class DirectiveSelection:
+    action: str
+    overridden: bool
+    reason: str
+
+
+def _deterministic_default(eligible: List[str]) -> str:
+    for action in _DIRECTIVE_PRIORITY:
+        if action in eligible:
+            return action
+    return "give_up"
+
+
+def eligible_after_attempts(eligible: List[str], tried_actions) -> List[str]:
+    """Drop actions already attempted-and-failed this recovery (except give_up).
+
+    Filter-not-policy: an action that was tried and left the goal blocked is no
+    longer *valid* to re-select, so the deterministic layer removes it. This is
+    the reliable guard the prompt hint ("do not repeat") cannot provide with a
+    small local LLM -- once approach_and_recheck is exhausted the LLM is forced
+    to choose among the remaining options (e.g. open_door_then_replan). give_up
+    is always kept as the safe terminal; never returns an empty set.
+    """
+    tried = set(tried_actions or ())
+    narrowed = [d for d in eligible if d not in tried or d == "give_up"]
+    return narrowed or ["give_up"]
+
+
+def select_and_override_directive(
+    eligible: List[str],
+    llm_action: Optional[str],
+    aff: ResponsibleAffordances,
+    has_reachable_standoff: bool,
+) -> DirectiveSelection:
+    """Filter-not-policy selection (spec 21.3 + 11.3).
+
+    The deterministic layer supplies ``eligible``; the LLM's ``llm_action`` is
+    honored only when it is in the eligible set. Single-eligible needs no LLM;
+    an unavailable or ineligible pick falls back to the deterministic priority
+    default. Returns the final action plus whether/why it was overridden.
+    """
+    if not eligible:
+        return DirectiveSelection("give_up", True, "no_eligible_actions")
+    if len(eligible) == 1:
+        return DirectiveSelection(
+            eligible[0], llm_action != eligible[0], "single_eligible"
+        )
+    action = (llm_action or "").strip()
+    if not action:
+        return DirectiveSelection(
+            _deterministic_default(eligible), True, "llm_unavailable"
+        )
+    if action in eligible:
+        return DirectiveSelection(action, False, "llm_selected")
+    return DirectiveSelection(
+        _deterministic_default(eligible), True, f"override_ineligible:{action}"
+    )
 
 
 def choose_directive(

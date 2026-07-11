@@ -3,11 +3,13 @@
 
 from semantic_nav_orchestrator.up_front_policy import (
     STANDOFF_OBJECT_KEY,
+    DirectiveSelection,
     ResponsibleAffordances,
     barrier_cleared_status,
     behavior_tree_for_target,
     choose_directive,
     eligible_directives,
+    select_and_override_directive,
 )
 
 
@@ -112,3 +114,96 @@ def test_standoff_plain_bt_can_be_an_explicit_path():
         STANDOFF_OBJECT_KEY, semantic_bt="/sem.xml", standoff_bt="/plain.xml",
     )
     assert bt == "/plain.xml"
+
+
+# --- approach_and_recheck eligibility (spec 8.4) ---
+
+def test_structural_barrier_no_standoff_excludes_approach():
+    aff = _aff(tag="", openable=False, clearable=False, match="none")
+    elig = eligible_directives("blocked", aff, has_reachable_standoff=False)
+    assert "approach_and_recheck" not in elig
+    assert "give_up" in elig
+
+
+def test_reachable_nonstructural_includes_approach():
+    aff = _aff(tag="door", openable=True, match="verified")
+    elig = eligible_directives("blocked", aff, has_reachable_standoff=True)
+    assert "approach_and_recheck" in elig
+    assert "open_door_then_replan" in elig
+    assert len(elig) >= 2  # LLM is load-bearing here
+
+
+# --- select_and_override_directive (filter-not-policy, spec 21.3 / 11.3) ---
+
+def test_llm_pick_honored_when_eligible():
+    elig = ["approach_and_recheck", "retry_target", "give_up"]
+    aff = _aff(tag="door", openable=True)
+    sel = select_and_override_directive(elig, "approach_and_recheck", aff, True)
+    assert sel == DirectiveSelection("approach_and_recheck", False, "llm_selected")
+
+
+def test_ineligible_llm_pick_overridden():
+    elig = ["wait_then_replan", "give_up"]
+    aff = _aff(tag="person", safety="human")
+    sel = select_and_override_directive(elig, "clear_object_then_replan", aff, False)
+    assert sel.action == "wait_then_replan"
+    assert sel.overridden is True
+    assert sel.reason.startswith("override_ineligible")
+
+
+def test_single_eligible_needs_no_llm():
+    sel = select_and_override_directive(["give_up"], None, _aff(tag=""), False)
+    assert sel.action == "give_up"
+    assert sel.reason == "single_eligible"
+
+
+def test_llm_unavailable_uses_priority_default():
+    elig = ["approach_and_recheck", "retry_target", "give_up"]
+    sel = select_and_override_directive(elig, None, _aff(tag="door", openable=True), True)
+    assert sel.action == "approach_and_recheck"  # highest priority in eligible
+    assert sel.overridden is True
+    assert sel.reason == "llm_unavailable"
+
+
+def test_empty_eligible_gives_up():
+    sel = select_and_override_directive([], "retry_target", _aff(tag=""), False)
+    assert sel == DirectiveSelection("give_up", True, "no_eligible_actions")
+
+
+# --- operator prompt text (up-front open-door/clear loop) ---
+
+def test_operator_prompt_for_open_door():
+    from semantic_nav_orchestrator.up_front_policy import operator_prompt_for
+    msg = operator_prompt_for("open_door_then_replan", "door:119")
+    assert "open" in msg.lower()
+    assert "door:119" in msg
+
+
+def test_operator_prompt_for_clear_object():
+    from semantic_nav_orchestrator.up_front_policy import operator_prompt_for
+    msg = operator_prompt_for("clear_object_then_replan", "box:7")
+    assert "clear" in msg.lower()
+    assert "box:7" in msg
+
+
+# --- exhaustion narrowing: drop already-tried actions (except give_up) ---
+
+def test_eligible_after_attempts_drops_tried_action():
+    from semantic_nav_orchestrator.up_front_policy import eligible_after_attempts
+    elig = ["approach_and_recheck", "open_door_then_replan", "retry_target", "give_up"]
+    out = eligible_after_attempts(elig, {"approach_and_recheck"})
+    assert "approach_and_recheck" not in out
+    assert out == ["open_door_then_replan", "retry_target", "give_up"]
+
+
+def test_eligible_after_attempts_keeps_give_up_always():
+    from semantic_nav_orchestrator.up_front_policy import eligible_after_attempts
+    elig = ["approach_and_recheck", "open_door_then_replan", "retry_target", "give_up"]
+    tried = {"approach_and_recheck", "open_door_then_replan", "retry_target", "give_up"}
+    assert eligible_after_attempts(elig, tried) == ["give_up"]
+
+
+def test_eligible_after_attempts_no_tried_is_unchanged():
+    from semantic_nav_orchestrator.up_front_policy import eligible_after_attempts
+    elig = ["approach_and_recheck", "give_up"]
+    assert eligible_after_attempts(elig, set()) == elig

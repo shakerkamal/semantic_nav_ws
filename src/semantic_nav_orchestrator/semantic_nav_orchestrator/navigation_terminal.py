@@ -417,29 +417,35 @@ def _operator_escalation(
     _emit(yellow(  "  ╚══════════════════════════════════════════════════╝"))
     _emit("  The robot tried geometric and semantic recovery and could not")
     _emit("  find a reachable way to the goal. Choose one:")
-    _emit(f"    {bold('1')} — navigate to a different destination")
-    _emit(f"    {bold('2')} — take manual control (drive with teleop)")
-    _emit(f"    {bold('3')} — abort and return to the prompt")
+    _emit(f"    {bold('1')} — retry the original goal "
+          "(I've opened the door / cleared the blockage)")
+    _emit(f"    {bold('2')} — navigate to a different destination")
+    _emit(f"    {bold('3')} — take manual control (drive with teleop)")
+    _emit(f"    {bold('4')} — abort and return to the prompt")
 
     while True:
-        _emit(yellow("  [operator] 1 / 2 / 3 > "))
+        _emit(yellow("  [operator] 1 / 2 / 3 / 4 > "))
         choice = cmd_q.get()
         if choice is None:
             return "exit", None
         choice = choice.strip().lower()
 
-        if choice in ("3", "abort", "a", "q", ""):
+        if choice in ("1", "retry", "r"):
+            _emit(dim(f"  Retrying the original goal ({bold(query)})...\n"))
+            return "retry", None
+
+        if choice in ("4", "abort", "a", "q", ""):
             _emit(dim("  Aborted. Returning to prompt.\n"))
             return "abort", None
 
-        if choice in ("2", "manual", "teleop"):
+        if choice in ("3", "manual", "teleop"):
             _emit(yellow("\n  Manual control: open a NEW terminal and run:"))
             _emit(bold("    ros2 run turtlebot3_teleop teleop_keyboard"))
             _emit(dim("  Navigation is idle. Drive the robot, then type a new"))
             _emit(dim("  destination here when you want autonomous nav again.\n"))
             return "abort", None
 
-        if choice in ("1", "navigate", "n"):
+        if choice in ("2", "navigate", "n"):
             _emit("  Enter the new destination (object key like chair:2, or an NL command):")
             _emit(yellow("  [operator] destination > "))
             dest = cmd_q.get()
@@ -533,6 +539,10 @@ def _controller(node: NavigationTerminal, cmd_q: queue.Queue) -> None:
                 )
                 if action == "exit":
                     return
+                if action == "retry":
+                    # Operator cleared the blockage (e.g. opened the door):
+                    # re-dispatch the SAME goal (query/intent_hint unchanged).
+                    continue
                 if action == "navigate":
                     raw = dest
                     resolved = _resolve(node, raw)
