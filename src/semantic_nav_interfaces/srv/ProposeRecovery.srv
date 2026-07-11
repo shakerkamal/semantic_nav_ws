@@ -49,6 +49,11 @@ builtin_interfaces/Time db_stamp
 string original_object_tag
 string original_intent_hint
 string current_target_object_key
+
+# --- M4: deterministic eligible-action set (filter-not-policy) ---
+# The orchestrator computes this via up_front_policy.eligible_directives and the
+# LLM MUST choose exactly one of these. Empty means "no filter supplied".
+string[] allowed_actions
 ---
 bool success
 string action

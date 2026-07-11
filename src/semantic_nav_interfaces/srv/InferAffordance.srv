@@ -1,0 +1,10 @@
+string object_tag
+string object_caption
+---
+bool success
+bool openable
+bool clearable
+string safety_class          # none | human | animal
+uint8 confidence_percent
+string rationale
+string raw_output

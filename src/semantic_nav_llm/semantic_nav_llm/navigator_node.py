@@ -13,7 +13,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from semantic_nav_interfaces.srv import ParseSemanticCommand, ProposeRecovery
+from semantic_nav_interfaces.srv import (
+    InferAffordance,
+    ParseSemanticCommand,
+    ProposeRecovery,
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +67,7 @@ class NavigatorNode(Node):
     """
 
     RECOVERY_ACTIONS = {
+        "approach_and_recheck",
         "retry_target",
         "wait_then_replan",
         "open_door_then_replan",
@@ -71,6 +76,7 @@ class NavigatorNode(Node):
     }
 
     RECOVERY_EXPECTED_KEYS = {
+        "approach_and_recheck": {"action", "rationale", "confidence"},
         "retry_target": {"action", "target_object_tag", "target_intent_hint", "rationale", "confidence"},
         "wait_then_replan": {"action", "wait_seconds", "rationale", "confidence"},
         "open_door_then_replan": {
@@ -117,6 +123,12 @@ class NavigatorNode(Node):
             "recovery_intent.gbnf",
         )
 
+        default_affordance_grammar_path = os.path.join(
+            get_package_share_directory("semantic_nav_llm"),
+            "config",
+            "affordance_intent.gbnf",
+        )
+
         self.declare_parameter("service_name", "/parse_semantic_command")
         self.declare_parameter("llama_action", "/llama/generate_response")
         self.declare_parameter("semantic_map_path", default_semantic_map_path)
@@ -126,6 +138,10 @@ class NavigatorNode(Node):
         self.declare_parameter("propose_recovery_service", "/propose_recovery")
         self.declare_parameter("recovery_grammar_path", default_recovery_grammar_path)
         self.declare_parameter("recovery_max_tokens", 256)
+
+        self.declare_parameter("infer_affordance_service", "/infer_affordance")
+        self.declare_parameter("affordance_grammar_path", default_affordance_grammar_path)
+        self.declare_parameter("affordance_max_tokens", 128)
 
         self.declare_parameter("llama_wait_timeout_sec", 60.0)
         self.declare_parameter("llm_send_goal_timeout_sec", 60.0)
@@ -269,6 +285,25 @@ class NavigatorNode(Node):
             .integer_value
         )
 
+        self._infer_affordance_service_name = (
+            self.get_parameter("infer_affordance_service")
+            .get_parameter_value()
+            .string_value
+        )
+
+        self._affordance_grammar_path = (
+            self.get_parameter("affordance_grammar_path")
+            .get_parameter_value()
+            .string_value
+            .strip()
+        )
+
+        self._affordance_max_tokens = (
+            self.get_parameter("affordance_max_tokens")
+            .get_parameter_value()
+            .integer_value
+        )
+
         self._callback_group = ReentrantCallbackGroup()
 
         self._catalog = self._load_semantic_catalog(self._semantic_map_path)
@@ -276,6 +311,9 @@ class NavigatorNode(Node):
         self._gbnf_grammar = self._load_gbnf(self._grammar_path)
         self._recovery_gbnf_grammar = self._load_recovery_gbnf(
             self._recovery_grammar_path
+        )
+        self._affordance_gbnf_grammar = self._load_gbnf(
+            self._affordance_grammar_path
         )
 
         self._llama_client = ActionClient(
@@ -296,6 +334,13 @@ class NavigatorNode(Node):
             ProposeRecovery,
             self._propose_recovery_service_name,
             self._handle_propose_recovery,
+            callback_group=self._callback_group,
+        )
+
+        self._infer_affordance_service = self.create_service(
+            InferAffordance,
+            self._infer_affordance_service_name,
+            self._handle_infer_affordance,
             callback_group=self._callback_group,
         )
 
@@ -453,6 +498,120 @@ class NavigatorNode(Node):
             request=request,
             raw_output=raw_output,
         )
+
+    _SAFETY_CLASSES = {"none", "human", "animal"}
+
+    def _handle_infer_affordance(self, request, response):
+        """Open-set affordance inference (spec 21.4).
+
+        Maps an unclassifiable blocker (tag + caption) to physical affordances
+        {openable, clearable, safety_class} that the affordance table could not
+        enumerate. Emits no geometry (spec 1.5); the orchestrator remains the
+        execution authority and the safety floor is enforced downstream.
+        """
+        tag = (request.object_tag or "").strip()
+        caption = (request.object_caption or "").strip()
+
+        self.get_logger().info(
+            f"[AFFORDANCE] Inference requested for tag='{tag}', "
+            f"caption='{caption[:80]}'"
+        )
+
+        prompt = self._build_affordance_prompt(tag, caption)
+
+        if self._debug_prompt:
+            self.get_logger().info("[AFFORDANCE] Prompt:\n" + prompt)
+
+        if self._debug_grammar:
+            self.get_logger().info(
+                "[AFFORDANCE] GBNF grammar:\n" + self._affordance_gbnf_grammar
+            )
+
+        raw_output = self._call_llama(
+            prompt=prompt,
+            gbnf_grammar=self._affordance_gbnf_grammar,
+            max_tokens_override=self._affordance_max_tokens,
+        )
+
+        if raw_output is None:
+            response.success = False
+            response.raw_output = ""
+            response.rationale = "LLM affordance call failed or timed out."
+            response.safety_class = "none"
+            return response
+
+        self.get_logger().info(
+            f"[AFFORDANCE] Raw constrained output: {raw_output}"
+        )
+
+        parsed = self._parse_affordance_output(raw_output)
+        response.raw_output = raw_output
+        if parsed is None:
+            response.success = False
+            response.rationale = (
+                "Affordance output could not be parsed as strict grammar JSON."
+            )
+            response.safety_class = "none"
+            return response
+
+        response.success = True
+        response.openable = bool(parsed["openable"])
+        response.clearable = bool(parsed["clearable"])
+        response.safety_class = str(parsed["safety_class"])
+        response.confidence_percent = int(parsed["confidence"])
+        response.rationale = (
+            f"Inferred from caption for tag='{tag}'."
+        )
+        self.get_logger().info(
+            f"[AFFORDANCE] tag='{tag}' -> openable={response.openable} "
+            f"clearable={response.clearable} safety={response.safety_class} "
+            f"confidence={response.confidence_percent}"
+        )
+        return response
+
+    def _build_affordance_prompt(self, tag: str, caption: str) -> str:
+        """Prompt the LLM to infer physical affordances from a caption."""
+        return (
+            "You are the perception-reasoning module of a mobile robot whose "
+            "path is blocked by an object. From the object's tag and caption, "
+            "decide its physical affordances. Answer three questions:\n"
+            "1. openable: can a person OPEN, slide, fold, or swing it aside to "
+            "clear the path (e.g. a door, gate, folding partition)?\n"
+            "2. clearable: can the WHOLE object be physically relocated out of "
+            "the path -- picked up, pushed, or dragged aside by a person (e.g. "
+            "a box, chair, bin)? An object that is merely OPENED in place (a "
+            "door, gate, lid, drawer, folding partition) is NOT clearable; a "
+            "fixed wall and a living being are NOT clearable.\n"
+            "3. safety_class: is it a living being? 'human' for a person, "
+            "'animal' for a pet or animal, otherwise 'none'. A living being "
+            "must never be moved or cleared.\n"
+            "Output ONLY a JSON object with exactly these keys: "
+            '{"openable": <bool>, "clearable": <bool>, '
+            '"safety_class": "none|human|animal", "confidence": <0-100>}.\n'
+            f"Object tag: {tag}\n"
+            f"Caption: {caption}\n"
+        )
+
+    def _parse_affordance_output(self, raw_output):
+        import json
+        try:
+            data = json.loads((raw_output or "").strip())
+        except json.JSONDecodeError:
+            self.get_logger().error(f"Invalid affordance JSON: {raw_output}")
+            return None
+        if not isinstance(data, dict):
+            return None
+        if set(data.keys()) != {"openable", "clearable", "safety_class", "confidence"}:
+            return None
+        sc = str(data["safety_class"]).strip().lower()
+        if sc not in self._SAFETY_CLASSES:
+            return None
+        try:
+            return {"openable": bool(data["openable"]),
+                    "clearable": bool(data["clearable"]),
+                    "safety_class": sc, "confidence": int(data["confidence"])}
+        except Exception:
+            return None
 
     def _call_llama(
         self,
@@ -928,6 +1087,7 @@ The orchestrator will validate your proposal and Nav2 remains the geometric auth
 You do not compute paths, poses, velocities, planner IDs, or behavior-tree XML.
 
 Return ONLY one JSON object in exactly one of these forms:
+{{"action":"approach_and_recheck","rationale":"...","confidence":0-100}}
 {{"action":"retry_target","target_object_tag":"...","target_intent_hint":"...","rationale":"...","confidence":0-100}}
 {{"action":"wait_then_replan","wait_seconds":3,"rationale":"...","confidence":0-100}}
 {{"action":"open_door_then_replan","responsible_object_key":"...","operator_message":"...","rationale":"...","confidence":0-100}}
@@ -935,6 +1095,7 @@ Return ONLY one JSON object in exactly one of these forms:
 {{"action":"give_up","rationale":"...","confidence":0-100}}
 
 Action meanings:
+- approach_and_recheck: move to a reachable standoff/observation pose, then retry the original goal (use when the blocker may clear or open after a closer look). The orchestrator computes the standoff pose.
 - retry_target: navigate to a different object instance that partially satisfies the original user intent.
 - wait_then_replan: wait briefly for a transient blockage, then replan.
 - open_door_then_replan: ask the operator to open a verified openable door/gate, then replan.
@@ -942,6 +1103,7 @@ Action meanings:
 - give_up: concede when there is no safe semantic recovery.
 
 Rules:
+- Choose exactly one action whose eligibility line below says ELIGIBLE.
 - For retry_target, target_object_tag MUST be one of the navigable object tag vocabulary entries.
 - target_intent_hint is a short phrase (<= 80 chars) explaining why this object satisfies the original need.
 - Do not propose anything already listed in Already tried.
@@ -1019,85 +1181,31 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
   blockage_centroid: ({float(getattr(request, 'blockage_centroid').x):.2f}, {float(getattr(request, 'blockage_centroid').y):.2f}, {float(getattr(request, 'blockage_centroid').z):.2f})
   blockage_extent_m: {float(getattr(request, 'blockage_extent_m', 0.0)):.2f}"""
 
+    _ALL_RECOVERY_ACTIONS = [
+        "approach_and_recheck",
+        "retry_target",
+        "wait_then_replan",
+        "open_door_then_replan",
+        "clear_object_then_replan",
+        "give_up",
+    ]
+
     def _render_action_eligibility(self, request) -> str:
+        """Render the eligibility block from the orchestrator-supplied set.
+
+        The orchestrator computes the eligible set (up_front_policy.
+        eligible_directives) and passes it as request.allowed_actions. The
+        navigator does NOT recompute eligibility — this is the single source of
+        truth (spec 21.3, filter-not-policy). INELIGIBLE lines are still shown so
+        the LLM learns the boundary.
+        """
+        allowed = set(getattr(request, "allowed_actions", []) or [])
         lines = []
-
-        match_type = (getattr(request, "match_type", "") or "unknown").strip()
-        object_key = (getattr(request, "responsible_object_key", "") or "").strip()
-        safety_class = (
-            getattr(request, "responsible_safety_class", "") or "none"
-        ).strip()
-        object_state = (
-            getattr(request, "responsible_object_state", "") or ""
-        ).strip()
-        object_tag = (
-            getattr(request, "responsible_object_tag", "") or ""
-        ).strip()
-        openable = bool(getattr(request, "responsible_openable", False))
-        clearable = bool(getattr(request, "responsible_clearable", False))
-
-        deterministic_waits_used = int(
-            getattr(request, "deterministic_waits_used", 0)
-        )
-        deterministic_wait_cap = int(
-            getattr(request, "deterministic_wait_cap", 0)
-        )
-
-        lines.append("  retry_target: ELIGIBLE — subject to semantic target validation")
-        lines.append("  reroute_via_waypoints: ELIGIBLE — subject to waypoint validation")
-
-        if deterministic_waits_used >= deterministic_wait_cap:
-            lines.append(
-                "  wait_then_replan: ELIGIBLE — deterministic wait short-circuit exhausted"
-            )
-        else:
-            lines.append(
-                "  wait_then_replan: INELIGIBLE — deterministic wait short-circuit not exhausted"
-            )
-
-        if match_type != "verified" or not object_key:
-            lines.append(
-                "  open_door_then_replan: INELIGIBLE — no verified responsible object"
-            )
-            lines.append(
-                "  clear_object_then_replan: INELIGIBLE — no verified responsible object"
-            )
-        elif safety_class != "none":
-            lines.append(
-                f"  open_door_then_replan: INELIGIBLE — safety_class={safety_class}"
-            )
-            lines.append(
-                f"  clear_object_then_replan: INELIGIBLE — safety_class={safety_class}"
-            )
-        else:
-            if openable:
-                lines.append(
-                    "  open_door_then_replan: ELIGIBLE — verified openable object"
-                )
+        for action in self._ALL_RECOVERY_ACTIONS:
+            if action in allowed:
+                lines.append(f"  {action}: ELIGIBLE")
             else:
-                lines.append(
-                    "  open_door_then_replan: INELIGIBLE — object is not openable"
-                )
-
-            if not clearable:
-                lines.append(
-                    "  clear_object_then_replan: INELIGIBLE — object is not clearable"
-                )
-            elif object_state not in {"movable", "semi-static"}:
-                lines.append(
-                    f"  clear_object_then_replan: INELIGIBLE — object_state={object_state}"
-                )
-            elif self._tag_is_door_or_gate(object_tag):
-                lines.append(
-                    "  clear_object_then_replan: INELIGIBLE — door/gate should be opened, not cleared"
-                )
-            else:
-                lines.append(
-                    "  clear_object_then_replan: ELIGIBLE — verified clearable non-human/non-animal object"
-                )
-
-        lines.append("  give_up: ELIGIBLE — safe terminal fallback")
-
+                lines.append(f"  {action}: INELIGIBLE — not in the eligible set")
         return "\n".join(lines)
 
     def _load_object_store(self):
@@ -1528,8 +1636,10 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
                 confidence=confidence,
             )
 
+        # Fallthrough for keyless actions (give_up, approach_and_recheck):
+        # preserve the parsed action rather than forcing give_up.
         return ParsedRecoveryAction(
-            action="give_up",
+            action=action,
             target_object_tag="",
             target_intent_hint="",
             waypoints=[],
@@ -1583,6 +1693,7 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             )
 
         validators = {
+            "approach_and_recheck": self._validate_approach_and_recheck_recovery,
             "retry_target": self._validate_retry_target_recovery,
             "wait_then_replan": self._validate_wait_then_replan_recovery,
             "open_door_then_replan": self._validate_open_door_then_replan_recovery,
@@ -1910,6 +2021,32 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
             return "operator_message must not contain newlines."
 
         return None
+
+    def _validate_approach_and_recheck_recovery(
+        self,
+        response,
+        parsed: ParsedRecoveryAction,
+        request,
+        raw_output: str,
+    ):
+        # approach_and_recheck carries no LLM geometry -- the orchestrator
+        # computes the standoff pose. Just confirm success (mirrors give_up).
+        self._fill_recovery_success_common(
+            response=response,
+            parsed=parsed,
+            raw_output=raw_output,
+            message="LLM recovery chose approach_and_recheck.",
+        )
+        response.action = "approach_and_recheck"
+        response.target = ""
+        response.waypoints = []
+
+        self.get_logger().info(
+            f"[RECOVERY] LLM chose approach_and_recheck: "
+            f"rationale='{parsed.rationale}', confidence={parsed.confidence}"
+        )
+
+        return response
 
     def _validate_give_up_recovery(
         self,

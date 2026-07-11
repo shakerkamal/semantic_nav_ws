@@ -53,8 +53,8 @@ string message
 # Normalized BT directive.
 # Empty unless status == "accepted" or status == "terminal_fail".
 # Valid when populated:
-# "retry_target" | "wait_then_replan" | "open_door_then_replan"
-# | "clear_object_then_replan" | "give_up"
+# "approach_and_recheck" | "retry_target" | "wait_then_replan"
+# | "open_door_then_replan" | "clear_object_then_replan" | "give_up"
 string action
 
 # retry_target directive.

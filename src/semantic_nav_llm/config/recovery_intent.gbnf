@@ -6,7 +6,9 @@
 # legacy location string. The orchestrator resolves the tag into a concrete
 # object instance and standoff pose.
 
-root ::= ws (retry-target | wait-then-replan | open-door-then-replan | clear-object-then-replan | give-up) ws
+root ::= ws (approach-and-recheck | retry-target | wait-then-replan | open-door-then-replan | clear-object-then-replan | give-up) ws
+
+approach-and-recheck ::= "{" ws action-key ws ":" ws "\"approach_and_recheck\"" ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 
 retry-target ::= "{" ws action-key ws ":" ws "\"retry_target\"" ws "," ws target-object-tag-key ws ":" ws short-string ws "," ws target-intent-hint-key ws ":" ws short-string ws "," ws rationale-key ws ":" ws rationale-string ws "," ws confidence-key ws ":" ws confidence ws "}"
 

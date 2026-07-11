@@ -1,0 +1,9 @@
+# Open-set affordance-inference grammar (spec 21.4).
+# Constrains the LLM to a 4-field JSON object mapping an unclassifiable
+# blocker (tag + caption) to physical affordances. No geometry (spec 1.5).
+
+root ::= ws "{" ws "\"openable\"" ws ":" ws boolean ws "," ws "\"clearable\"" ws ":" ws boolean ws "," ws "\"safety_class\"" ws ":" ws safety ws "," ws "\"confidence\"" ws ":" ws confidence ws "}" ws
+boolean ::= "true" | "false"
+safety ::= "\"none\"" | "\"human\"" | "\"animal\""
+confidence ::= "100" | [1-9] [0-9]? | "0"
+ws ::= [ \t\n\r]*

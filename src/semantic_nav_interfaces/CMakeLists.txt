@@ -30,6 +30,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/OperatorDecision.srv"
   "srv/NavigateToQuery.srv"
   "srv/QuerySemanticRegion.srv"
+  "srv/InferAffordance.srv"
 
   "action/ExecutePose.action"
 
