@@ -498,33 +498,66 @@ The grammar (`src/semantic_nav_llm/config/semantic_intent.gbnf`) constrains the 
 | `max_tokens` | `64` | Request-level generation cap for intent JSON |
 | `debug_prompt` | `false` | Log the full prompt sent to the LLM |
 | `debug_grammar` | `false` | Log the GBNF grammar attached to the request |
+| `propose_recovery_service` | `/propose_recovery` | Recovery-proposal service this node provides |
+| `recovery_grammar_path` | `<share>/semantic_nav_llm/config/recovery_intent.gbnf` | GBNF grammar for recovery JSON |
+| `recovery_max_tokens` | `256` | Token cap for recovery JSON generation |
+| `infer_affordance_service` | `/infer_affordance` | Open-set affordance-inference service this node provides |
+| `affordance_grammar_path` | `<share>/semantic_nav_llm/config/affordance_intent.gbnf` | GBNF grammar for affordance JSON |
+| `affordance_max_tokens` | `128` | Token cap for affordance JSON generation |
+
+### 9.5 Recovery proposals and open-set affordance inference
+
+Beyond intent parsing, `navigator_node` serves two more GBNF-constrained LLM endpoints:
+
+- **`/propose_recovery` (`ProposeRecovery`)** — the LLM **selects** a recovery strategy from
+  the `allowed_actions` list computed deterministically by the orchestrator
+  (*filter-not-policy*: the deterministic layer filters to an eligible set, the LLM chooses
+  among it, and an invalid or ineligible pick is overridden deterministically). Used by both
+  the up-front pre-flight recovery loop and the en-route BT escalation.
+- **`/infer_affordance` (`InferAffordance`)** — open-set fallback: when a blocking object's
+  tag is **not** in `object_action_attributes.json`, the LLM infers
+  `{openable, clearable, safety_class, confidence}` from the object's caption, so a novel
+  object (e.g. a `room partition`) can still unlock a same-goal recovery instead of the
+  restrictive table default. Gated by `open_set_inference_enabled` and a confidence floor;
+  the animate safety floor still applies to inferred humans and animals.
+
+```bash
+# Try it directly (llama_ros must be running):
+ros2 service call /infer_affordance semantic_nav_interfaces/srv/InferAffordance \
+  "{object_tag: 'room partition', object_caption: 'A folding room partition standing across the bedroom doorway; it can be slid aside.'}"
+# -> openable: true  -> recovery directive: open_door_then_replan
+```
 
 ---
 
 ## 10. Semantic database
 
-The system uses two complementary JSON databases, both loaded once at startup into an immutable `SemanticStore` snapshot.
+The system uses two complementary JSON databases, loaded at startup into an immutable `SemanticStore` snapshot that is **atomically swapped at runtime** when a live map update arrives on `/semantic_map/updates` (see §16.1). Each snapshot is immutable; live updates replace the whole snapshot and bump `db_version`.
 
 ### 10.1 Object-centric map — `map_v001.json`
 
-The primary database. 118 detected object instances in the AWS Small House, each with a 3D bounding-box pose, semantic tag, LLM-generated caption, and navigability flag:
+The primary database. **41 object instances, world-grounded against
+`small_house_semantic.world`**: every entry was matched to its nearest real Gazebo model,
+retagged and recaptioned truthfully, deduplicated to exactly one map object per world
+instance (one refrigerator, one bed), and stripped of objects a 25 cm robot camera cannot
+observe (ceiling fixtures). Object keys are synthesized as `tag:id`:
 
 ```json
 {
-  "objects": [
-    {
-      "key": "chair:2",
-      "tag": "chair",
-      "caption": "A wooden dining chair near the kitchen table",
-      "navigable": true,
-      "frame_id": "map",
-      "x": 5.293, "y": 0.214, "z": 0.0,
-      "bbox_x": 0.5, "bbox_y": 0.5,
-      "mobility_state": "static"
-    }
-  ]
+  "object_1": {
+    "id": "2",
+    "object_tag": "chair",
+    "object_caption": "A dining chair with a padded seat and four legs.",
+    "object_state": "static",
+    "bbox_extent": [0.5, 0.5, 0.9],
+    "bbox_center": [6.2, 0.1, 0.45],
+    "bbox_volume": 0.23
+  }
 }
 ```
+
+The pre-grounding noisy detector snapshot (119 objects, hallucinated captions) is preserved
+as the frozen ranker benchmark in `eval/benchmark_v0/` — see §10.6.
 
 Resolution priority in `resolver_node`:
 1. **Direct key lookup** (`target_object_key` field) — bypasses ranking entirely; used by the orchestrator's `exclude_object_key` recovery logic.
@@ -565,6 +598,31 @@ The resolver builds an immutable `SemanticStore` snapshot at startup and stamps 
 
 All coordinates are measured for the **AWS Small House**. If you swap worlds, re-measure object poses via teleop + RViz and update `map_v001.json`.
 
+### 10.6 Intent sidecar and the frozen v0 ranker benchmark
+
+`object_intent_affordances.json` is a second sidecar (separate from
+`object_action_attributes.json`): per-tag **navigability**, aliases, query hints, and
+caption-boost terms consumed by the resolver's ranking. Its vocabulary and aliases are
+aligned with the world-grounded map (`sofa` and `sofa chair` → `couch`, `desk` → `table`,
+`bucket` → `trash bin`); wall-mounted objects (pictures, windows, air conditioners, range
+hood, security camera) are `navigable: false` by design.
+
+Because the world-grounding rewrote tags, ids, and captions, the caption-ranker evaluation
+runs against a **frozen v0 benchmark** instead of the live map: `eval/benchmark_v0/`
+holds the June-era noisy map, the matching sidecar, and the 40 ground-truth fixtures.
+Noisy detector captions are the ranker's realistic input; the recovery and affordance
+evaluations use the world-grounded map. Reproduce with:
+
+```bash
+ros2 run semantic_nav_semantics ranker_eval \
+  --variants bm25,bm25+spatial,llm-text,llm-spatial,hybrid \
+  --delta 0.2,0.5,1.0,2.0,inf \
+  --map eval/benchmark_v0/map_v0_noisy.json \
+  --affordances eval/benchmark_v0/object_intent_affordances_v0.json \
+  --fixtures eval/benchmark_v0/ground_truth_v0.yaml \
+  --out eval/ranker_results_<model>.csv
+```
+
 ---
 
 ## 11. Launch arguments reference
@@ -596,6 +654,13 @@ All coordinates are measured for the **AWS Small House**. If you swap worlds, re
 | `enable_operator_io` | `false` | Launch `operator_io_node`. Default `false` — `navigation_terminal` handles `/operator_decision` inline |
 | `operator_auto_ack_for_dev` | `false` | Auto-acknowledge all operator prompts (CI/headless only) |
 | `operator_prompt_timeout_sec` | `0.0` | Stdin timeout for `operator_io_node`; 0 = no timeout |
+| `up_front_llm_enabled` | `true` | Ablation switch (A1/A2): `true` = the LLM selects the up-front recovery directive; `false` = deterministic default only. Also settable live: `ros2 param set /navigation_orchestrator up_front_llm_enabled false` |
+| `open_set_inference_enabled` | `true` | Open-set ablation: `true` = LLM infers affordances for blocker tags missing from the affordance table; `false` = restrictive table default. Also settable live |
+
+The same stack is available for the **Waveshare UGV rover** in simulation via
+`aws_small_house_ugv_semantic.launch.py` (mirrors this launch: rover Nav2 params with the
+semantic recovery BT plugins, both ablation switches, and a `llama_action` passthrough for
+pointing the rover at a remote llama server).
 
 **If you cloned the AWS package elsewhere**, pass `aws_small_house_path:=/your/path` on the launch command line or edit the default in `semantic_nav_system.launch.py`.
 
@@ -633,6 +698,7 @@ ros2 launch semantic_nav_bringup semantic_nav_system.launch.py enable_llm:=false
 |---|---|---|
 | `/request_recovery` | Service (`RequestRecovery`) | served by `navigation_orchestrator`; called by `EscalateToLLMRecovery` C++ BT node |
 | `/propose_recovery` | Service (`ProposeRecovery`) | served by `navigator_node` (LLM); called by `navigation_orchestrator` |
+| `/infer_affordance` | Service (`InferAffordance`) | served by `navigator_node` (LLM); called by `navigation_orchestrator` for open-set blocker tags |
 | `/match_responsible_object` | Service (`MatchResponsibleObject`) | served by `navigation_orchestrator`; called by `QuerySemanticContext` C++ BT node |
 | `/refresh_local_objects` | Service (`RefreshLocalObjects`) | served by `local_object_query_node`; called by `QuerySemanticContext` C++ BT node |
 | `/robot_obstacle_signal` | Topic (`std_msgs/String`) | published by `EmitObstacleSignal` BT node for `signal_wait_recheck` scenarios |
@@ -893,7 +959,7 @@ RViz is launched with `respawn=true` in the bringup and will restart automatical
 
 ## 16. Roadmap
 
-1. **Live semantic DB topic ingestion** — re-add a `SemanticDB` topic subscriber to `resolver_node` that atomically replaces the snapshot at runtime, bumping `db_version`. The interfaces (`SemanticDB.msg`, `db_version`/`db_stamp` fields on `ResolveLocation`) and the orchestrator-side propagation are already in place; only the subscriber needs to come back.
+1. ~~**Live semantic DB topic ingestion**~~ — **DONE (object-centric form, mock provider).** `resolver_node` subscribes to `/semantic_map/updates` (`SemanticMapUpdate`, TRANSIENT_LOCAL) and `/semantic_store_updated` (`SemanticStoreUpdated`), and atomically swaps its `SemanticStore` snapshot at runtime, bumping `db_version` (`_handle_provider_map_update` / `_handle_store_updated`). The live source is `mock_map_provider_node`, which publishes a versioned `map_v001.json`, serves `/semantic_map/query_region`, and — on a `suspected_displacement` correction via `/semantic_map/corrections` — marks the object `displaced`, bumps its revision, and re-publishes. This replaces the old reverted location-centric `SemanticDB.msg` subscriber. Only the *perception* remains a stand-in: the mock provider serves a static JSON instead of running a real ConceptGraph-style detector.
 2. ~~**Recovery Orchestration with LLM**~~ — **DONE (BT-LR M1–M4, 2026-06-12).** Nav2 BT with `PathClearCondition`, `QuerySemanticContext`, `EscalateToLLMRecovery`, `EmitObstacleSignal`, and `ValidateSemantic` C++ plugins; GBNF-constrained `ProposeRecovery` endpoint; `exclude_object_key` multi-instance disambiguation; up to 3 retries with `give_up` terminal.
 3. ~~**E2E Scenario 2 & 3 validation**~~ — **DONE (BT-LR M5, 2026-06-18).** `OperatorPrompt` BT node + `operator_io_node` + `open_door_then_replan` and `clear_object_then_replan` directives validated. Scenario 2a: clearable obstacle → `clear_object_then_replan`. Scenario 2b: non-clearable → `wait_then_replan`. Scenario 3: human-class → `signal_wait_recheck`.
 4. ~~**Three-tier BT recovery + navigation terminal**~~ — **DONE (BT-LR M6, 2026-06-20).** `PathClearCondition` removed from primary navigation path. `RateController(1 Hz)` around `ComputePathToPose` handles small navigable obstacles. `RoundRobin` recovery child: Tier 2 geometric (clear + backup), Tier 3 semantic (`CaptureBlockageContext` → `QuerySemanticContext` → `EscalateToLLMRecovery`). Unified `navigation_terminal` replaces one-shot CLI and `operator_io_node`; supports NL commands, direct object keys, mid-navigation preemption, and inline operator prompts. `sample_radius_m=0.0` bug fixed in `PathClearCondition`; severity gating added (`BlockageMetrics`, `min_blocked_samples`, `min_blocked_length_m`, `blocked_fraction_threshold`).
@@ -901,3 +967,9 @@ RViz is launched with `respawn=true` in the bringup and will restart automatical
 6. ~~**Ranker evaluation with live LLM**~~ — **DONE (2026-06-18).** Full 40-fixture offline eval with GPU-accelerated llama_ros. Results in `eval/results_full.csv`; plots in `eval/`. Production recommendation: `hybrid δ=0.5` (90% top-1, 100% top-3, 48% LLM invocation rate). See §15.12 for full table.
 7. **Post-failure orchestrator policies** — re-resolve / re-validate on failure, optionally gated on `db_version` change.
 8. **Snapshot immutability during active navigation** — when live DB updates return, ensure an in-flight goal keeps using the snapshot it was resolved against.
+9. ~~**LLM strategy selection (filter-not-policy)**~~ — **DONE (M4, 2026-07-08).** The deterministic layer only *filters* recovery actions to an eligible set (`up_front_policy.eligible_directives`); the LLM *selects* among them via `/propose_recovery` with `allowed_actions` as the single source of truth; invalid or ineligible picks are overridden deterministically. Applied both up-front (pre-flight recovery loop with operator open-door/clear directives, rescan-confirm, attempt history, and exhausted-action pruning) and en-route (BT escalation). Dedicated short LLM timeout; `navigation_terminal` gained a "retry original goal" escalation option.
+10. ~~**Open-set affordance inference (spec 21.4)**~~ — **DONE (2026-07-08).** When a blocking object's tag is absent from `object_action_attributes.json`, the orchestrator calls `/infer_affordance` and the LLM infers `{openable, clearable, safety_class}` from the caption — a novel blocker (e.g. `room partition`) unlocks a same-goal recovery the table default cannot. Confidence floor and animate safety floor still apply; `open_set_inference_enabled` gates the A1/A2 ablation.
+11. ~~**World-grounded semantic map and evaluation suite**~~ — **DONE (2026-07-08 map, 2026-07-11 results).** `map_v001.json` world-grounded and deduplicated to 41 objects; ranker eval frozen on the v0 benchmark (§10.6). Three-model results (llama3.1-8b, qwen3-14b, qwen3-32b via remote llama_ros): ranker llm-text top-1 scales 88% → 90% → 95%; affordance holdout (37 samples) openable 100% on all models, safety ≥97%, directive-level 78.4/78.4/73.0 — the recovery-gating axes are scale-invariant while clearable stays fuzzy at every scale. CSVs in `eval/`.
+12. **Live open-set A1/A2 scenario runs** — bed goal behind a closed `room partition`; A1 (inference off) vs A2 (inference on) on the same map, per model.
+13. **En-route BT-LLM recovery ablation** — geometric-only recovery tree vs full three-tier tree on scripted dynamic blockages (design spec written; harness pending).
+14. **Real-robot deployment (Waveshare UGV rover)** — reuse the rover's shipped RTAB-Map and Nav2 stack, layer the semantic pipeline on top (`aws_small_house_ugv_semantic.launch.py` is the sim rehearsal; design spec at `semantic_nav_realrobot_bringup_design.md`).
