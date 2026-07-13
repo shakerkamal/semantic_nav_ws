@@ -1,0 +1,99 @@
+[navigation_orchestrator-25] [INFO] [1783879775.984732265] [navigation_orchestrator]: [RECOVERY/FSM] EXECUTING -> EXECUTING reason=bt_led_initial_dispatch
+[navigation_orchestrator-25] [INFO] [1783879775.985943026] [navigation_orchestrator]: [BT_LED] BT-led mode enabled. The orchestrator will resolve and dispatch one ExecutePose goal; validation, planning/control failure, costmap clearing, and recovery retries are owned by the Nav2 BT.
+[navigation_orchestrator-25] [INFO] [1783879775.986944002] [navigation_orchestrator]: [RESOLUTION] Resolving location for query: "bed"
+[resolver_node-5] [INFO] [1783879775.991449723] [semantic_resolver]: [RETRIEVAL] object_tag='bed' candidates=1 selected='bed:120' top_score=1.538 caption='A double bed with a mattress and frame.'
+[resolver_node-5] [INFO] [1783879775.992502477] [semantic_resolver]: [STANDOFF] bbox_center=(-6.16507, 2.03056, 0.3) bbox_extent=(1.8, 1.4, 0.6) goal=(-4.86,1.86) yaw=3.012 d=1.32
+[navigation_orchestrator-25] [INFO] [1783879775.999397640] [navigation_orchestrator]: [RESOLUTION] Resolved 'bed' -> object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952, frame='map', x=-4.856, y=1.860
+[navigation_orchestrator-25] [INFO] [1783879776.003800316] [navigation_orchestrator]: [RETRIEVAL] object_tag='bed' candidates=1 selected_object_key='bed:120' top_score=1.538 db_version=1193208084
+[navigation_orchestrator-25] [INFO] [1783879776.005151442] [navigation_orchestrator]: [BT_LED] Active target context recorded: original_object_tag='bed', original_intent_hint='sleeping or resting', current_target_object_key='bed:120'.
+[navigation_orchestrator-25] [INFO] [1783879776.006233872] [navigation_orchestrator]: [BT_LED] Dispatching ExecutePose with behavior_tree='/home/shaker/Thesis/Implementation/semantic_nav_ws/install/semantic_nav_nav2_plugins/share/semantic_nav_nav2_plugins/config/semantic_recovery_bt.xml'.
+[navigation_orchestrator-25] [INFO] [1783879776.007386453] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879776.010856352] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879776.012796478] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879776.018954562] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879776.029280019] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879776.029990748] [navigation_orchestrator]: [UP_FRONT] Pre-flight validation failed; entering up-front blockage recovery.
+[navigation_orchestrator-25] [INFO] [1783879781.682964345] [navigation_orchestrator]: [UP_FRONT] attempt=0 diagnosis=blocked centroid=(-2.4663781725675675, -1.331093651549639)
+[navigator_node-10] [INFO] [1783879781.686239536] [navigator_node]: [AFFORDANCE] Inference requested for tag='room partition', caption='A folding room partition / privacy screen standing across the bedroom doorway; i'
+[navigator_node-10] [INFO] [1783879781.688126081] [navigator_node]: [LLM_INTENT] Attached GBNF via sampling_config.grammar (540 chars).
+[navigator_node-10] [INFO] [1783879782.075178917] [navigator_node]: [AFFORDANCE] Raw constrained output: {
+[navigator_node-10] "openable": true,
+[navigator_node-10] "clearable": false,
+[navigator_node-10] "safety_class": "none",
+[navigator_node-10] "confidence": 100
+[navigator_node-10] }
+[navigator_node-10] [INFO] [1783879782.076589575] [navigator_node]: [AFFORDANCE] tag='room partition' -> openable=True clearable=False safety=none confidence=100
+[navigation_orchestrator-25] [INFO] [1783879782.087207193] [navigation_orchestrator]: [UP_FRONT] open-set affordance inferred for tag='room partition': openable=True clearable=False safety=none conf=100
+[validator_node-6] [INFO] [1783879782.091529057] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879782.093777243] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879782.100482548] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [INFO] [1783879782.123034474] [navigation_orchestrator]: [UP_FRONT] Requesting LLM recovery choice via /propose_recovery (allowed=['approach_and_recheck', 'retry_target', 'give_up'], timeout=45s).
+[navigator_node-10] [WARN] [1783879782.126353158] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='bed:120', failure_stage='validation', trigger_source='', match_type='verified', responsible_object_key='room partition:121', nav2_message='up-front global blockage', remaining_retry_budget=2
+[navigator_node-10] [INFO] [1783879782.129508413] [navigator_node]: [LLM_INTENT] Attached GBNF via sampling_config.grammar (2698 chars).
+[navigator_node-10] [INFO] [1783879782.964281022] [navigator_node]: [RECOVERY] Raw constrained recovery output: {
+[navigator_node-10]   "action": "approach_and_recheck",
+[navigator_node-10]   "rationale": "The robot is far from the blockage, and the responsible object is a semi-static room partition. Approaching and rechecking the situation may reveal a temporary or movable blockage, allowing the robot to retry the goal.",
+[navigator_node-10]   "confidence": 80
+[navigator_node-10] }
+[navigator_node-10] [INFO] [1783879782.965454293] [navigator_node]: [RECOVERY] LLM chose approach_and_recheck: rationale='The robot is far from the blockage, and the responsible object is a semi-static room partition. Approaching and rechecking the situation may reveal a temporary or movable blockage, allowing the robot to retry the goal.', confidence=80
+[navigation_orchestrator-25] [INFO] [1783879782.969334535] [navigation_orchestrator]: [UP_FRONT] LLM recovery response in 0.8s: success=True action='approach_and_recheck' rationale='The robot is far from the blockage, and the responsible object is a semi-static room partition. Approaching and rechecking the situation may reveal a temporary or movable blockage, allowing the robot to retry the goal.' message='LLM recovery chose approach_and_recheck.'
+[navigation_orchestrator-25] [INFO] [1783879782.970482919] [navigation_orchestrator]: [UP_FRONT] eligible=['approach_and_recheck', 'retry_target', 'give_up'] llm='approach_and_recheck' -> directive=approach_and_recheck (overridden=False reason=llm_selected) responsible_tag='room partition' match_type=verified has_standoff=True dist_to_barrier=6.2m within_verify_range=False
+[navigation_orchestrator-25] [INFO] [1783879782.973231568] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='__standoff__', db_version=1193208084, db_stamp=1783862121.449597952): frame='map', x=-1.510, y=-0.964
+[navigation_orchestrator-25] [INFO] [1783879782.986341462] [navigation_orchestrator]: [EXECUTION] Goal accepted, waiting for result (object_key='__standoff__', db_version=1193208084).
+[executor_node-7] [INFO] [1783879804.485828370] [semantic_nav_executor]: Nav2 result status: 4
+[navigation_orchestrator-25] [INFO] [1783879804.493185103] [navigation_orchestrator]: [EXECUTION] Executor finished with status=SUCCEEDED(4), success=True, object_key='__standoff__', db_version=1193208084, db_stamp=1783862121.449597952, message='Navigation succeeded'
+[navigation_orchestrator-25] [INFO] [1783879811.923331784] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879811.929136912] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879811.932718962] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879811.941852743] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879811.958115096] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879811.959324495] [navigation_orchestrator]: [UP_FRONT] Recheck poll=0: barrier=cleared plan_ok=False barrier_ok=True
+[navigation_orchestrator-25] [INFO] [1783879818.310567536] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879818.315041396] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879818.317650292] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879818.326194643] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879818.333991254] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879818.334933559] [navigation_orchestrator]: [UP_FRONT] Recheck poll=1: barrier=cleared plan_ok=False barrier_ok=True
+[navigation_orchestrator-25] [INFO] [1783879824.876021982] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879824.880102942] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879824.882033009] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879824.892018334] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879824.904189027] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879824.905315290] [navigation_orchestrator]: [UP_FRONT] Recheck poll=2: barrier=still_blocked plan_ok=False barrier_ok=False
+[navigation_orchestrator-25] [INFO] [1783879831.434621305] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879831.442084438] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879831.444227366] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879831.452833913] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879831.459315546] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879831.460095426] [navigation_orchestrator]: [UP_FRONT] Recheck poll=3: barrier=still_blocked plan_ok=False barrier_ok=False
+[navigation_orchestrator-25] [INFO] [1783879838.307638925] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879838.310753344] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879838.312183599] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879838.318791740] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879838.329946509] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879838.330890157] [navigation_orchestrator]: [UP_FRONT] Recheck poll=4: barrier=still_blocked plan_ok=False barrier_ok=False
+[navigation_orchestrator-25] [INFO] [1783879845.179736401] [navigation_orchestrator]: [VALIDATION] Validating goal with ComputePathToPose (object_key='bed:120', db_version=1193208084, db_stamp=1783862121.449597952)...
+[validator_node-6] [INFO] [1783879845.183278416] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879845.185534657] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879845.195379177] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [ERROR] [1783879845.204800058] [navigation_orchestrator]: [VALIDATION] Goal validation failed (object_key='bed:120', db_version=1193208084): Planner failed with status code 6
+[navigation_orchestrator-25] [INFO] [1783879845.206212900] [navigation_orchestrator]: [UP_FRONT] Recheck poll=5: barrier=still_blocked plan_ok=False barrier_ok=False
+[navigation_orchestrator-25] [INFO] [1783879845.207115862] [navigation_orchestrator]: [UP_FRONT] Still blocked (barrier not confirmed clear) after approach + wait; re-diagnosing.
+[navigation_orchestrator-25] [INFO] [1783879850.693477144] [navigation_orchestrator]: [UP_FRONT] attempt=1 diagnosis=blocked centroid=(-2.4799487516958862, -1.6392271284661863)
+[validator_node-6] [INFO] [1783879850.696528434] [semantic_nav_validator]: Received validation request
+[validator_node-6] [INFO] [1783879850.698028150] [semantic_nav_validator]: Sending ComputePathToPose goal
+[validator_node-6] [INFO] [1783879850.704694411] [semantic_nav_validator]: Goal accepted by planner, waiting for result...
+[navigation_orchestrator-25] [INFO] [1783879850.723866436] [navigation_orchestrator]: [UP_FRONT] Requesting LLM recovery choice via /propose_recovery (allowed=['open_door_then_replan', 'retry_target', 'give_up'], timeout=45s).
+[navigator_node-10] [WARN] [1783879850.727950762] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='bed:120', failure_stage='validation', trigger_source='', match_type='verified', responsible_object_key='room partition:121', nav2_message='up-front global blockage', remaining_retry_budget=2
+[navigator_node-10] [INFO] [1783879850.731791840] [navigator_node]: [LLM_INTENT] Attached GBNF via sampling_config.grammar (2698 chars).
+[navigator_node-10] [INFO] [1783879851.542546436] [navigator_node]: [RECOVERY] Raw constrained recovery output: {
+[navigator_node-10]   "action": "retry_target",
+[navigator_node-10]   "target_object_tag": "tablet",
+[navigator_node-10]   "target_intent_hint": "alternative resting spot",
+[navigator_node-10]   "rationale": "The robot is close to the blockage, and retrying with a different object type that is more likely to satisfy the original intent",
+[navigator_node-10]   "confidence": 80
+[navigator_node-10] }
+[navigator_node-10] [INFO] [1783879851.543389264] [navigator_node]: [RECOVERY] Accepted retry_target: target_object_tag='tablet', target_intent_hint='alternative resting spot', confidence=80, rationale='The robot is close to the blockage, and retrying with a different object type that is more likely to satisfy the original intent'
+[navigation_orchestrator-25] [INFO] [1783879851.553162169] [navigation_orchestrator]: [UP_FRONT] LLM recovery response in 0.8s: success=True action='retry_target' rationale='The robot is close to the blockage, and retrying with a different object type that is more likely to satisfy the original intent' message='Accepted recovery retry_target: object_tag='tablet', intent_hint='alternative resting spot', confidence=80.'
+[navigation_orchestrator-25] [INFO] [1783879851.554091921] [navigation_orchestrator]: [UP_FRONT] eligible=['open_door_then_replan', 'retry_target', 'give_up'] llm='retry_target' -> directive=retry_target (overridden=False reason=llm_selected) responsible_tag='room partition' match_type=verified has_standoff=True dist_to_barrier=1.4m within_verify_range=True
+[navigation_orchestrator-25] [INFO] [1783879851.554651526] [navigation_orchestrator]: [UP_FRONT] Directive 'retry_target' needs operator action; escalating.

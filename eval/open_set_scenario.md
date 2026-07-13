@@ -16,13 +16,18 @@ recovery. This isolates open-set generalisation from every geometric factor.
 | key | tag | caption (abridged) | bbox_center | role |
 |---|---|---|---|---|
 | `object_120` | `bed` | "A double bed in the far bedroom, past the folding room partition." | `(-6.165, 2.031, 0.3)` | **goal** |
-| `object_121` | `room partition` | "A folding room partition / privacy screen standing across the bedroom doorway; it can be slid or folded aside to pass through." | `(-2.461, 1.844, 1.0)` | **blocker** |
+| `object_121` | `room partition` | "A folding room partition / privacy screen standing across the bedroom doorway; it can be slid or folded aside to pass through." | `(-2.507, -1.350, 1.0)` | **blocker** |
 
 `room partition` is deliberately a **novel, non-door tag** (verified absent from
 `object_action_attributes.json` `by_tag`, and not caught by the `"door"`
 substring rule) — the point is to generalise beyond doors, not to special-case
-one. Its Gazebo counterpart is the closed `FoldingDoor_01_001` panel at the
-same pose (perception is simulated: the map is authored, the panel spawned).
+one. The world's FoldingDoor models are `<static>` (no opening mechanism), so
+they serve as gap-forming geometry: slid toward each other along the x=-2.46
+divider to leave a ~0.9m passage at y=-1.35 (mirroring the kitchen
+door_scenario_wall mechanics). The Gazebo counterpart of object_121 is the
+runtime-spawned panel closing that gap (`close_partition.sh` /
+`open_partition.sh`; perception is simulated: the map is authored, the panel
+spawned).
 
 ## The gate
 
@@ -61,11 +66,14 @@ Launch with `open_set_inference_enabled:=true` (default) and
 
 Expected `[UP_FRONT]` trace:
 - `open-set affordance inferred for tag='room partition': openable=true ...`
-- `aff.openable=true` → `eligible_directives` now includes
-  `open_door_then_replan`.
+- attempt 0 (robot far, `within_verify_range=False`): operator actions are
+  gated out by the verify-range filter → `approach_and_recheck` → robot drives
+  to the standoff.
+- attempt 1 (at the standoff, `within_verify_range=True`): `aff.openable=true`
+  → `eligible_directives` now includes `open_door_then_replan`.
 - `directive=open_door_then_replan reason=llm_selected` → operator is asked to
-  fold the partition aside → rescan → barrier clear → validate → **SUCCESS**
-  (same goal: the bed).
+  fold the partition aside → rescan (up close, so the costmap can witness it)
+  → barrier clear → validate → **SUCCESS** (same goal: the bed).
 
 ## Difference that matters
 
@@ -73,8 +81,14 @@ Expected `[UP_FRONT]` trace:
 |---|---|---|
 | goal | bed | bed (**unchanged**) |
 | inferred openable | false (default) | true (from caption) |
-| eligible recovery | approach → give_up | open_door_then_replan |
+| eligible recovery | approach → give_up | approach → open_door_then_replan |
 | autonomous outcome | FAIL / operator escalation | SUCCESS |
+
+Both variants share the identical approach-first prefix (the verify-range gate
+forces it deterministically); they diverge exactly at the affordance knowledge:
+at the standoff, A1 has nothing left but give_up while A2 has earned
+`open_door_then_replan` from the caption. The comparison isolates the open-set
+inference and nothing else.
 
 A1 ≈ A2 would be a refutation of the LLM's value. Here they **diverge** because
 the deciding fact (the partition is foldable) lives only in the caption, which
@@ -86,7 +100,7 @@ enumerated.
 See `2026-07-08-open-set-affordance-inference.md` Task 7. Bring up the stack +
 `navigator_node` + `llama_ros`; confirm `ros2 service list | grep
 infer_affordance`; spawn the closed panel with `close_partition.sh` at
-`(-2.461, 1.844)`; issue the bed goal (`bed:120`); capture `[UP_FRONT]` logs to
+`(-2.507, -1.350)`; issue the bed goal (`bed:120`); capture `[UP_FRONT]` logs to
 `eval/open_set_A1.txt` and `eval/open_set_A2.txt`.
 
 The ablation is exposed as a launch arg
