@@ -475,6 +475,17 @@ class NavigationOrchestrator(Node):
         self.declare_parameter('up_front_standoff_distance_m', 1.0)
         self.declare_parameter('up_front_recheck_polls', 6)
         self.declare_parameter('up_front_recheck_interval_s', 2.0)
+        # Max robot-to-barrier distance from which the rescan gate can actually
+        # observe a state change. Farther than this after an operator action,
+        # the robot first drives to the standoff to verify (costmaps only
+        # update with line of sight; rescanning from across the house can
+        # never confirm a door opened).
+        self.declare_parameter('up_front_verify_range_m', 2.5)
+        # Sticky attribution: on re-diagnosis within one recovery episode, an
+        # unmatched centroid within this radius of the previously VERIFIED
+        # responsible object reuses that attribution (clustering noise is far
+        # more likely than a new anonymous obstacle at the same spot).
+        self.declare_parameter('up_front_sticky_match_radius_m', 2.0)
         self._up_front_recovery_enabled = bool(
             self.get_parameter('up_front_recovery_enabled')
             .get_parameter_value().bool_value)
@@ -489,6 +500,12 @@ class NavigationOrchestrator(Node):
             .get_parameter_value().integer_value)
         self._up_front_recheck_interval_s = float(
             self.get_parameter('up_front_recheck_interval_s')
+            .get_parameter_value().double_value)
+        self._up_front_verify_range_m = float(
+            self.get_parameter('up_front_verify_range_m')
+            .get_parameter_value().double_value)
+        self._up_front_sticky_match_radius_m = float(
+            self.get_parameter('up_front_sticky_match_radius_m')
             .get_parameter_value().double_value)
         # Generic (object-agnostic) confirmation gate: at the standoff, before
         # committing to the original goal, re-observe (spin) so SLAM + costmap
@@ -561,6 +578,15 @@ class NavigationOrchestrator(Node):
         # False = table-only, unclassifiable tags keep the restrictive default.
         # Also read live at use-time (see _open_set_inference_enabled).
         self.declare_parameter('open_set_inference_enabled', True)
+        # Fixed-goal constraint: en-route (BT-led) recovery must never change
+        # the goal autonomously -- there is no operator gate on that path, so
+        # retry_target is dropped from the en-route eligible set. Up-front
+        # retry_target is unaffected (it escalates to the operator). True only
+        # for the explicit retry-as-alternative ablation leg (en-route S5).
+        # Read live at use-time (see _enroute_retry_target_enabled) so the S5
+        # ablation arm flips via `ros2 param set` without a relaunch, like the
+        # sibling up_front_llm_enabled / open_set_inference_enabled switches.
+        self.declare_parameter('enroute_retry_target_enabled', False)
         self.declare_parameter('affordance_confidence_floor', 60)
         self._affordance_confidence_floor = int(
             self.get_parameter('affordance_confidence_floor')
@@ -1240,6 +1266,12 @@ class NavigationOrchestrator(Node):
         # instead of repeating the same choice.
         up_front_attempts = []
 
+        # Sticky attribution (this episode only): last VERIFIED responsible
+        # object + affordances, reused when a later re-diagnosis drifts the
+        # centroid off the object and matches nothing.
+        sticky_obj = None
+        sticky_aff = None
+
         for attempt in range(int(self._up_front_cap)):
             grid_msg = self._latest_global_costmap
             robot = self._lookup_robot_pose()
@@ -1278,11 +1310,38 @@ class NavigationOrchestrator(Node):
             centroid_point.y = float(center[1])
             match = self._match_responsible_object(centroid_point)
             obj = match.object
+
+            # Sticky attribution: the barrier clusterer can drift the centroid
+            # off a previously-verified object (e.g. merging door cells with
+            # the adjacent wall after a close-range re-observation), which
+            # would silently reset the affordances to the restrictive default
+            # mid-recovery. Reuse the previous attribution when the unmatched
+            # centroid is still near it; a fresh verified match always wins,
+            # and the operator-confirm + rescan gates still stand downstream.
+            if obj is None and sticky_obj is not None:
+                sticky_dist = math.hypot(
+                    center[0] - sticky_obj.x, center[1] - sticky_obj.y
+                )
+                if sticky_dist <= self._up_front_sticky_match_radius_m:
+                    obj = sticky_obj
+                    self._log_stage_info(
+                        "UP_FRONT",
+                        f"Centroid matched no object but lies "
+                        f"{sticky_dist:.1f}m from previously verified "
+                        f"'{sticky_obj.key}' (sticky radius "
+                        f"{self._up_front_sticky_match_radius_m:.1f}m); "
+                        "reusing that attribution.",
+                    )
+
             if obj is None:
                 aff = ResponsibleAffordances(
                     tag="", openable=False, clearable=False,
                     safety_class="none", match_type="none",
                 )
+            elif sticky_aff is not None and obj is sticky_obj:
+                # Reused attribution keeps its affordances (including any
+                # open-set inference already paid for at a prior attempt).
+                aff = sticky_aff
             else:
                 # Open-set inference (spec 21.4): if the affordance table can't
                 # classify this tag, ask the LLM to infer the affordances from
@@ -1300,11 +1359,25 @@ class NavigationOrchestrator(Node):
                     match_type=match.match_type or "none",
                 )
 
+            if obj is not None and aff.match_type == "verified":
+                sticky_obj, sticky_aff = obj, aff
+
             standoff_ps = None
             has_standoff = False
             if diag.standoff_pose is not None:
                 standoff_ps = self._standoff_tuple_to_pose(diag.standoff_pose)
                 has_standoff = self._pose_is_reachable(standoff_ps)
+
+            # Operator directives are only eligible once the robot is close
+            # enough to VERIFY the state change afterwards (costmaps update
+            # with line of sight). Far away, the filter forces an approach
+            # first; open/clear become eligible on the next attempt.
+            dist_to_barrier = math.hypot(
+                robot_xy[0] - center[0], robot_xy[1] - center[1]
+            )
+            within_verify_range = (
+                dist_to_barrier <= self._up_front_verify_range_m
+            )
 
             # M4 filter-not-policy (spec 21.3/9): the deterministic layer filters
             # to the eligible set; the LLM selects among it when >=2 remain; the
@@ -1313,7 +1386,10 @@ class NavigationOrchestrator(Node):
             # can't keep re-picking approach_and_recheck and is forced to escalate.
             tried_actions = {a for (a, _o) in up_front_attempts}
             eligible = eligible_after_attempts(
-                eligible_directives(diag.diagnosis, aff, has_standoff),
+                eligible_directives(
+                    diag.diagnosis, aff, has_standoff,
+                    within_verify_range=within_verify_range,
+                ),
                 tried_actions,
             )
             llm_action = ""
@@ -1331,7 +1407,9 @@ class NavigationOrchestrator(Node):
                 f"eligible={eligible} llm='{llm_action}' -> directive={action} "
                 f"(overridden={selection.overridden} reason={selection.reason}) "
                 f"responsible_tag='{aff.tag}' match_type={aff.match_type} "
-                f"has_standoff={has_standoff}",
+                f"has_standoff={has_standoff} "
+                f"dist_to_barrier={dist_to_barrier:.1f}m "
+                f"within_verify_range={within_verify_range}",
             )
 
             if action == "approach_and_recheck":
@@ -1399,6 +1477,39 @@ class NavigationOrchestrator(Node):
                     )
                     return False
                 barrier_xy = diag.barrier_centroid or center
+                # The rescan gate verifies by OBSERVING the barrier: costmaps
+                # only update with line of sight, so rescanning from far away
+                # is guaranteed to stay 'still_blocked' even after the operator
+                # really opened/cleared it. Drive to the standoff first when
+                # out of verify range (best effort — fall back to an in-place
+                # rescan if the approach fails).
+                robot_now = self._lookup_robot_pose()
+                if robot_now is not None and has_standoff:
+                    dist_to_barrier = math.hypot(
+                        robot_now.pose.position.x - barrier_xy[0],
+                        robot_now.pose.position.y - barrier_xy[1],
+                    )
+                    if dist_to_barrier > self._up_front_verify_range_m:
+                        self._log_stage_info(
+                            "UP_FRONT",
+                            f"Robot is {dist_to_barrier:.1f}m from the barrier "
+                            f"(verify range "
+                            f"{self._up_front_verify_range_m:.1f}m); moving to "
+                            "the standoff to verify the operator action.",
+                        )
+                        standoff_target = ResolvedTarget(
+                            query=STANDOFF_OBJECT_KEY,
+                            pose=standoff_ps,
+                            db_version=target.db_version,
+                            db_stamp=target.db_stamp,
+                            object_key=STANDOFF_OBJECT_KEY,
+                        )
+                        if not self._execute_pose(standoff_target):
+                            self._log_stage_warn(
+                                "UP_FRONT",
+                                "Failed to reach the standoff for "
+                                "verification; rescanning in place.",
+                            )
                 clear_radius = max(
                     self._barrier_clear_radius_m, diag.barrier_extent_m / 2.0
                 )
@@ -2907,12 +3018,27 @@ class NavigationOrchestrator(Node):
         No standoff is computed en-route (the geometric tier only backs up), so
         has_reachable_standoff=False -> approach_and_recheck is naturally
         excluded; it belongs to the up-front loop.
+
+        Fixed-goal constraint: unlike the up-front loop (where retry_target
+        escalates to the operator), the en-route path executes directives
+        autonomously -- so retry_target would silently redirect the goal with
+        no human in the loop. It is filtered out unless the explicit ablation
+        switch enroute_retry_target_enabled is set.
         """
-        return eligible_directives(
+        elig = eligible_directives(
             "blocked",
             self._trigger_to_affordances(trigger),
             has_reachable_standoff=False,
         )
+        if not self._enroute_retry_target_enabled():
+            elig = [a for a in elig if a != "retry_target"]
+        return elig
+
+    def _enroute_retry_target_enabled(self) -> bool:
+        """Read the S5 fixed-goal ablation switch live so `ros2 param set`
+        flips arms without a relaunch."""
+        return bool(self.get_parameter('enroute_retry_target_enabled')
+                    .get_parameter_value().bool_value)
 
     def _up_front_llm_enabled(self) -> bool:
         """Read the M4 ablation switch live so `ros2 param set` flips A1<->A2
@@ -3004,6 +3130,17 @@ class NavigationOrchestrator(Node):
                 z=0.0,
             )
         req.blockage_extent_m = float(diag.barrier_extent_m)
+
+        # Robot pose + nearest-locations context so the LLM knows how far the
+        # robot is from the blockage (far away -> approach_and_recheck is the
+        # only way to verify a state change; see the recovery prompt).
+        robot = self._lookup_robot_pose()
+        if robot is not None:
+            req.robot_pose_at_failure = robot
+            req.nearest_locations_summary = self._build_nearest_locations_summary(
+                robot_pose=robot,
+                original_target=None,
+            )
 
         req.allowed_actions = list(eligible)
         # Prior up-front attempts -> the LLM's "Already tried" context, so it

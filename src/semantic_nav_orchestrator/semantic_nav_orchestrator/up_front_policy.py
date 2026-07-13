@@ -100,19 +100,37 @@ def eligible_directives(
     diagnosis: str,
     aff: ResponsibleAffordances,
     has_reachable_standoff: bool,
+    within_verify_range: bool = True,
 ) -> List[str]:
-    """Return the safe/valid directive set for this diagnosis + affordances."""
+    """Return the safe/valid directive set for this diagnosis + affordances.
+
+    ``within_verify_range``: operator directives (open/clear) are only *valid*
+    when the robot is close enough to the barrier to verify the state change
+    afterwards -- costmaps update with line of sight, so a rescan from across
+    the house can never confirm a door opened. Far away with a reachable
+    standoff, the robot must approach first; the operator actions become
+    eligible on the next attempt, once it is near. This is a physical
+    constraint, so it lives in the deterministic filter, not in the prompt
+    (small LLMs read "the robot is 8.8 m away" and pick open_door anyway).
+    Defaults to True: the en-route BT path triggers at the blockage itself.
+    """
     animate = aff.safety_class.strip().lower() in _ANIMATE
     if animate:
         # Living obstacle: wait it out; never clear, never drive up aggressively.
         return ["wait_then_replan", "give_up"]
 
+    # Operator actions require post-hoc verification, which requires proximity.
+    # Exception: no reachable standoff means the robot can never get close, so
+    # excluding them would delete the only remedial action; keep them and let
+    # the executor fall back to a best-effort in-place rescan.
+    operator_ok = within_verify_range or not has_reachable_standoff
+
     elig: List[str] = []
     if has_reachable_standoff:
         elig.append("approach_and_recheck")
-    if aff.openable:
+    if aff.openable and operator_ok:
         elig.append("open_door_then_replan")
-    if aff.clearable:
+    if aff.clearable and operator_ok:
         elig.append("clear_object_then_replan")
     # retry_target is always safe (a different reachable instance), if one exists.
     elig.append("retry_target")
@@ -194,9 +212,12 @@ def choose_directive(
     diagnosis: str,
     aff: ResponsibleAffordances,
     has_reachable_standoff: bool,
+    within_verify_range: bool = True,
 ) -> str:
     """Deterministically pick one directive from the eligible set."""
-    elig = eligible_directives(diagnosis, aff, has_reachable_standoff)
+    elig = eligible_directives(
+        diagnosis, aff, has_reachable_standoff, within_verify_range
+    )
 
     if "wait_then_replan" in elig and aff.safety_class.strip().lower() in _ANIMATE:
         return "wait_then_replan"

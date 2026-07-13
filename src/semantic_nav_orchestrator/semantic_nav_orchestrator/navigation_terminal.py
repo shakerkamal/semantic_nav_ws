@@ -225,7 +225,7 @@ class NavigationTerminal(Node):
                 # --- operator decision prompt ---
                 try:
                     op_req = self._op_req_q.get_nowait()
-                    self._handle_operator_prompt(op_req)
+                    self._handle_operator_prompt(op_req, cmd_q)
                     continue
                 except queue.Empty:
                     pass
@@ -314,7 +314,14 @@ class NavigationTerminal(Node):
     # Operator prompt (called from main thread while in navigate() loop)
     # ------------------------------------------------------------------
 
-    def _handle_operator_prompt(self, request: OperatorDecision.Request) -> None:
+    def _handle_operator_prompt(
+        self, request: OperatorDecision.Request, cmd_q: queue.Queue
+    ) -> None:
+        # The answer is read from cmd_q (fed by the single input thread), NOT
+        # via a direct input() call: the input thread is already blocked in
+        # input(), and a second reader competing for stdin means the first
+        # line typed goes to the wrong prompt (the y/n only "appeared" after
+        # a stray Enter).
         _emit("")
         _emit(yellow("  ╔══════════════════════════════════════════════════╗"))
         _emit(yellow(f"  ║ OPERATOR PROMPT                                  ║"))
@@ -322,17 +329,23 @@ class NavigationTerminal(Node):
         _emit(yellow(f"  {request.prompt_text}"))
         _emit(yellow(f"  Object : {bold(request.responsible_object_key)}"))
         _emit(yellow(f"  Action : {bold(request.directive_action)}"))
+        _emit(yellow("  [operator] type y or n, then Enter"))
 
         while True:
-            try:
-                ans = input(yellow("  [operator] y / n > ")).strip().lower()
-            except EOFError:
-                ans = "n"
+            line = cmd_q.get()
+            if line is None:
+                # EOF/exit: reject, then re-queue the sentinel so navigate()
+                # still sees the exit request.
+                self._op_resp_q.put((False, "operator_rejected"))
+                _emit(red("  ✗ Rejected\n"))
+                cmd_q.put(None)
+                return
+            ans = str(line).strip().lower()
             if ans == "y":
                 self._op_resp_q.put((True, "operator_confirmed"))
                 _emit(green("  ✓ Confirmed\n"))
                 return
-            elif ans in ("n", "q", ""):
+            if ans in ("n", "q", "\x03"):
                 self._op_resp_q.put((False, "operator_rejected"))
                 _emit(red("  ✗ Rejected\n"))
                 return

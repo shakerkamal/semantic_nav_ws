@@ -32,6 +32,36 @@ def test_door_without_standoff_falls_back_to_operator():
     assert choose_directive("blocked", aff, False) == "open_door_then_replan"
 
 
+def test_operator_actions_gated_on_verify_range():
+    # Far from the barrier with a reachable standoff: the robot could never
+    # verify an operator action, so open/clear are NOT eligible -- it must
+    # approach first. They become eligible once within verify range.
+    aff = _aff(tag="door", openable=True, clearable=True, match="verified")
+    far = eligible_directives(
+        "blocked", aff, has_reachable_standoff=True, within_verify_range=False
+    )
+    assert "open_door_then_replan" not in far
+    assert "clear_object_then_replan" not in far
+    assert "approach_and_recheck" in far
+
+    near = eligible_directives(
+        "blocked", aff, has_reachable_standoff=True, within_verify_range=True
+    )
+    assert "open_door_then_replan" in near
+    assert "clear_object_then_replan" in near
+
+
+def test_operator_actions_kept_when_no_standoff_even_if_far():
+    # No reachable standoff: the robot can never get close, so excluding the
+    # operator actions would delete the only remedial option. They stay
+    # eligible (executor falls back to a best-effort in-place rescan).
+    aff = _aff(tag="door", openable=True)
+    elig = eligible_directives(
+        "blocked", aff, has_reachable_standoff=False, within_verify_range=False
+    )
+    assert "open_door_then_replan" in elig
+
+
 def test_clearable_box_pick():
     aff = _aff(tag="box", clearable=True, match="verified")
     assert choose_directive("blocked", aff, True) == "approach_and_recheck"
