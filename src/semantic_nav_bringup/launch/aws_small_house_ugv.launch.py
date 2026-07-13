@@ -15,6 +15,11 @@ latter the rover spawns invisible; without the former model://<aws assets> fail.
 
 Spawn at the same origin (0,0) TurtleBot3 used so RTAB-Map's map frame aligns
 with the existing AWS-house semantic_db.json coordinates.
+
+Loads the SAME world as aws_small_house_tb3.launch.py by default — our baked
+small_house_semantic.world, not the stock AWS small_house.world — so the rover
+sees the scenario geometry (closed-door walls at door:119) the recovery
+experiments depend on.
 """
 
 import os
@@ -28,8 +33,9 @@ from launch.actions import (
     SetEnvironmentVariable,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -39,6 +45,8 @@ def generate_launch_description():
     y_pose = LaunchConfiguration('y_pose')
     z_pose = LaunchConfiguration('z_pose')
     yaw = LaunchConfiguration('yaw')
+    world = LaunchConfiguration('world')
+    depth_only = LaunchConfiguration('depth_only')
     aws_small_house_path = LaunchConfiguration('aws_small_house_path')
 
     # Included Waveshare launch files read os.environ['UGV_MODEL'] at construction
@@ -50,34 +58,86 @@ def generate_launch_description():
     ugv_gazebo_share = get_package_share_directory('ugv_gazebo')
     ugv_description_share = get_package_share_directory('ugv_description')
 
+    bringup_share = get_package_share_directory('semantic_nav_bringup')
+
     # model.sdf carries the rover's Gazebo plugins (diff drive, depth camera, lidar, imu).
-    ugv_rover_sdf = os.path.join(
-        ugv_gazebo_share, 'models', 'ugv_rover', 'model.sdf'
+    # depth_only swaps in our copy with the 2D LiDAR sensor stripped out, so the sim
+    # rover senses exactly what the real OAK-D rover does. /scan is then synthesised
+    # from the depth image by depthimage_to_laserscan below.
+    ugv_rover_sdf = PythonExpression([
+        "'", os.path.join(bringup_share, 'models', 'ugv_rover_depth', 'model.sdf'), "'",
+        " if '", depth_only, "'.lower() in ('true','1') else ",
+        "'", os.path.join(ugv_gazebo_share, 'models', 'ugv_rover', 'model.sdf'), "'",
+    ])
+
+    # 3d_camera_link is an OPTICAL frame: RPY(-90, 0, -90), i.e. +Z forward,
+    # +X right, +Y down. A LaserScan sweeps its frame's XY plane about +Z, so
+    # emitting the scan in an optical frame makes it a VERTICAL fan rotating about
+    # the forward axis — in the 2D grid that shows up as radial spokes, not walls.
+    #
+    # depthimage_to_laserscan expects a NON-optical output_frame (its own default is
+    # 'camera_depth_frame'). So publish camera_scan_link at the camera's position with
+    # the optical rotation undone (conjugate quaternion), giving x-forward / z-up.
+    # Verified: base_footprint -> camera_scan_link is exactly identity rotation.
+    camera_scan_frame = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='camera_scan_link_tf',
+        output='screen',
+        condition=IfCondition(depth_only),
+        arguments=[
+            '--frame-id', '3d_camera_link',
+            '--child-frame-id', 'camera_scan_link',
+            '--x', '0', '--y', '0', '--z', '0',
+            '--qx', '0.5', '--qy', '-0.5', '--qz', '0.5', '--qw', '0.5',
+        ],
+        parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    aws_world = [
-        aws_small_house_path,
-        '/worlds/small_house.world',
-    ]
+    # Depth -> LaserScan. The rover's RGB and depth come from ONE Gazebo sensor
+    # (type="depth" in link 3d_camera_link), so they share intrinsics and
+    # /camera/camera_info is the correct camera_info for the depth image —
+    # there is no /camera/depth/camera_info topic.
+    #
+    # NOTE the FOV collapse: the depth camera is 1.02974 rad = 59 deg, versus the
+    # LiDAR's 360. The rover becomes blind to its sides and rear, which is exactly
+    # the real robot's situation.
+    depth_to_scan = Node(
+        package='depthimage_to_laserscan',
+        executable='depthimage_to_laserscan_node',
+        name='depthimage_to_laserscan',
+        output='screen',
+        condition=IfCondition(depth_only),
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'output_frame': 'camera_scan_link',
+            'range_min': 0.2,
+            'range_max': 3.5,      # keep in step with Grid/RangeMax and the costmap ranges
+            'scan_height': 20,     # band of rows about the image centre
+            'scan_time': 0.033,
+        }],
+        remappings=[
+            ('depth', '/camera/depth/image_raw'),
+            ('depth_camera_info', '/camera/camera_info'),
+            ('scan', '/scan'),
+        ],
+    )
 
     # Build GAZEBO_MODEL_PATH: ugv_gazebo models + ugv_description share (for the
     # rover meshes) + AWS house models + whatever is already on the path.
-    gazebo_model_path = ':'.join([
-        os.path.join(ugv_gazebo_share, 'models'),
-        os.path.dirname(ugv_description_share),   # parent 'share' dir -> resolves model://ugv_description
-        os.path.expanduser(
-            '/home/shaker/Thesis/Implementation/demo_bringup/'
-            'aws-robomaker-small-house-world/models'
-        ),
+    gazebo_model_path = [
+        os.path.join(ugv_gazebo_share, 'models'), ':',
+        os.path.dirname(ugv_description_share), ':',   # parent 'share' dir -> resolves model://ugv_description
+        aws_small_house_path, '/models:',
         os.environ.get('GAZEBO_MODEL_PATH', ''),
-    ])
+    ]
 
     gzserver = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gazebo_ros_share, 'launch', 'gzserver.launch.py')
         ),
         launch_arguments={
-            'world': aws_world,
+            'world': world,
             'verbose': 'true',
         }.items()
     )
@@ -145,7 +205,29 @@ def generate_launch_description():
             default_value=os.path.expanduser(
                 '/home/shaker/Thesis/Implementation/demo_bringup/aws-robomaker-small-house-world'
             ),
-            description='Absolute path to aws-robomaker-small-house-world'
+            description='Absolute path to aws-robomaker-small-house-world (supplies '
+                        'the furniture meshes on GAZEBO_MODEL_PATH)'
+        ),
+
+        DeclareLaunchArgument(
+            'world',
+            default_value=os.path.join(
+                get_package_share_directory('semantic_nav_bringup'),
+                'worlds', 'small_house_semantic.world'
+            ),
+            description='Gazebo world file (default: baked semantic scenario '
+                        'with the closed-door walls at door:119) — same default as '
+                        'aws_small_house_tb3.launch.py so rover and TB3 runs are '
+                        'comparable. Pass the stock AWS small_house.world to opt out.'
+        ),
+
+        DeclareLaunchArgument(
+            'depth_only', default_value='false',
+            description='Sense like the REAL rover: strip the 2D LiDAR and synthesise '
+                        '/scan from the depth camera (depthimage_to_laserscan). '
+                        'Collapses the horizontal FOV from 360 to 59 degrees. '
+                        'Default false keeps the LiDAR, so existing LiDAR-based '
+                        'results stay reproducible.'
         ),
 
         SetEnvironmentVariable('UGV_MODEL', 'ugv_rover'),
@@ -155,4 +237,6 @@ def generate_launch_description():
         gzclient,
         robot_state_publisher,
         spawn_ugv_rover,
+        camera_scan_frame,
+        depth_to_scan,
     ])

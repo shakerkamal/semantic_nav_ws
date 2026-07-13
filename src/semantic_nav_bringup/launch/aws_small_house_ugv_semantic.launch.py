@@ -1,19 +1,23 @@
 """One-command full-stack E2E: ugv_rover in the AWS Small House with the semantic
 navigation stack (RTAB-Map RGB-D SLAM, Nav2 + BT-led recovery, semantic core, LLM).
 
-Mirrors semantic_nav_system.launch.py but for the ugv_rover. Brings up, staggered:
-  1. aws_small_house_ugv.launch.py  -> AWS world + ugv_rover spawned at origin
-  2. ugv_gazebo rtabmap_rgbd        -> RTAB-Map RGB-D SLAM (/map, map->odom)
-  3. nav2 navigation_launch         -> Nav2, rover params WITH semantic recovery BT plugins
-  4. semantic_nav_core              -> resolver / validator / executor / local_object_query
-  5. semantic_nav_llm (enable_llm)  -> navigator_node: /parse_semantic_command + /propose_recovery
+The ugv_rover counterpart of semantic_nav_system.launch.py: same argument surface,
+same node set, same defaults — only the robot and its SLAM source differ.
+
+  1. aws_small_house_ugv.launch.py   -> AWS world + ugv_rover spawned at origin
+                                        (TB3 stack: aws_small_house_tb3.launch.py)
+  2. ugv_gazebo rtabmap_rgbd         -> RTAB-Map RGB-D SLAM (/map, map->odom)
+                                        (TB3 stack: rtabmap_demos turtlebot3_rgbd_scan)
+  3. nav2 navigation_launch          -> Nav2 with rover_semantic_nav_params.yaml
+  4. semantic_nav_core               -> resolver / validator / executor / local_object_query
+  5. semantic_nav_llm (enable_llm)   -> navigator_node: /parse_semantic_command + /propose_recovery
   6. orchestrator (idle bt_led daemon) serving /navigate_to_query
   + Nav2-view RViz (/plan, /local_plan, costmaps).
 
 BT-led recovery: detection lives INSIDE the Nav2 tree (semantic_recovery_bt.xml via
 the semantic_nav_nav2_plugins in the params) — no external recovery-trigger monitor.
 
-Operator decisions are interactive by default (operator_mode='terminal'): run
+Operator decisions are interactive by default (enable_operator_io=false): run
 navigation_terminal, which serves /operator_decision and prompts the human.
 
 Drive this with the terminal (separate process, needs a TTY):
@@ -31,7 +35,7 @@ from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, TimerAction
-from launch.conditions import IfCondition, LaunchConfigurationEquals
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -39,97 +43,291 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     bringup_dir = get_package_share_directory('semantic_nav_bringup')
-    ugv_gazebo_dir = get_package_share_directory('ugv_gazebo')
     nav2_bringup_dir = get_package_share_directory('nav2_bringup')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
+    localization = LaunchConfiguration('localization')
     rviz = LaunchConfiguration('rviz')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
+    aws_small_house_path = LaunchConfiguration('aws_small_house_path')
+    world = LaunchConfiguration('world')
+    depth_only = LaunchConfiguration('depth_only')
+    rtabmap_viz = LaunchConfiguration('rtabmap_viz')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
-    enable_llm = LaunchConfiguration('enable_llm')
-    llama_action = LaunchConfiguration('llama_action')
-    auto_ack_for_dev = LaunchConfiguration('auto_ack_for_dev')
-    start_orchestrator = LaunchConfiguration('start_orchestrator')
 
-    # Recovery ablation switches (A1 = deterministic baseline, A2 = LLM),
-    # mirroring semantic_nav_system.launch.py.
+    # LLM intent parser options.
+    enable_llm = LaunchConfiguration('enable_llm')
+    semantic_map_path = LaunchConfiguration('semantic_map_path')
+    llama_action = LaunchConfiguration('llama_action')
+    parse_service = LaunchConfiguration('parse_service')
+    propose_recovery_service = LaunchConfiguration('propose_recovery_service')
+    grammar_path = LaunchConfiguration('grammar_path')
+    recovery_grammar_path = LaunchConfiguration('recovery_grammar_path')
+    recovery_max_tokens = LaunchConfiguration('recovery_max_tokens')
+    min_confidence_percent = LaunchConfiguration('min_confidence_percent')
+    max_tokens = LaunchConfiguration('max_tokens')
+    llm_result_timeout_sec = LaunchConfiguration('llm_result_timeout_sec')
+    debug_prompt = LaunchConfiguration('debug_prompt')
+    debug_grammar = LaunchConfiguration('debug_grammar')
+
+    # Operator I/O options.
+    enable_operator_io = LaunchConfiguration('enable_operator_io')
+    operator_auto_ack_for_dev = LaunchConfiguration('operator_auto_ack_for_dev')
+    operator_prompt_timeout_sec = LaunchConfiguration('operator_prompt_timeout_sec')
+
+    # Recovery ablation switches (A1 = deterministic baseline, A2 = LLM).
     up_front_llm_enabled = LaunchConfiguration('up_front_llm_enabled')
     open_set_inference_enabled = LaunchConfiguration('open_set_inference_enabled')
 
-    use_sim_time_arg = DeclareLaunchArgument('use_sim_time', default_value='true')
-    rviz_arg = DeclareLaunchArgument('rviz', default_value='true', description='Launch Nav2-view RViz')
-    x_pose_arg = DeclareLaunchArgument('x_pose', default_value='0.0')
-    y_pose_arg = DeclareLaunchArgument('y_pose', default_value='0.0')
+    # Rover-only: run the orchestrator as a daemon, or drive it one-shot from the CLI.
+    start_orchestrator = LaunchConfiguration('start_orchestrator')
+
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use Gazebo simulation clock'
+    )
+
+    localization_arg = DeclareLaunchArgument(
+        'localization',
+        default_value='false',
+        description='Run RTAB-Map in localization mode instead of SLAM mode'
+    )
+
+    rviz_arg = DeclareLaunchArgument(
+        'rviz',
+        default_value='true',
+        description='Launch RViz'
+    )
+
+    x_pose_arg = DeclareLaunchArgument(
+        'x_pose',
+        default_value='0.0',
+        description='Initial ugv_rover x position in Gazebo'
+    )
+
+    y_pose_arg = DeclareLaunchArgument(
+        'y_pose',
+        default_value='0.0',
+        description='Initial ugv_rover y position in Gazebo'
+    )
+
+    aws_small_house_path_arg = DeclareLaunchArgument(
+        'aws_small_house_path',
+        default_value=os.path.expanduser(
+            '/home/shaker/Thesis/Implementation/demo_bringup/aws-robomaker-small-house-world'
+        ),
+        description='Absolute path to aws-robomaker-small-house-world'
+    )
+
+    world_arg = DeclareLaunchArgument(
+        'world',
+        default_value=os.path.join(
+            bringup_dir, 'worlds', 'small_house_semantic.world'
+        ),
+        description='Gazebo world file. Defaults to the baked semantic scenario '
+                    'world (closed-door walls at door:119) — the same world the TB3 '
+                    'stack runs, so rover results are comparable.'
+    )
+
+    depth_only_arg = DeclareLaunchArgument(
+        'depth_only', default_value='false',
+        description='Sense like the REAL rover: no 2D LiDAR, /scan synthesised from '
+                    'the depth camera. Horizontal FOV drops 360 -> 59 deg, so the '
+                    'rover is blind to its sides and rear and the reobserve spin '
+                    'becomes load-bearing. Default false preserves the LiDAR setup '
+                    'the existing A1/A2 recovery results were collected under.'
+    )
+
+    rtabmap_viz_arg = DeclareLaunchArgument(
+        'rtabmap_viz', default_value='true',
+        description="Launch the RTAB-Map GUI (rtabmap_viz): loop closures, feature "
+                    "matches, the graph. Separate from the Nav2 RViz view ('rviz' arg)."
+    )
+
     nav2_params_file_arg = DeclareLaunchArgument(
         'nav2_params_file',
-        # Rover params (base_footprint, real obstacle topics) WITH semantic_nav_nav2_plugins
-        # added to bt_navigator.plugin_lib_names so the BT-led recovery tree loads.
-        default_value=os.path.join(bringup_dir, 'config', 'rover_semantic_nav_params.yaml'),
-        description='Nav2 params: rover rtabmap_dwa.yaml + semantic recovery BT plugins',
+        default_value=os.path.join(
+            bringup_dir,
+            'config',
+            'rover_semantic_nav_params.yaml'
+        ),
+        description='Absolute path to the Nav2 params file (rover twin of '
+                    'nav2_semantic_params.yaml; carries semantic_nav_nav2_plugins)'
     )
+
     enable_llm_arg = DeclareLaunchArgument(
-        'enable_llm', default_value='true',
-        description='Launch navigator_node (NL parsing + LLM recovery proposals). '
-                    'Requires llama_ros (/llama/generate_response) running separately.',
+        'enable_llm',
+        default_value='true',
+        description='Launch semantic_nav_llm navigator_node intent parser. '
+                    'Requires llama_ros (/llama/generate_response) running separately.'
     )
+
+    semantic_map_path_arg = DeclareLaunchArgument(
+        'semantic_map_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_semantics'),
+            'config',
+            'map_v001.json',
+        ),
+        description='Absolute path to object-centric semantic map_v001.json',
+    )
+
     llama_action_arg = DeclareLaunchArgument(
-        'llama_action', default_value='/llama/generate_response',
+        'llama_action',
+        default_value='/llama/generate_response',
         description='llama_ros GenerateResponse action endpoint. On the rover the '
-                    'model may run on a remote server; override if remapped.',
+                    'model may run on a remote server; override if remapped.'
+    )
+
+    parse_service_arg = DeclareLaunchArgument(
+        'parse_service',
+        default_value='/parse_semantic_command',
+        description='Service exposed by semantic_nav_llm navigator_node'
+    )
+
+    propose_recovery_service_arg = DeclareLaunchArgument(
+        'propose_recovery_service',
+        default_value='/propose_recovery',
+        description='Service exposed by semantic_nav_llm for recovery proposals'
+    )
+
+    grammar_path_arg = DeclareLaunchArgument(
+        'grammar_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_llm'),
+            'config',
+            'semantic_intent.gbnf'
+        ),
+        description='Absolute path to semantic intent GBNF grammar'
+    )
+
+    recovery_grammar_path_arg = DeclareLaunchArgument(
+        'recovery_grammar_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_llm'),
+            'config',
+            'recovery_intent.gbnf'
+        ),
+        description='Absolute path to recovery GBNF grammar'
+    )
+
+    recovery_max_tokens_arg = DeclareLaunchArgument(
+        'recovery_max_tokens',
+        default_value='256',
+        description='Request-level generation cap for recovery JSON'
+    )
+
+    min_confidence_percent_arg = DeclareLaunchArgument(
+        'min_confidence_percent',
+        default_value='60',
+        description='Minimum confidence required for LLM navigate intent'
+    )
+
+    max_tokens_arg = DeclareLaunchArgument(
+        'max_tokens',
+        default_value='64',
+        description='Request-level generation cap for LLM intent JSON'
+    )
+
+    llm_result_timeout_sec_arg = DeclareLaunchArgument(
+        'llm_result_timeout_sec',
+        default_value='180.0',
+        description='Timeout waiting for llama_ros GenerateResponse result'
+    )
+
+    debug_prompt_arg = DeclareLaunchArgument(
+        'debug_prompt',
+        default_value='false',
+        description='Print prompt sent from navigator_node to llama_ros'
+    )
+
+    debug_grammar_arg = DeclareLaunchArgument(
+        'debug_grammar',
+        default_value='false',
+        description='Print GBNF grammar sent from navigator_node to llama_ros'
+    )
+
+    enable_operator_io_arg = DeclareLaunchArgument(
+        'enable_operator_io',
+        default_value='false',
+        description='Launch operator_io_node. Default false: navigation_terminal serves /operator_decision.',
+    )
+    operator_auto_ack_for_dev_arg = DeclareLaunchArgument(
+        'operator_auto_ack_for_dev',
+        default_value='false',
+        description='Auto-acknowledge all operator prompts without stdin (dev/CI only).',
+    )
+    operator_prompt_timeout_sec_arg = DeclareLaunchArgument(
+        'operator_prompt_timeout_sec',
+        default_value='0.0',
+        description='Stdin timeout (sec) for operator prompts; 0.0 disables timeout.',
     )
     up_front_llm_enabled_arg = DeclareLaunchArgument(
-        'up_front_llm_enabled', default_value='true',
+        'up_front_llm_enabled',
+        default_value='true',
         description='M4 ablation: true=LLM selects the up-front recovery directive '
                     '(A2); false=deterministic default only (A1).',
     )
     open_set_inference_enabled_arg = DeclareLaunchArgument(
-        'open_set_inference_enabled', default_value='true',
+        'open_set_inference_enabled',
+        default_value='true',
         description='Open-set ablation (spec 21.4): true=LLM infers affordances for '
                     'unclassifiable blocker tags (A2); false=table-only default (A1).',
     )
-    operator_mode_arg = DeclareLaunchArgument(
-        'operator_mode', default_value='terminal',
-        description="Operator decisions: 'terminal' = navigation_terminal serves "
-                    "/operator_decision (human in the loop); 'auto' = operator_io_node auto-acks.",
-    )
-    auto_ack_for_dev_arg = DeclareLaunchArgument(
-        'auto_ack_for_dev', default_value='false',
-        description='Only used when operator_mode=auto: auto-acknowledge prompts (unattended/CI).',
-    )
     start_orchestrator_arg = DeclareLaunchArgument(
-        'start_orchestrator', default_value='true',
+        'start_orchestrator',
+        default_value='true',
         description='Run the orchestrator as an idle bt_led daemon (serves /navigate_to_query). '
                     'Set false to drive it one-shot via the CLI instead.',
     )
 
-    # 1. AWS world + ugv_rover spawn (this launch already delays its own spawn).
-    aws_ugv = IncludeLaunchDescription(
+    # AWS world + ugv_rover spawn (this launch already delays its own spawn).
+    aws_small_house_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(bringup_dir, 'launch', 'aws_small_house_ugv.launch.py')
+            os.path.join(
+                bringup_dir,
+                'launch',
+                'aws_small_house_ugv.launch.py'
+            )
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
             'x_pose': x_pose,
             'y_pose': y_pose,
+            'aws_small_house_path': aws_small_house_path,
+            'world': world,
+            'depth_only': depth_only,
         }.items()
     )
 
-    # 2. RTAB-Map RGB-D SLAM (its own RViz off; we run the Nav2 view instead).
-    rtabmap = IncludeLaunchDescription(
+    # RTAB-Map RGB-D SLAM — OUR launch, not ugv_gazebo's. Waveshare's hardcodes an
+    # unbounded, never-cleared 3D occupancy grid (Grid/RangeMax=0, RayTracing=false)
+    # that the recovery reobserve-spin smears into an unusable map. See
+    # rover_rtabmap_rgbd.launch.py for the full explanation.
+    rtabmap_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(ugv_gazebo_dir, 'launch', 'slam', 'rtabmap_rgbd.launch.py')
+            os.path.join(
+                bringup_dir,
+                'launch',
+                'rover_rtabmap_rgbd.launch.py'
+            )
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
-            'use_rviz': 'false',
+            'localization': localization,
+            'rtabmap_viz': rtabmap_viz,
         }.items()
     )
 
-    # 3. Nav2 navigation-only on top of RTAB-Map's /map + map->odom.
-    nav2 = IncludeLaunchDescription(
+    nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(nav2_bringup_dir, 'launch', 'navigation_launch.py')
+            os.path.join(
+                nav2_bringup_dir,
+                'launch',
+                'navigation_launch.py'
+            )
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
@@ -137,62 +335,9 @@ def generate_launch_description():
         }.items()
     )
 
-    # 4. Semantic core: resolver / validator / executor / local_object_query.
-    semantic_core = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(bringup_dir, 'launch', 'semantic_nav_core.launch.py')
-        ),
-        launch_arguments={
-            'use_sim_time': use_sim_time,
-        }.items()
-    )
-
-    # 5. LLM front-end: navigator_node -> /parse_semantic_command + /propose_recovery.
-    #    Uses semantic_nav_llm.launch.py defaults (map_v001.json, /llama/generate_response,
-    #    GBNF grammars). llama_ros must be running for these to do real work.
-    semantic_llm = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(bringup_dir, 'launch', 'semantic_nav_llm.launch.py')
-        ),
-        condition=IfCondition(enable_llm),
-        launch_arguments={
-            'llama_action': llama_action,
-        }.items()
-    )
-
-    # Optional operator I/O for the OperatorPrompt branch — only when operator_mode=auto.
-    # In 'terminal' mode (default) navigation_terminal owns /operator_decision.
-    operator_io_node = Node(
-        package='semantic_nav_operator_io',
-        executable='operator_io_node',
-        name='operator_io_node',
-        output='screen',
-        parameters=[{
-            'auto_ack_for_dev': auto_ack_for_dev,
-            'prompt_timeout_sec': 0.0,
-            'use_sim_time': use_sim_time,
-        }],
-        condition=LaunchConfigurationEquals('operator_mode', 'auto'),
-    )
-
-    # Orchestrator as an idle bt_led daemon (no query) so navigation_terminal can
-    # drive it via /navigate_to_query.
-    orchestrator_daemon = Node(
-        package='semantic_nav_orchestrator',
-        executable='navigation_orchestrator',
-        name='navigation_orchestrator',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'start_idle': True,
-            'up_front_llm_enabled': up_front_llm_enabled,
-            'open_set_inference_enabled': open_set_inference_enabled,
-        }],
-        condition=IfCondition(start_orchestrator),
-    )
-
-    # Nav2-view RViz: shows /plan (global), /local_plan (controller) and costmaps.
-    # respawn so an RViz crash doesn't cascade-shutdown the stack.
+    # Launch RViz2 directly (not via nav2_bringup/rviz_launch.py) so that a
+    # RViz2 crash does NOT cascade-shutdown the whole stack. respawn=True
+    # restarts it automatically; the nav2_bringup shutdown handler is bypassed.
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -201,28 +346,131 @@ def generate_launch_description():
         output='screen',
         respawn=True,
         respawn_delay=2.0,
-        parameters=[{'use_sim_time': True}],
+        parameters=[{'use_sim_time': use_sim_time}],
         condition=IfCondition(rviz),
+    )
+
+    semantic_core_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                bringup_dir,
+                'launch',
+                'semantic_nav_core.launch.py'
+            )
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+        }.items()
+    )
+
+    semantic_llm_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                bringup_dir,
+                'launch',
+                'semantic_nav_llm.launch.py'
+            )
+        ),
+        condition=IfCondition(enable_llm),
+        launch_arguments={
+            'semantic_map_path': semantic_map_path,
+            'grammar_path': grammar_path,
+            'llama_action': llama_action,
+            'parse_service': parse_service,
+            'min_confidence_percent': min_confidence_percent,
+            'max_tokens': max_tokens,
+            'llm_result_timeout_sec': llm_result_timeout_sec,
+            'debug_prompt': debug_prompt,
+            'debug_grammar': debug_grammar,
+            'propose_recovery_service': propose_recovery_service,
+            'recovery_grammar_path': recovery_grammar_path,
+            'recovery_max_tokens': recovery_max_tokens,
+        }.items()
+    )
+
+    # Orchestrator runs as a long-running idle service, accepting
+    # /navigate_to_query goals from navigation_terminal.
+    # No query arg → bt_led mode auto-sets start_idle=True.
+    orchestrator_node = Node(
+        package='semantic_nav_orchestrator',
+        executable='navigation_orchestrator',
+        name='navigation_orchestrator',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'up_front_llm_enabled': up_front_llm_enabled,
+            'open_set_inference_enabled': open_set_inference_enabled,
+        }],
+        condition=IfCondition(start_orchestrator),
+    )
+
+    operator_io_node = Node(
+        package='semantic_nav_operator_io',
+        executable='operator_io_node',
+        name='operator_io_node',
+        output='screen',
+        condition=IfCondition(enable_operator_io),
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'auto_ack_for_dev': operator_auto_ack_for_dev,
+            'prompt_timeout_sec': operator_prompt_timeout_sec,
+        }],
     )
 
     return LaunchDescription([
         use_sim_time_arg,
+        localization_arg,
         rviz_arg,
         x_pose_arg,
         y_pose_arg,
+        aws_small_house_path_arg,
+        world_arg,
+        depth_only_arg,
+        rtabmap_viz_arg,
         nav2_params_file_arg,
+
         enable_llm_arg,
+        semantic_map_path_arg,
         llama_action_arg,
-        operator_mode_arg,
-        auto_ack_for_dev_arg,
-        start_orchestrator_arg,
+        parse_service_arg,
+        grammar_path_arg,
+        min_confidence_percent_arg,
+        max_tokens_arg,
+        llm_result_timeout_sec_arg,
+        debug_prompt_arg,
+        debug_grammar_arg,
+        propose_recovery_service_arg,
+        recovery_grammar_path_arg,
+        recovery_max_tokens_arg,
+
+        enable_operator_io_arg,
+        operator_auto_ack_for_dev_arg,
+        operator_prompt_timeout_sec_arg,
         up_front_llm_enabled_arg,
         open_set_inference_enabled_arg,
+        start_orchestrator_arg,
 
-        aws_ugv,
-        TimerAction(period=6.0, actions=[rtabmap]),
-        TimerAction(period=9.0, actions=[nav2, rviz_node]),
-        TimerAction(period=12.0, actions=[semantic_core, semantic_llm, operator_io_node]),
-        # Daemon after the core/services are up.
-        TimerAction(period=15.0, actions=[orchestrator_daemon]),
+        aws_small_house_sim_launch,
+
+        # Longer stagger than the TB3 stack: the rover spawns from an SDF (its own
+        # 3 s timer) and RTAB-Map needs the depth camera streaming before it starts.
+        TimerAction(
+            period=6.0,
+            actions=[rtabmap_launch]
+        ),
+
+        TimerAction(
+            period=9.0,
+            actions=[nav2_launch, rviz_node]
+        ),
+
+        TimerAction(
+            period=12.0,
+            actions=[semantic_core_launch, semantic_llm_launch, operator_io_node]
+        ),
+
+        TimerAction(
+            period=15.0,
+            actions=[orchestrator_node]
+        ),
     ])
