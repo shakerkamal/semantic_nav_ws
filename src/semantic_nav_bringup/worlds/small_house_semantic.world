@@ -293,19 +293,24 @@
         </include>
         <pose frame=''>3.484720 3.169104 0.003168 0 -0 0</pose>
 	</model>
+	<!-- Folding doors slid toward each other along the x=-2.46 divider to
+	     form a ~0.9m narrow passage centered at y=-1.35 (open-set scenario:
+	     the runtime-spawned 'room partition' panel blocks this gap; see
+	     scripts/close_partition.sh). Mirrors the kitchen door_scenario_wall
+	     mechanics: static geometry shapes the gap, the blocker is dynamic. -->
 	<model name='FoldingDoor_01_001'>
-        <static>true</static>    
+        <static>true</static>
         <include>
             <uri>model://aws_robomaker_residential_FoldingDoor_01</uri>
         </include>
-        <pose frame=''>-2.461096 1.844219 0.041881 0 -0 0</pose>
+        <pose frame=''>-2.461096 0.398769 0.041881 0 -0 0</pose>
 	</model>
 	<model name='FoldingDoor_01_002'>
-        <static>true</static>    
+        <static>true</static>
         <include>
             <uri>model://aws_robomaker_residential_FoldingDoor_01</uri>
         </include>
-        <pose frame=''>-2.461096 -4.053320 0.041881 0 -0 0</pose>
+        <pose frame=''>-2.461096 -3.114640 0.041881 0 -0 0</pose>
 	</model>
 	<model name='Handle_01_001'>
         <static>true</static>    

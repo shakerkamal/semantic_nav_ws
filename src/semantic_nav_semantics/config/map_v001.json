@@ -555,7 +555,7 @@
     ],
     "bbox_center": [
       -2.48,
-      -4.17,
+      -3.2313,
       1.33
     ],
     "bbox_volume": 0.85
@@ -668,8 +668,8 @@
     "object_caption": "A folding room partition / privacy screen standing across the bedroom doorway; it can be slid or folded aside to pass through.",
     "object_state": "semi-static",
     "bbox_center": [
-      -2.4611,
-      1.84422,
+      -2.5068,
+      -1.3503,
       1.0
     ],
     "bbox_extent": [

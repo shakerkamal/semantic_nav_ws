@@ -500,6 +500,18 @@ class LocalObjectQueryNode(Node):
                 ttl = float(obj.ttl_sec)
                 # Tag so downstream knows this came from the overlay.
                 obj.source = "dynamic_overlay"
+                # Affordances are the semantic layer's judgment, not the
+                # detector's: a provider reports WHAT it perceives (tag,
+                # caption, state, geometry); openable/clearable/safety come
+                # from the same table that classifies persistent-map objects
+                # (parity with row_to_object_instance and the up-front flow).
+                # Unclassifiable tags keep the restrictive defaults.
+                safety_class, openable, clearable = attributes_for_tag(
+                    self._action_attrs, obj.object_tag
+                )
+                obj.safety_class = safety_class
+                obj.openable = openable
+                obj.clearable = clearable
                 self._dynamic_cache.update(
                     object_key=key,
                     center_x=cx,
