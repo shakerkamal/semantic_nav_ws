@@ -1,5 +1,7 @@
 import json
+import math
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
@@ -305,6 +307,13 @@ class NavigatorNode(Node):
         )
 
         self._callback_group = ReentrantCallbackGroup()
+
+        # Single-flight gate for the llama action: the server processes one
+        # goal at a time, and a second in-flight goal has its ACCEPTANCE
+        # deferred until the first generation finishes — which starves the
+        # send-goal wait into a spurious 10s timeout. Service handlers run on
+        # 4 executor threads (reentrant group), so serialize here.
+        self._llama_lock = threading.Lock()
 
         self._catalog = self._load_semantic_catalog(self._semantic_map_path)
         self._object_store = self._load_object_store()
@@ -614,6 +623,19 @@ class NavigatorNode(Node):
             return None
 
     def _call_llama(
+        self,
+        prompt: str,
+        gbnf_grammar: str,
+        max_tokens_override: Optional[int] = None,
+    ) -> Optional[str]:
+        # One llama goal in flight at a time (see _llama_lock). Callers queue
+        # here instead of colliding at the single-slot action server.
+        with self._llama_lock:
+            return self._call_llama_unlocked(
+                prompt, gbnf_grammar, max_tokens_override
+            )
+
+    def _call_llama_unlocked(
         self,
         prompt: str,
         gbnf_grammar: str,
@@ -1067,7 +1089,29 @@ User:
         ranked_tags = self._rank_retry_suggestions(
             original_intent_hint,
             original_object_tag=original_object_tag,
+            responsible_object_tag=(
+                getattr(request, "responsible_object_tag", "") or ""
+            ).strip(),
         )
+        # Robot-to-blockage proximity: state changes at the blocker (a door
+        # opened, an object moved) can only be VERIFIED by observing the spot
+        # up close, so how far the robot currently is materially changes which
+        # recovery is sensible. Rendered as fact, not instruction — the LLM
+        # still selects freely among the eligible set (filter-not-policy).
+        rp = getattr(request, "robot_pose_at_failure", None)
+        bc = getattr(request, "blockage_centroid", None)
+        blockage_distance_text = "unknown (robot pose unavailable)"
+        if rp is not None and bc is not None and rp.header.frame_id:
+            dist_m = math.hypot(
+                rp.pose.position.x - bc.x,
+                rp.pose.position.y - bc.y,
+            )
+            blockage_distance_text = (
+                f"{dist_m:.1f} m (the robot confirms a barrier opened/cleared "
+                "only by observing it from close range; from far away an "
+                "operator action cannot be verified without approaching first)"
+            )
+
         if ranked_tags:
             retry_suggestion_block = (
                 "\nSemantics-ranked retry alternatives (different object types to "
@@ -1080,10 +1124,27 @@ User:
         else:
             retry_suggestion_block = ""
 
+        # One prompt serves both /propose_recovery callers; only this line is
+        # stage-conditioned. Up-front the planner provably failed pre-flight;
+        # en-route Nav2 stopped mid-execution (a plan may have existed fine).
+        if (request.failure_stage or "").strip().lower() == "validation":
+            failure_context_line = (
+                "Pre-flight check: the global planner could not produce a path "
+                "from the robot's current pose to the target object."
+            )
+        else:
+            failure_context_line = (
+                "En-route failure: Nav2 stopped or aborted while executing; "
+                "see the trigger source and Nav2 message below."
+            )
+
         return f"""You are a BT-aware semantic recovery policy planner for a mobile robot using ROS 2 Nav2.
 
 Nav2 has failed or is about to fail. Choose exactly ONE constrained recovery policy.
 The orchestrator will validate your proposal and Nav2 remains the geometric authority.
+{failure_context_line} The
+blockage diagnosis below identifies the most likely responsible object; it is an
+inference from the costmap and the semantic map, not a verified observation.
 You do not compute paths, poses, velocities, planner IDs, or behavior-tree XML.
 
 Return ONLY one JSON object in exactly one of these forms:
@@ -1103,6 +1164,7 @@ Action meanings:
 - give_up: concede when there is no safe semantic recovery.
 
 Rules:
+- Analyze the FAILURE and robot's POSITION relative to the blockage. Propose a semantically safe recovery that is likely to succeed.
 - Choose exactly one action whose eligibility line below says ELIGIBLE.
 - For retry_target, target_object_tag MUST be one of the navigable object tag vocabulary entries.
 - target_intent_hint is a short phrase (<= 80 chars) explaining why this object satisfies the original need.
@@ -1130,6 +1192,7 @@ trigger source: {getattr(request, 'trigger_source', '') or 'unknown'}
 stage: {request.failure_stage}
 Nav2 message: "{request.nav2_message}"
 robot pose summary: {nearest_summary}
+robot distance to the blockage: {blockage_distance_text}
 distance remaining at abort: {float(request.distance_remaining_at_abort):.3f}
 Nav2 recoveries attempted: {int(request.nav2_recoveries_attempted)}
 
@@ -1225,6 +1288,7 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         self,
         intent_hint: str,
         original_object_tag: str = "",
+        responsible_object_tag: str = "",
         top_k: int = 6,
     ) -> List[str]:
         """Rank navigable tags as *alternatives* for retry_target.
@@ -1234,6 +1298,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
 
           - The originally-requested (now-blocked) tag is excluded — re-suggesting
             it would point the LLM straight back at what already failed.
+          - The responsible blocker's tag is excluded too — the blocker itself
+            (e.g. 'door') is never a meaningful retry destination.
           - When intent_hint is empty (direct object-key command), fall back to
             the blocked tag itself as the ranking query, so captions describing
             similar objects ("chair" → other seating) still surface alternatives
@@ -1244,18 +1310,22 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         """
         from semantic_nav_semantics.caption_ranker import BM25CaptionRanker
 
-        exclude = (original_object_tag or "").strip().lower()
+        exclude = {
+            t.strip().lower()
+            for t in (original_object_tag, responsible_object_tag)
+            if t and t.strip()
+        }
         query = (intent_hint or "").strip()
         if not query:
             # Direct-key command: no NL hint. Use the blocked tag as the query so
             # BM25 still ranks semantically-related object types.
-            query = exclude
+            query = (original_object_tag or "").strip().lower()
         if not query:
             return []
 
         all_rows = []
         for tag in self._object_store.navigable_tag_vocabulary:
-            if tag == exclude:
+            if tag in exclude:
                 continue
             all_rows.extend(self._object_store.rows_for_tag(tag))
 
@@ -1268,11 +1338,26 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         )
         ranked = ranker.rank(all_rows, query)
 
+        # Zero-signal floor: the total score carries a query-independent base
+        # component, so relevance = lexical + affordance parts only. When no
+        # caption or sidecar hint matches the query at all (e.g. direct-key
+        # 'bed' and nothing else mentions beds), every entry scores 0 there
+        # and the "ranking" is arbitrary. Suggesting that noise anchors the
+        # LLM to a meaningless retry target (it picked 'tablet' for a blocked
+        # bed this way) -- better to offer nothing.
+        def _signal(r) -> float:
+            return float(r.lexical_score) + float(r.affordance_score)
+
+        if not ranked or _signal(ranked[0]) <= 0.0:
+            return []
+
         seen: Set[str] = set()
         tags: List[str] = []
         for r in ranked:
+            if _signal(r) <= 0.0:
+                break
             tag = r.row.normalized_tag
-            if tag == exclude:
+            if tag in exclude:
                 continue
             if tag not in seen:
                 seen.add(tag)
