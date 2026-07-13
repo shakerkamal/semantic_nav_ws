@@ -191,6 +191,11 @@ local_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
+          # Clearing reaches FURTHER than marking, so the rover can free stale cells
+          # it can see past but only marks obstacles where the depth scan is still
+          # trustworthy. Safe in BOTH rover modes: rays terminate at the real return,
+          # so with the 3.5 m LiDAR (depth_only:=false) nothing beyond 3.5 m is ever
+          # traced or marked; with the depth scan they extend to its 8.0 m range_max.
           raytrace_max_range: 3.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
@@ -226,11 +231,10 @@ global_costmap:
           max_obstacle_height: 2.0
           clearing: True
           marking: True
-          # Ranges stay INSIDE the rover's 3.5 m LiDAR (model.sdf hls_lfcd_lds
-          # <max>3.5</max>). TB3's 5.0/4.0 raytrace beyond what the sensor can
-          # see, so clearing rays never complete, stale marks accumulate and the
-          # global costmap visibly smears as the robot drives.
-          raytrace_max_range: 3.0
+          # Same reasoning as the local costmap: clearing reaches further than
+          # marking, and rays terminate at the real return so this is safe with the
+          # 3.5 m LiDAR as well as the 8.0 m depth scan.
+          raytrace_max_range: 5.0
           raytrace_min_range: 0.0
           obstacle_max_range: 2.5
           obstacle_min_range: 0.0
@@ -310,15 +314,19 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    # Mirrors the rover's OWN limits from Waveshare's FollowPath block above
-    # (max_vel_x 0.26, max_vel_theta 1.0, acc_lim 2.5/0.5, decel_lim -0.5/-0.5)
-    # rather than TB3's. Nav2's default smoother allows 0.5 m/s and 2.5 rad/s,
-    # which lets the rotation shim whip the rover round faster than the RGB-D
-    # camera can track — motion blur, dropped features, a warped RTAB-Map map.
+    # Speed caps track the rover (max_vel_x 0.26, max_vel_theta 1.0), but the
+    # ACCEL/DECEL limits must NOT be taken from Waveshare's DWB block. Those
+    # (acc_lim_theta 0.5, decel_lim_theta -0.5) are DWB trajectory-SAMPLING limits
+    # for path following, not actuator limits. Feeding them to the smoother caps
+    # angular decel at 0.5 rad/s^2 while behavior_server's Spin plans with
+    # rotational_acc_lim 3.2 — so when Spin commands stop, the smoother takes 2 s to
+    # wind down and sweeps up to 57 deg PAST the target. Measured: a 40 deg spin
+    # turned 68 deg. The smoother must never be more restrictive than the behaviors
+    # commanding through it, so match behavior_server (3.2) and Nav2's own defaults.
     max_velocity: [0.26, 0.0, 1.0]
     min_velocity: [-0.26, 0.0, -1.0]
-    max_accel: [2.5, 0.0, 0.5]
-    max_decel: [-0.5, 0.0, -0.5]
+    max_accel: [2.5, 0.0, 3.2]
+    max_decel: [-2.5, 0.0, -3.2]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

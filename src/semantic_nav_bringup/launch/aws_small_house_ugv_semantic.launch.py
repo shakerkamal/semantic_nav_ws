@@ -14,8 +14,15 @@ same node set, same defaults — only the robot and its SLAM source differ.
   6. orchestrator (idle bt_led daemon) serving /navigate_to_query
   + Nav2-view RViz (/plan, /local_plan, costmaps).
 
+SENSING: depth_only defaults to TRUE — no 2D LiDAR, /scan synthesised from the depth
+camera, 59 deg of horizontal FOV. That is what the real rover (OAK-D Lite, no LiDAR)
+will have on the Jetson, so this is the configuration results must be collected in.
+Pass depth_only:=false to put the simulated LiDAR back for comparison.
+
 BT-led recovery: detection lives INSIDE the Nav2 tree (semantic_recovery_bt.xml via
 the semantic_nav_nav2_plugins in the params) — no external recovery-trigger monitor.
+With depth_only the reobserve happens WITHOUT moving (up_front_reobserve_mode=
+'dwell_then_spin' + rtabmap map_always_update), spinning only if the dwell fails.
 
 Operator decisions are interactive by default (enable_operator_io=false): run
 navigation_terminal, which serves /operator_decision and prompts the human.
@@ -54,6 +61,7 @@ def generate_launch_description():
     world = LaunchConfiguration('world')
     depth_only = LaunchConfiguration('depth_only')
     rtabmap_viz = LaunchConfiguration('rtabmap_viz')
+    map_always_update = LaunchConfiguration('map_always_update')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
 
     # LLM intent parser options.
@@ -132,12 +140,25 @@ def generate_launch_description():
     )
 
     depth_only_arg = DeclareLaunchArgument(
-        'depth_only', default_value='false',
-        description='Sense like the REAL rover: no 2D LiDAR, /scan synthesised from '
-                    'the depth camera. Horizontal FOV drops 360 -> 59 deg, so the '
-                    'rover is blind to its sides and rear and the reobserve spin '
-                    'becomes load-bearing. Default false preserves the LiDAR setup '
-                    'the existing A1/A2 recovery results were collected under.'
+        'depth_only', default_value='true',
+        description='DEFAULT. Sense like the REAL rover: no 2D LiDAR, /scan '
+                    'synthesised from the depth camera (OAK-D Lite on the hardware). '
+                    'Horizontal FOV drops 360 -> 59 deg, so the rover is genuinely '
+                    'blind to its sides and rear — which is the deployment reality, '
+                    'and results collected any other way would not transfer to the '
+                    'Jetson. Set false to put the simulated 2D LiDAR back (a sensor '
+                    'the real rover does not have).'
+    )
+
+    map_always_update_arg = DeclareLaunchArgument(
+        'map_always_update', default_value='true',
+        description='Let RTAB-Map refresh its occupancy grid while the robot is '
+                    'STATIONARY. rtabmap defaults to false, which updates the grid only '
+                    'on new graph nodes (>=0.1 m / >=0.1 rad of motion) — a parked robot '
+                    'then never sees a doorway clear, which is the real reason recovery '
+                    'had to spin. Verified: with this true (and Grid/RayTracing) an '
+                    'obstacle removed in front of the robot clears from /map in ~10 s and '
+                    'from the global costmap in ~20 s, without moving.'
     )
 
     rtabmap_viz_arg = DeclareLaunchArgument(
@@ -318,6 +339,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'localization': localization,
             'rtabmap_viz': rtabmap_viz,
+            'map_always_update': map_always_update,
         }.items()
     )
 
@@ -400,6 +422,17 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'up_front_llm_enabled': up_front_llm_enabled,
             'open_set_inference_enabled': open_set_inference_enabled,
+            # ROVER-ONLY re-observe policy. The orchestrator is shared with the TB3
+            # stack, whose defaults ('spin', 10 s) are left untouched — TB3's rtabmap
+            # has no map_always_update, so a dwell there would stare at a frozen map.
+            # Here rover_rtabmap_rgbd.launch.py DOES set map_always_update=true, so
+            # the rover can re-observe a cleared doorway without moving at all, and
+            # only spins if that fails.
+            'up_front_reobserve_mode': 'dwell_then_spin',
+            # A full 2*pi turn takes this skid-steer rover ~13 s (a 90 deg Spin
+            # measured 3.3 s); at the 10 s default it would ABORT part-way and leave
+            # the camera pointing away from the barrier.
+            'up_front_reobserve_time_allowance_s': 30.0,
         }],
         condition=IfCondition(start_orchestrator),
     )
@@ -426,6 +459,7 @@ def generate_launch_description():
         aws_small_house_path_arg,
         world_arg,
         depth_only_arg,
+        map_always_update_arg,
         rtabmap_viz_arg,
         nav2_params_file_arg,
 

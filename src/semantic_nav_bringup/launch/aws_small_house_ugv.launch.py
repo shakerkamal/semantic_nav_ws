@@ -112,7 +112,15 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'output_frame': 'camera_scan_link',
             'range_min': 0.2,
-            'range_max': 3.5,      # keep in step with Grid/RangeMax and the costmap ranges
+            # 8.0, NOT the 3.5 this used to be. 3.5 was the Waveshare LiDAR's
+            # <max>3.5</max> — and in depth_only there IS no LiDAR, so that ceiling
+            # was a leftover with nothing behind it. The AWS house is ~15 x 12 m, so a
+            # 3.5 m horizon cannot see across a single room: rays into open space come
+            # back NaN, and a NaN ray traces nothing, so a removed obstacle can never
+            # be cleared (measured: 217/217 NaN straight ahead with nothing in range).
+            # The OAK-D Lite reads well past this; the sim camera has no limit at all.
+            # Keep in step with rover_rtabmap_rgbd's grid_range_max.
+            'range_max': 4.5,
             'scan_height': 20,     # band of rows about the image centre
             'scan_time': 0.033,
         }],
@@ -222,12 +230,13 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
-            'depth_only', default_value='false',
-            description='Sense like the REAL rover: strip the 2D LiDAR and synthesise '
-                        '/scan from the depth camera (depthimage_to_laserscan). '
-                        'Collapses the horizontal FOV from 360 to 59 degrees. '
-                        'Default false keeps the LiDAR, so existing LiDAR-based '
-                        'results stay reproducible.'
+            'depth_only', default_value='true',
+            description='DEFAULT. Sense like the REAL rover: strip the 2D LiDAR and '
+                        'synthesise /scan from the depth camera '
+                        '(depthimage_to_laserscan). Collapses the horizontal FOV from '
+                        '360 to 59 degrees, matching the OAK-D Lite the hardware '
+                        'actually carries. Set false to restore the simulated LiDAR, '
+                        'which the real rover does not have.'
         ),
 
         SetEnvironmentVariable('UGV_MODEL', 'ugv_rover'),

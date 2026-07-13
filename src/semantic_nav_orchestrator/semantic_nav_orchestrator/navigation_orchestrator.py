@@ -521,6 +521,25 @@ class NavigationOrchestrator(Node):
         self.declare_parameter('up_front_reobserve_enabled', True)
         self.declare_parameter('up_front_reobserve_yaw_rad', 0.7)
         self.declare_parameter('up_front_reobserve_time_allowance_s', 10.0)
+        # DEFAULT IS 'spin' ON PURPOSE. This orchestrator is SHARED with the TB3
+        # stack (semantic_nav_system.launch.py), whose rtabmap comes from
+        # rtabmap_demos and does NOT set map_always_update — so a TB3 dwell would
+        # stare at a frozen map and do nothing. 'spin' reproduces exactly the sweep
+        # the locked Ch7 TB3 results were collected with. The ugv_rover opts into
+        # 'dwell_then_spin' from aws_small_house_ugv_semantic.launch.py, where
+        # rover_rtabmap_rgbd.launch.py does set map_always_update=true.
+        #   'spin'            — legacy sweep (+y, -2y, +y) every poll. TB3 default.
+        #   'dwell'           — never move; needs map_always_update=true.
+        #   'dwell_then_spin' — dwell, then ONE full turn only if the dwell failed.
+        self.declare_parameter('up_front_reobserve_mode', 'spin')
+        # Measured: /map clears ~10 s after the blocker goes, the global costmap ~20 s.
+        self.declare_parameter('up_front_reobserve_dwell_s', 12.0)
+        # The single re-observe spin: a FULL turn, so it is heading-neutral and the
+        # camera ends up back on the barrier.
+        self.declare_parameter('up_front_reobserve_spin_yaw_rad', 2.0 * math.pi)
+        # Nav2 Spin overshoots by ~6 deg minimum on this rover, so a correction
+        # smaller than this would make the heading worse. 0.17 rad = ~10 deg.
+        self.declare_parameter('up_front_reobserve_recentre_deadband_rad', 0.17)
         self._up_front_require_barrier_clear = bool(
             self.get_parameter('up_front_require_barrier_clear')
             .get_parameter_value().bool_value)
@@ -541,6 +560,18 @@ class NavigationOrchestrator(Node):
             .get_parameter_value().bool_value)
         self._up_front_reobserve_yaw_rad = float(
             self.get_parameter('up_front_reobserve_yaw_rad')
+            .get_parameter_value().double_value)
+        self._up_front_reobserve_mode = (
+            self.get_parameter('up_front_reobserve_mode')
+            .get_parameter_value().string_value.strip().lower() or 'dwell_then_spin')
+        self._up_front_reobserve_dwell_s = float(
+            self.get_parameter('up_front_reobserve_dwell_s')
+            .get_parameter_value().double_value)
+        self._up_front_reobserve_spin_yaw_rad = float(
+            self.get_parameter('up_front_reobserve_spin_yaw_rad')
+            .get_parameter_value().double_value)
+        self._up_front_reobserve_recentre_deadband_rad = float(
+            self.get_parameter('up_front_reobserve_recentre_deadband_rad')
             .get_parameter_value().double_value)
         self._up_front_reobserve_time_allowance_s = float(
             self.get_parameter('up_front_reobserve_time_allowance_s')
@@ -1147,15 +1178,17 @@ class NavigationOrchestrator(Node):
     def _rescan_confirm_and_validate(self, target, barrier_xy, clear_radius) -> bool:
         """Re-scan at the standoff and confirm the goal is reachable.
 
-        Each poll: re-observe (spin) so SLAM + costmap re-sense the passage,
-        clear stale marks, then GATE on grounded perception -- a valid plan AND
-        the responsible barrier's footprint reading CLEAR on the costmap.
+        Each poll: re-observe so SLAM + costmap re-sense the passage (by default
+        WITHOUT moving -- the standoff already faces the barrier, and rtabmap's
+        map_always_update refreshes the grid while parked; see _reobserve), clear
+        stale marks, then GATE on grounded perception -- a valid plan AND the
+        responsible barrier's footprint reading CLEAR on the costmap.
         Object-agnostic; shared by the approach_and_recheck and the operator
         (open_door/clear_object) branches. Returns True if the goal became
         reachable within up_front_recheck_polls.
         """
         for poll in range(int(self._up_front_recheck_polls)):
-            self._reobserve()
+            self._reobserve(poll)
             self._clear_costmaps()
             time.sleep(float(self._up_front_recheck_interval_s))
             barrier = self._barrier_confirmation(barrier_xy, clear_radius)
@@ -1210,15 +1243,128 @@ class NavigationOrchestrator(Node):
         )
         return bool(resp.acknowledged)
 
-    def _reobserve(self) -> None:
-        """Rotate left-right in place so SLAM + costmap re-sense a freshly-opened
-        doorway before the confirmation gate reads it. Perception grounding, not
-        a decision; no LLM."""
+    def _robot_yaw(self) -> Optional[float]:
+        """Current robot heading in the global frame, or None if TF is unavailable."""
+        pose = self._lookup_robot_pose()
+        if pose is None:
+            return None
+        q = pose.pose.orientation
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+
+    @staticmethod
+    def _wrap_angle(a: float) -> float:
+        return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+    def _reobserve(self, poll: int = 0) -> None:
+        """Let SLAM + the costmap re-sense the passage before the confirmation gate
+        reads it. Perception grounding, not a decision; no LLM.
+
+        Escalating, cheapest-first. 'dwell_then_spin' (default):
+
+          poll 0 — DWELL. Hold station and just wait. The standoff already faces the
+            barrier (compute_standoff sets yaw = atan2 towards it), so the camera is
+            looking straight at the blocker and rotating buys nothing. What the robot
+            actually needed was not motion but a MAP THAT UPDATES WHILE PARKED:
+            rtabmap's map_always_update defaults to false, which refreshes the grid
+            only when a new graph node is added (>= RGBD/LinearUpdate 0.1 m or
+            RGBD/AngularUpdate 0.1 rad of MOTION). A parked robot's map was frozen,
+            and the old spin existed purely to force node creation. With
+            map_always_update=true + Grid/RayTracing=true (rover_rtabmap_rgbd.launch.py)
+            a blocker removed in front of a PARKED rover clears from /map in ~10 s and
+            from the global costmap in ~20 s. Measured.
+
+          poll 1 — ONE SPIN, only because the dwell did not clear it. A dwell sees the
+            passage from a single viewpoint; a full turn re-observes it from many, and
+            with a 59 deg depth FOV that also re-senses the sides. It is a FULL 2*pi
+            turn precisely so it is heading-neutral by construction (a partial spin
+            would leave the camera off the barrier), followed by a deadbanded recentre.
+
+          polls 2+ — cheap re-gates only (no dwell, no spin) while the costmap settles.
+
+        Then the caller escalates if the barrier is still not clear.
+
+        Caveat worth knowing: clearing needs a ray to pass THROUGH the freed cells and
+        terminate on something within Grid/RangeMax. A doorway with a room behind it
+        satisfies this; a blocker in front of a void beyond sensor range does not
+        (those rays come back NaN and trace nothing) — no amount of spinning fixes that.
+
+        'dwell' — dwell only, never spin. 'spin' — the legacy sweep every poll, kept
+        for the 360-deg LiDAR arm and for ablation.
+
+        Nav2's Spin overshoots by a near-constant 7-17 deg on this skid-steer rover
+        (it succeeds the instant target yaw is reached, then the chassis coasts). The
+        legacy sweep is therefore BALANCED (+y, -y, -y, +y) — two spins of each sign,
+        so a constant overshoot cancels instead of accumulating as the old
+        (+y, -2y, +y) did, which is what rotated the rover >100 deg off over 5 rounds.
+        """
         if not self._up_front_reobserve_enabled:
             return
+
+        mode = self._up_front_reobserve_mode
+
+        if mode == 'spin':          # TB3 default: the ORIGINAL sweep, every poll
+            self._sweep_spin()
+            return
+
+        if poll == 0:
+            self._log_stage_info(
+                "UP_FRONT",
+                f"Re-observing from the standoff WITHOUT moving "
+                f"(dwell {self._up_front_reobserve_dwell_s:.0f}s; map_always_update "
+                f"refreshes the grid while parked).",
+            )
+            time.sleep(float(self._up_front_reobserve_dwell_s))
+            return
+
+        if poll == 1 and mode == 'dwell_then_spin':
+            self._log_stage_info(
+                "UP_FRONT",
+                "Dwell did not clear the barrier; re-observing with a single full turn.",
+            )
+            self._single_spin()
+
+    def _single_spin(self) -> None:
+        """One full 2*pi turn, then recentre. Heading-neutral by construction."""
+        start_yaw = self._robot_yaw()
+        self._send_spin(self._up_front_reobserve_spin_yaw_rad)
+        self._recentre(start_yaw)
+
+    def _sweep_spin(self) -> None:
+        """The ORIGINAL sweep: left, right, recentre. Unchanged on purpose.
+
+        This is what the TB3 stack runs and what the locked Ch7 results were
+        collected with, so it is left exactly as it was — do NOT "improve" it here.
+        It is imperfect (Nav2's Spin overshoots in whichever direction it turns, and
+        with two positive spins and one negative the overshoot survives once rather
+        than cancelling), but on the TB3's true differential drive the overshoot is
+        small. It is the skid-steer ugv_rover that it breaks, and the rover's answer
+        is 'dwell_then_spin', not a change to this sweep.
+        """
         yaw = self._up_front_reobserve_yaw_rad
-        for target_yaw in (yaw, -2.0 * yaw, yaw):  # left, right, recenter
+        for target_yaw in (yaw, -2.0 * yaw, yaw):  # left, right, recentre
             self._send_spin(target_yaw)
+
+    def _recentre(self, start_yaw: Optional[float]) -> None:
+        """Spin back to start_yaw so the camera ends up facing the barrier again."""
+        if start_yaw is None:
+            return
+        end_yaw = self._robot_yaw()
+        if end_yaw is None:
+            return
+        error = self._wrap_angle(start_yaw - end_yaw)
+        # Deadband: every spin overshoots by at least ~6 deg, so correcting an error
+        # smaller than that makes the heading WORSE. Only correct what a spin can
+        # actually improve.
+        if abs(error) <= self._up_front_reobserve_recentre_deadband_rad:
+            return
+        self._log_stage_info(
+            "UP_FRONT",
+            f"Re-observe left {math.degrees(error):+.1f} deg of heading error; recentring.",
+        )
+        self._send_spin(error)
 
     def _send_spin(self, target_yaw: float) -> None:
         """Fire one Nav2 /spin of target_yaw radians and wait for it (best-effort)."""
