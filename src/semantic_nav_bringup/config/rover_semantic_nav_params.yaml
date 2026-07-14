@@ -100,11 +100,29 @@ controller_server:
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
 
-    # Progress checker parameters
+    # PoseProgressChecker, NOT SimpleProgressChecker (which is what TB3 uses).
+    #
+    # SimpleProgressChecker only counts TRANSLATION, and this rover drives behind a
+    # RotationShimController: whenever the path needs more than angular_dist_threshold
+    # (0.785 rad = 45 deg) of heading change, the shim rotates IN PLACE first, moving
+    # 0 m. The rover is skid-steer and delivers only ~0.47x the commanded rotation, so
+    # a 180 deg turn burns ~6.7 s with zero translation, then still needs ~1.9 s to
+    # cover 0.5 m — 8.6 s of a 10 s allowance. Any replan mid-turn tips it over and
+    # the controller aborts a path it was following perfectly well.
+    #
+    # Observed exactly this: navigating to refrigerator:6 from an ANGLED pose aborted
+    # twice ("Failed to make progress" x3 then x6, DWB reporting zero trajectory
+    # failures, planner returning path_length=10.862); teleoping the rover straight and
+    # re-issuing the SAME goal (path_length=10.866) succeeded with zero failures.
+    #
+    # PoseProgressChecker accepts rotation OR translation as progress, so an in-place
+    # turn is no longer mistaken for being stuck. required_movement_angle is the
+    # rotation that resets the watchdog.
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      plugin: "nav2_controller::PoseProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      required_movement_angle: 0.5
+      movement_time_allowance: 15.0
     # Goal checker parameters
     general_goal_checker:
       stateful: True
@@ -130,12 +148,23 @@ controller_server:
       min_speed_xy: 0.0
       max_speed_xy: 0.26
       min_speed_theta: 0.0
+      # NOT Waveshare's (acc_lim_theta 0.5, decel -0.5). DWB samples only the
+      # velocities reachable from the CURRENT measured one within a control period,
+      # so acc_lim_theta is a hard cap on what it can command: at 10 Hz, 0.5 rad/s^2
+      # allows just +/-0.05 rad/s per cycle. On this skid-steer that deadlocks --
+      # DWB commands ~0.02 rad/s, the chassis under-delivers (~0.006 rad/s measured),
+      # so the next cycle samples +/-0.05 around ~0 again and the rotation can NEVER
+      # ramp up. Measured live 2026-07-14: parked beside the 1.0 m doorway at
+      # (-3.02,-0.91), cmd_vel_nav = linear 0.0 / angular -0.019 until the progress
+      # checker aborted -- it read as "the rover cannot fit through the gap" when in
+      # fact it could not TURN. behavior_server's Spin drives the same chassis fine at
+      # rotational_acc_lim 3.2, so give DWB the same authority.
       acc_lim_x: 2.5
       acc_lim_y: 0.0
-      acc_lim_theta: 0.5
-      decel_lim_x: -0.5
+      acc_lim_theta: 3.2
+      decel_lim_x: -2.5
       decel_lim_y: 0.0
-      decel_lim_theta: -0.5
+      decel_lim_theta: -3.2
       vx_samples: 20
       vy_samples: 0
       vtheta_samples: 40
@@ -249,11 +278,32 @@ planner_server:
     expected_planner_frequency: 20.0
     use_sim_time: True
     planner_plugins: ["GridBased"]
+    # SmacPlanner2D, NOT NavFn. NavFn builds a potential field and then extracts the
+    # path by walking its GRADIENT -- and that second stage fails in a narrow doorway,
+    # where the potential between the two inflation walls is flat and the gradient has
+    # no clear downhill direction. Measured live 2026-07-14: routing the rover out of
+    # the bedroom through the 0.95 m gap, NavFn reported
+    #   "Failed to create a plan from potential when a legal potential was found."
+    # i.e. it PROVED a path exists and then could not trace it. A flood fill from the
+    # rover reached the goal through 56854 cells, confirming the route was open. The
+    # narrow gap is the whole point of this scenario, so the planner must be a real
+    # search: SmacPlanner2D runs A* on the grid and emits the path directly, with no
+    # gradient-descent extraction step to fail.
     GridBased:
-      plugin: "nav2_navfn_planner/NavfnPlanner"
+      plugin: "nav2_smac_planner/SmacPlanner2D"
       tolerance: 0.5
-      use_astar: false
       allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      # The BT replans at 1 Hz, so planning must finish well inside a cycle.
+      max_planning_time: 0.5
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
 
 smoother_server:
   ros__parameters:
