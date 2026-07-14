@@ -216,9 +216,11 @@ BT::NodeStatus QuerySemanticContext::sendRefreshRequest()
   auto request = std::make_shared<RefreshSrv::Request>();
 
   if (!readRobotPose(request->robot_pose)) {
-    RCLCPP_WARN(
+    RCLCPP_ERROR(
       node_->get_logger(),
-      "[QuerySemanticContext] robot_pose and goal unavailable; using zero pose for context query");
+      "[QuerySemanticContext] TF could not supply the robot pose; the semantic context query "
+      "would be centred on nothing. Failing instead of guessing.");
+    return BT::NodeStatus::FAILURE;
   }
 
   geometry_msgs::msg::Point blockage_centroid;
@@ -338,15 +340,19 @@ void QuerySemanticContext::writeDbOutputsFromRefresh()
 bool QuerySemanticContext::readRobotPose(
   geometry_msgs::msg::PoseStamped & pose_out) const
 {
-  if (config().blackboard->get<geometry_msgs::msg::PoseStamped>(
-      "robot_pose",
-      pose_out))
-  {
-    return true;
-  }
+  std::string global_frame{"map"};
+  std::string robot_base_frame{"base_link"};
+  double transform_tolerance_s{0.1};
 
-  return config().blackboard->get<geometry_msgs::msg::PoseStamped>(
-    "goal",
+  getInput("global_frame", global_frame);
+  getInput("robot_base_frame", robot_base_frame);
+  getInput("transform_tolerance_s", transform_tolerance_s);
+
+  return readCurrentRobotPose(
+    config(),
+    global_frame,
+    robot_base_frame,
+    transform_tolerance_s,
     pose_out);
 }
 
@@ -373,6 +379,18 @@ BT::PortsList QuerySemanticContext::providedPorts()
       "match_service",
       "/match_responsible_object",
       "MatchResponsibleObject service name"),
+    BT::InputPort<std::string>(
+      "global_frame",
+      "map",
+      "Frame the robot pose is reported in"),
+    BT::InputPort<std::string>(
+      "robot_base_frame",
+      "base_link",
+      "Robot base frame; the rover uses base_footprint"),
+    BT::InputPort<double>(
+      "transform_tolerance_s",
+      0.1,
+      "TF lookup tolerance when reading the current robot pose"),
     BT::InputPort<int>(
       "service_ready_timeout_ms",
       2000,

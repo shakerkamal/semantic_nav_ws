@@ -20,9 +20,9 @@ BT::NodeStatus EscalateToLLMRecovery::tick()
     return Base::tick();
   }
 
-  if (!readRobotPoseOrGoal(pending_robot_pose_)) {
+  if (!readRobotPose(pending_robot_pose_)) {
     setOutput("directive_action", std::string("give_up"));
-    setOutput("directive_operator_message", std::string("missing_robot_pose_and_goal"));
+    setOutput("directive_operator_message", std::string("missing_robot_pose"));
     return BT::NodeStatus::FAILURE;
   }
 
@@ -194,6 +194,13 @@ BT::PortsList EscalateToLLMRecovery::providedPorts()
     BT::InputPort<std::string>(
       "nav2_message", "", "Nav2 error or validation reason"),
 
+    BT::InputPort<std::string>(
+      "global_frame", "map", "Frame the robot pose is reported in"),
+    BT::InputPort<std::string>(
+      "robot_base_frame", "base_link", "Robot base frame; the rover uses base_footprint"),
+    BT::InputPort<double>(
+      "transform_tolerance_s", 0.1, "TF lookup tolerance when reading the current robot pose"),
+
     BT::InputPort<std::string>("responsible_object_key", "", ""),
     BT::InputPort<std::string>("responsible_object_tag", "", ""),
     BT::InputPort<std::string>("responsible_object_state", "", ""),
@@ -233,27 +240,23 @@ BT::PortsList EscalateToLLMRecovery::providedPorts()
   });
 }
 
-bool EscalateToLLMRecovery::readPoseFromBlackboard(
-  const std::string & key,
-  geometry_msgs::msg::PoseStamped & pose) const
-{
-  return config().blackboard &&
-         config().blackboard->get<geometry_msgs::msg::PoseStamped>(key, pose);
-}
-
-bool EscalateToLLMRecovery::readRobotPoseOrGoal(
+bool EscalateToLLMRecovery::readRobotPose(
   geometry_msgs::msg::PoseStamped & robot_pose) const
 {
-  if (readPoseFromBlackboard("robot_pose", robot_pose)) {
-    return true;
-  }
-  if (readPoseFromBlackboard("goal", robot_pose)) {
-    return true;
-  }
-  if (readPoseFromBlackboard("goal_pose", robot_pose)) {
-    return true;
-  }
-  return false;
+  std::string global_frame{"map"};
+  std::string robot_base_frame{"base_link"};
+  double transform_tolerance_s{0.1};
+
+  getInput("global_frame", global_frame);
+  getInput("robot_base_frame", robot_base_frame);
+  getInput("transform_tolerance_s", transform_tolerance_s);
+
+  return readCurrentRobotPose(
+    config(),
+    global_frame,
+    robot_base_frame,
+    transform_tolerance_s,
+    robot_pose);
 }
 
 }  // namespace semantic_nav_nav2_plugins

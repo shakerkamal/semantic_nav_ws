@@ -13,6 +13,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "semantic_nav_interfaces/srv/match_responsible_object.hpp"
 #include "semantic_nav_interfaces/srv/refresh_local_objects.hpp"
+#include "semantic_nav_nav2_plugins/robot_pose_util.hpp"
 
 namespace semantic_nav_nav2_plugins
 {

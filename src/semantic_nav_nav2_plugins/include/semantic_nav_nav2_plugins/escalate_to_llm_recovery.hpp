@@ -8,6 +8,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_behavior_tree/bt_service_node.hpp"
 #include "semantic_nav_interfaces/srv/request_recovery.hpp"
+#include "semantic_nav_nav2_plugins/robot_pose_util.hpp"
 
 namespace semantic_nav_nav2_plugins
 {
@@ -45,11 +46,7 @@ public:
   static BT::PortsList providedPorts();
 
 private:
-  bool readPoseFromBlackboard(
-    const std::string & key,
-    geometry_msgs::msg::PoseStamped & pose) const;
-
-  bool readRobotPoseOrGoal(geometry_msgs::msg::PoseStamped & robot_pose) const;
+  bool readRobotPose(geometry_msgs::msg::PoseStamped & robot_pose) const;
 
   geometry_msgs::msg::PoseStamped pending_robot_pose_;
 };

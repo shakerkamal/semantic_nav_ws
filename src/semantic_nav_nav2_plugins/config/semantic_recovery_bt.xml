@@ -2,9 +2,11 @@
   BT-LR M6: three-tier recovery architecture.
 
   Tier 1 — primary navigation:
-    ValidateSemantic + RateController(1Hz ComputePathToPose) + FollowPath.
-    Small navigable obstacles are handled by continuous replanning; no
-    PathClearCondition in the primary path to avoid spurious recovery.
+    ValidateSemantic + RateController(1Hz ComputePathToPose) + FollowPath,
+    each planning/control node wrapped in its own RecoveryNode(1) with a
+    context-specific costmap clear. Small navigable obstacles are handled by
+    continuous replanning; no PathClearCondition in the primary path to avoid
+    spurious recovery.
 
   Tier 2 — geometric recovery (RoundRobin child 0):
     Clear local/global costmaps + BackUp. Resolves stale costmap state,
@@ -45,17 +47,34 @@
 
         <!-- Replans at 1 Hz so FollowPath always has a current plan that
              accounts for new costmap obstacles. Navigable obstacles are
-             routed around naturally; no PathClearCondition needed here. -->
+             routed around naturally; no PathClearCondition needed here.
+
+             Each fallible node carries its own single-retry with a
+             context-specific costmap clear (as in Nav2's stock tree). A lone
+             transient failure — a planner miss into unmapped space, one
+             progress-checker timeout — is retried in place and must fail
+             TWICE before the tiered recovery below is entered. Without this,
+             the first hiccup escalates straight to the LLM. -->
         <RateController hz="1.0">
-          <ComputePathToPose
-              goal="{goal}"
-              path="{path}"
-              planner_id="GridBased"/>
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose
+                goal="{goal}"
+                path="{path}"
+                planner_id="GridBased"/>
+            <ClearEntireCostmap
+                name="ClearGlobalCostmap-Context"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
         </RateController>
 
-        <FollowPath
-            path="{path}"
-            controller_id="FollowPath"/>
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath
+              path="{path}"
+              controller_id="FollowPath"/>
+          <ClearEntireCostmap
+              name="ClearLocalCostmap-Context"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
 
       </PipelineSequence>
 

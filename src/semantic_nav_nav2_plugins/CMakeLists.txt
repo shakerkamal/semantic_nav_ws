@@ -14,6 +14,8 @@ find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(nav2_util REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 set(library_name ${PROJECT_NAME})
 
@@ -42,6 +44,8 @@ ament_target_dependencies(${library_name}
   builtin_interfaces
   nav_msgs
   std_msgs
+  nav2_util
+  tf2_ros
 )
 
 install(TARGETS ${library_name}
@@ -66,6 +70,8 @@ if(BUILD_TESTING)
     builtin_interfaces
     nav_msgs
     std_msgs
+    nav2_util
+    tf2_ros
   )
 endif()
 
