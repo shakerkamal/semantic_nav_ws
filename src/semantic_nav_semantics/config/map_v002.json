@@ -1,0 +1,648 @@
+{
+  "object_1": {
+    "id": 0,
+    "object_tag": "stove",
+    "object_caption": "A kitchen cooking bench with a stovetop.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.05,
+      0.57,
+      0.46
+    ],
+    "bbox_center": [
+      9.08,
+      -3.33,
+      2.26
+    ],
+    "bbox_volume": 0.28
+  },
+  "object_3": {
+    "id": 2,
+    "object_tag": "chair",
+    "object_caption": "A dining chair with a padded seat and four legs.",
+    "object_state": "movable",
+    "bbox_extent": [
+      1.04,
+      0.61,
+      0.7
+    ],
+    "bbox_center": [
+      6.23,
+      0.14,
+      0.48
+    ],
+    "bbox_volume": 0.44
+  },
+  "object_4": {
+    "id": 3,
+    "object_tag": "chair",
+    "object_caption": "A dining chair with a padded seat and four legs.",
+    "object_state": "movable",
+    "bbox_extent": [
+      1.05,
+      0.67,
+      0.78
+    ],
+    "bbox_center": [
+      6.03,
+      1.72,
+      0.51
+    ],
+    "bbox_volume": 0.55
+  },
+  "object_7": {
+    "id": 6,
+    "object_tag": "refrigerator",
+    "object_caption": "A tall white residential refrigerator with a hinged door.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      2.14,
+      1.39,
+      0.67
+    ],
+    "bbox_center": [
+      8.6,
+      -0.92,
+      1.05
+    ],
+    "bbox_volume": 1.99
+  },
+  "object_8": {
+    "id": 7,
+    "object_tag": "table",
+    "object_caption": "A rectangular kitchen dining table.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      1.83,
+      1.03,
+      0.85
+    ],
+    "bbox_center": [
+      6.49,
+      0.98,
+      0.44
+    ],
+    "bbox_volume": 1.6
+  },
+  "object_10": {
+    "id": 9,
+    "object_tag": "seasoning box",
+    "object_caption": "A small seasoning and condiment box sitting on the counter.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      1.35,
+      1.37,
+      0.62
+    ],
+    "bbox_center": [
+      8.83,
+      -2.64,
+      0.55
+    ],
+    "bbox_volume": 1.15
+  },
+  "object_13": {
+    "id": 12,
+    "object_tag": "chair",
+    "object_caption": "A dining chair with a padded seat and four legs.",
+    "object_state": "movable",
+    "bbox_extent": [
+      0.82,
+      0.81,
+      0.71
+    ],
+    "bbox_center": [
+      6.98,
+      1.65,
+      0.34
+    ],
+    "bbox_volume": 0.47
+  },
+  "object_14": {
+    "id": 13,
+    "object_tag": "range hood",
+    "object_caption": "A stainless-steel range hood fixed above the stove.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.26,
+      0.61,
+      0.22
+    ],
+    "bbox_center": [
+      8.97,
+      -3.35,
+      1.66
+    ],
+    "bbox_volume": 0.17
+  },
+  "object_16": {
+    "id": 15,
+    "object_tag": "kitchen utensils",
+    "object_caption": "A cluster of loose kitchen utensils resting on the counter.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.43,
+      0.45,
+      0.05
+    ],
+    "bbox_center": [
+      9.29,
+      -5.01,
+      1.44
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_23": {
+    "id": 22,
+    "object_tag": "picture",
+    "object_caption": "A framed picture hanging on the wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.07,
+      0.55,
+      0.05
+    ],
+    "bbox_center": [
+      6.85,
+      3.07,
+      1.76
+    ],
+    "bbox_volume": 0.03
+  },
+  "object_26": {
+    "id": 25,
+    "object_tag": "picture",
+    "object_caption": "A framed picture hanging on the wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.7,
+      0.51,
+      0.03
+    ],
+    "bbox_center": [
+      7.93,
+      3.07,
+      0.67
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_27": {
+    "id": 26,
+    "object_tag": "window",
+    "object_caption": "A glazed window set into the wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      2.47,
+      1.21,
+      0.19
+    ],
+    "bbox_center": [
+      9.37,
+      0.94,
+      1.02
+    ],
+    "bbox_volume": 0.57
+  },
+  "object_33": {
+    "id": 32,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      2.61,
+      0.63,
+      0.28
+    ],
+    "bbox_center": [
+      4.59,
+      -5.11,
+      1.39
+    ],
+    "bbox_volume": 0.46
+  },
+  "object_42": {
+    "id": 41,
+    "object_tag": "security camera",
+    "object_caption": "A small security camera mounted high on the wall.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      2.45,
+      0.69,
+      0.65
+    ],
+    "bbox_center": [
+      0.89,
+      -5.14,
+      0.41
+    ],
+    "bbox_volume": 1.1
+  },
+  "object_48": {
+    "id": 47,
+    "object_tag": "picture",
+    "object_caption": "A framed picture hanging on the wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.1,
+      0.75,
+      0.12
+    ],
+    "bbox_center": [
+      0.79,
+      -5.49,
+      2.1
+    ],
+    "bbox_volume": 0.1
+  },
+  "object_49": {
+    "id": 48,
+    "object_tag": "shelf",
+    "object_caption": "A low open shoe rack with several shelves.",
+    "object_state": "movable",
+    "bbox_extent": [
+      1.42,
+      1.32,
+      0.35
+    ],
+    "bbox_center": [
+      4.26,
+      -5.17,
+      0.67
+    ],
+    "bbox_volume": 0.66
+  },
+  "object_50": {
+    "id": 49,
+    "object_tag": "trash bin",
+    "object_caption": "A small freestanding trash bin.",
+    "object_state": "movable",
+    "bbox_extent": [
+      0.47,
+      0.34,
+      0.19
+    ],
+    "bbox_center": [
+      2.53,
+      -0.8,
+      0.23
+    ],
+    "bbox_volume": 0.03
+  },
+  "object_51": {
+    "id": 50,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.74,
+      0.48,
+      0.48
+    ],
+    "bbox_center": [
+      1.88,
+      -1.93,
+      0.3
+    ],
+    "bbox_volume": 0.17
+  },
+  "object_53": {
+    "id": 52,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.24,
+      0.18,
+      0.11
+    ],
+    "bbox_center": [
+      -0.05,
+      -5.11,
+      0.72
+    ],
+    "bbox_volume": 0.0
+  },
+  "object_54": {
+    "id": 53,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.33,
+      0.23,
+      0.08
+    ],
+    "bbox_center": [
+      2.09,
+      -1.43,
+      0.29
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_55": {
+    "id": 54,
+    "object_tag": "wall",
+    "object_caption": "A section of interior room wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.79,
+      0.12,
+      0.08
+    ],
+    "bbox_center": [
+      -6.11,
+      -1.4,
+      1.23
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_57": {
+    "id": 56,
+    "object_tag": "television",
+    "object_caption": "A flat-screen television.",
+    "object_state": "static",
+    "bbox_extent": [
+      1.43,
+      1.01,
+      0.11
+    ],
+    "bbox_center": [
+      0.78,
+      -5.4,
+      1.19
+    ],
+    "bbox_volume": 0.16
+  },
+  "object_59": {
+    "id": 58,
+    "object_tag": "vase",
+    "object_caption": "A decorative vase standing on a surface.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.69,
+      0.7,
+      0.15
+    ],
+    "bbox_center": [
+      3.07,
+      -5.45,
+      0.48
+    ],
+    "bbox_volume": 0.07
+  },
+  "object_60": {
+    "id": 59,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.26,
+      0.24,
+      0.05
+    ],
+    "bbox_center": [
+      3.53,
+      -5.08,
+      0.2
+    ],
+    "bbox_volume": 0.0
+  },
+  "object_61": {
+    "id": 60,
+    "object_tag": "picture",
+    "object_caption": "A small framed photo standing on a desk or shelf.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.27,
+      0.24,
+      0.16
+    ],
+    "bbox_center": [
+      2.46,
+      -5.13,
+      0.19
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_67": {
+    "id": 66,
+    "object_tag": "door",
+    "object_caption": "A hinged interior door with a metal handle.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      2.33,
+      1.29,
+      0.16
+    ],
+    "bbox_center": [
+      6.01,
+      -5.53,
+      1.15
+    ],
+    "bbox_volume": 0.48
+  },
+  "object_71": {
+    "id": 70,
+    "object_tag": "picture",
+    "object_caption": "A framed picture hanging on the wall.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.48,
+      0.55,
+      0.03
+    ],
+    "bbox_center": [
+      2.98,
+      -5.35,
+      0.52
+    ],
+    "bbox_volume": 0.01
+  },
+  "object_81": {
+    "id": 80,
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
+    "object_state": "movable",
+    "bbox_extent": [
+      1.74,
+      1.67,
+      0.47
+    ],
+    "bbox_center": [
+      4.8,
+      -4.94,
+      0.75
+    ],
+    "bbox_volume": 1.37
+  },
+  "object_85": {
+    "id": 84,
+    "object_tag": "cabinet",
+    "object_caption": "A kitchen cabinet with hinged doors set beneath the countertop.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      0.67,
+      0.42,
+      0.01
+    ],
+    "bbox_center": [
+      8.53,
+      -3.84,
+      0.47
+    ],
+    "bbox_volume": 0.0
+  },
+  "object_104": {
+    "id": 103,
+    "object_tag": "air conditioner",
+    "object_caption": "A wall-mounted air-conditioning unit.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      2.03,
+      0.57,
+      0.32
+    ],
+    "bbox_center": [
+      -1.88,
+      -5.17,
+      1.0
+    ],
+    "bbox_volume": 0.37
+  },
+  "object_105": {
+    "id": 104,
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      3.12,
+      2.74,
+      0.1
+    ],
+    "bbox_center": [
+      -2.48,
+      -3.2313,
+      1.33
+    ],
+    "bbox_volume": 0.85
+  },
+  "object_106": {
+    "id": 105,
+    "object_tag": "couch",
+    "object_caption": "A large upholstered sofa.",
+    "object_state": "movable",
+    "bbox_extent": [
+      1.7,
+      1.21,
+      1.05
+    ],
+    "bbox_center": [
+      1.01,
+      -2.85,
+      0.5
+    ],
+    "bbox_volume": 2.16
+  },
+  "object_108": {
+    "id": 107,
+    "object_tag": "board",
+    "object_caption": "A flat decorative board mounted on the wall.",
+    "object_state": "semi-static",
+    "bbox_extent": [
+      1.14,
+      0.21,
+      0.11
+    ],
+    "bbox_center": [
+      2.76,
+      -5.42,
+      1.57
+    ],
+    "bbox_volume": 0.03
+  },
+  "object_114": {
+    "id": 113,
+    "object_tag": "air conditioner",
+    "object_caption": "A wall-mounted air-conditioning unit.",
+    "object_state": "static",
+    "bbox_extent": [
+      0.81,
+      0.28,
+      0.23
+    ],
+    "bbox_center": [
+      -9.17,
+      2.41,
+      2.21
+    ],
+    "bbox_volume": 0.05
+  },
+  "object_119": {
+    "id": 119,
+    "object_tag": "door",
+    "object_caption": "The doorway connecting the hallway to the kitchen, near the refrigerator and counter.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      4.86223,
+      -0.677227,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
+  },
+  "object_120": {
+    "id": 120,
+    "object_tag": "bed",
+    "object_caption": "A double bed with a mattress and frame.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      -6.16507,
+      2.03056,
+      0.3
+    ],
+    "bbox_extent": [
+      1.8,
+      1.4,
+      0.6
+    ],
+    "bbox_volume": 1.51
+  },
+  "object_121": {
+    "id": 121,
+    "object_tag": "room partition",
+    "object_caption": "A folding room partition / privacy screen standing across the bedroom doorway; it can be slid or folded aside to pass through.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      -2.5068,
+      -1.3503,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
+  },
+  "object_122": {
+    "id": 122,
+    "object_tag": "door",
+    "object_caption": "A folding door panel across a doorway.",
+    "object_state": "semi-static",
+    "bbox_center": [
+      4.6742,
+      2.4645,
+      1.0
+    ],
+    "bbox_extent": [
+      0.2,
+      0.9,
+      2.0
+    ],
+    "bbox_volume": 0.36
+  }
+}

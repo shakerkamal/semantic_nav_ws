@@ -132,11 +132,13 @@ def generate_launch_description():
     world_arg = DeclareLaunchArgument(
         'world',
         default_value=os.path.join(
-            bringup_dir, 'worlds', 'small_house_semantic.world'
+            bringup_dir, 'worlds', 'small_house_ugv.world'
         ),
-        description='Gazebo world file. Defaults to the baked semantic scenario '
-                    'world (closed-door walls at door:119) — the same world the TB3 '
-                    'stack runs, so rover results are comparable.'
+        description='Gazebo world file. ROVER-ONLY world: the semantic scenario world '
+                    'with 8 furniture models removed so the rover is not forced through '
+                    'cramped spaces (its footprint + 59 deg FOV cope badly with them). '
+                    'The TB3 stack keeps small_house_semantic.world untouched. Must be '
+                    'used together with map_v002.json — see semantic_map_path.'
     )
 
     depth_only_arg = DeclareLaunchArgument(
@@ -190,9 +192,15 @@ def generate_launch_description():
         default_value=os.path.join(
             get_package_share_directory('semantic_nav_semantics'),
             'config',
-            'map_v001.json',
+            'map_v002.json',
         ),
-        description='Absolute path to object-centric semantic map_v001.json',
+        # ROVER-ONLY map. v002 = v001 minus the 3 entries whose backing objects were
+        # deleted from small_house_ugv.world (fitness equipment, the TV cabinet, the
+        # tablet) — leaving them in would let the LLM pick a target that no longer
+        # exists. The TB3 stack stays on map_v001.json + small_house_semantic.world.
+        # MUST match the 'world' arg: map and world are a matched pair.
+        description='Absolute path to the object-centric semantic map. Rover default '
+                    'is map_v002.json, which matches small_house_ugv.world.',
     )
 
     llama_action_arg = DeclareLaunchArgument(
@@ -382,6 +390,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
+            'semantic_map_path': semantic_map_path,
         }.items()
     )
 
@@ -422,13 +431,17 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'up_front_llm_enabled': up_front_llm_enabled,
             'open_set_inference_enabled': open_set_inference_enabled,
+            # The orchestrator loads the map under TWO params; both must point at v002
+            # or it would diagnose blockages against objects the rover's world lacks.
+            'semantic_map_path': semantic_map_path,
+            'semantic_object_db_path': semantic_map_path,
             # ROVER-ONLY re-observe policy. The orchestrator is shared with the TB3
             # stack, whose defaults ('spin', 10 s) are left untouched — TB3's rtabmap
             # has no map_always_update, so a dwell there would stare at a frozen map.
             # Here rover_rtabmap_rgbd.launch.py DOES set map_always_update=true, so
             # the rover can re-observe a cleared doorway without moving at all, and
             # only spins if that fails.
-            'up_front_reobserve_mode': 'dwell_then_spin',
+            'up_front_reobserve_mode': 'dwell',
             # A full 2*pi turn takes this skid-steer rover ~13 s (a 90 deg Spin
             # measured 3.3 s); at the 10 s default it would ABORT part-way and leave
             # the camera pointing away from the barrier.

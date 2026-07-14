@@ -1,3 +1,7 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -9,6 +13,22 @@ def generate_launch_description():
         default_value='true',
         description='Use simulation time'
     )
+
+    # Default stays map_v001.json so the TB3 stack is unchanged. The ugv_rover
+    # overrides this to map_v002.json (its world has 8 fewer furniture models),
+    # so BOTH the resolver and local_object_query read the same map as the LLM and
+    # the orchestrator — otherwise the rover would resolve against objects that no
+    # longer exist in its world.
+    semantic_map_path_arg = DeclareLaunchArgument(
+        'semantic_map_path',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_semantics'),
+            'config',
+            'map_v001.json',
+        ),
+        description='Absolute path to the object-centric semantic map.'
+    )
+    semantic_map_path = LaunchConfiguration('semantic_map_path')
 
     resolve_service_arg = DeclareLaunchArgument(
         'resolve_service',
@@ -28,7 +48,8 @@ def generate_launch_description():
         name='semantic_resolver',
         output='screen',
         parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time')
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'semantic_map_path': semantic_map_path,
         }]
     )
 
@@ -59,6 +80,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'map_path': semantic_map_path,   # note: this node's param is 'map_path'
         }]
     )
 
@@ -74,6 +96,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time_arg,
+        semantic_map_path_arg,
         resolve_service_arg,
         execute_action_arg,
         semantic_node,
