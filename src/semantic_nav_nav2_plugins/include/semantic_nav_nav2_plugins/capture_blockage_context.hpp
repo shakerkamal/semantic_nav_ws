@@ -55,6 +55,31 @@ public:
     double robot_y,
     double lookahead_m);
 
+  /**
+   * @brief Perception-grounded fallback: nearest lethal-cell cluster to the
+   * robot's current position, read directly from the local costmap.
+   *
+   * When the path is completely empty (a fully-sealed corridor: the planner
+   * cannot find ANY route, e.g. S2's closed door), fallbackCentroidAlongPath
+   * has nothing to project along and would return the robot's raw pose --
+   * which can be a couple of metres from the actual blocker after a Tier-2
+   * backup moves the robot further away (found 2026-07-15, S2: robot at
+   * (2.808,-0.116), true door at (4.862,-0.677), match found an unrelated
+   * "trash bin" instead of the door). The costmap the robot is stopped in
+   * front of already shows the real obstacle as lethal cells, so search
+   * that directly instead of guessing geometrically. Returns false (leaves
+   * out_centroid untouched) if no lethal cell is found within
+   * search_radius_m or the costmap is malformed/empty -- callers fall back
+   * further to fallbackCentroidAlongPath in that case.
+   */
+  static bool nearestLethalCentroidNearRobot(
+    const nav_msgs::msg::OccupancyGrid & costmap,
+    double robot_x,
+    double robot_y,
+    double search_radius_m,
+    int lethal_threshold,
+    geometry_msgs::msg::Point & out_centroid);
+
 private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;

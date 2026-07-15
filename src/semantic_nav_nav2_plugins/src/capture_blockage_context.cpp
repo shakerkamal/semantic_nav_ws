@@ -68,18 +68,19 @@ BT::NodeStatus CaptureBlockageContext::tick()
     }
   }
 
-  // Fallback: sampling found no lethal cell (stale/short path, or the blocker
-  // fell outside the rolling local costmap). Anchor the centroid at the robot
-  // and step forward ALONG THE PATH so the responsible-object match searches
-  // next to the robot -- right where the blocker is -- instead of the map
-  // origin, which is what an unset centroid defaults to.
+  // No lethal cell on the path (stale/short path, blocker outside the
+  // rolling local costmap, OR -- a fully-sealed corridor like S2's closed
+  // door -- the planner found NO path at all, so there is nothing to sample).
+  // Read the robot's TF pose; every fallback tier below is anchored on it.
   double fallback_lookahead_m{1.0};
   double fallback_extent_m{0.6};
+  double fallback_search_radius_m{2.0};
   std::string global_frame{"map"};
   std::string robot_base_frame{"base_footprint"};
   double transform_tolerance_s{0.1};
   getInput("fallback_lookahead_m", fallback_lookahead_m);
   getInput("fallback_extent_m", fallback_extent_m);
+  getInput("fallback_search_radius_m", fallback_search_radius_m);
   getInput("global_frame", global_frame);
   getInput("robot_base_frame", robot_base_frame);
   getInput("transform_tolerance_s", transform_tolerance_s);
@@ -94,19 +95,49 @@ BT::NodeStatus CaptureBlockageContext::tick()
       " unavailable; blockage_centroid left UNSET (recovery lacks spatial context)");
     return BT::NodeStatus::SUCCESS;
   }
+  const double robot_x = robot_pose.pose.position.x;
+  const double robot_y = robot_pose.pose.position.y;
 
+  // Second tier: PERCEPTION-GROUNDED -- search the costmap the robot is
+  // actually stopped in front of for the nearest lethal cell, instead of
+  // guessing a centroid from geometry alone. This is what catches a fully
+  // -sealed corridor: the path is empty so there is nothing to project
+  // along, but the costmap already shows the real obstacle right there.
+  geometry_msgs::msg::Point costmap_centroid;
+  if (costmap && nearestLethalCentroidNearRobot(
+      *costmap, robot_x, robot_y, fallback_search_radius_m,
+      lethal_threshold, costmap_centroid))
+  {
+    setOutput("blockage_centroid", costmap_centroid);
+    setOutput("blockage_extent_m", static_cast<float>(fallback_extent_m));
+
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "[CaptureBlockageContext] centroid=(%.3f,%.3f) extent=%.3fm"
+      " source=costmap_near_robot robot=(%.3f,%.3f) (no lethal cell on path,"
+      " found one near the robot instead)",
+      costmap_centroid.x, costmap_centroid.y, fallback_extent_m,
+      robot_x, robot_y);
+    return BT::NodeStatus::SUCCESS;
+  }
+
+  // Last resort: pure geometric projection (no costmap, or genuinely nothing
+  // lethal within search radius either). Anchor at the robot and step
+  // forward ALONG THE PATH (if any) so the match at least searches next to
+  // the robot instead of the map origin, which is what an unset centroid
+  // defaults to.
   const geometry_msgs::msg::Point centroid = fallbackCentroidAlongPath(
-    path, robot_pose.pose.position.x, robot_pose.pose.position.y,
-    fallback_lookahead_m);
+    path, robot_x, robot_y, fallback_lookahead_m);
   setOutput("blockage_centroid", centroid);
   setOutput("blockage_extent_m", static_cast<float>(fallback_extent_m));
 
   RCLCPP_INFO(
     node_->get_logger(),
     "[CaptureBlockageContext] centroid=(%.3f,%.3f) extent=%.3fm source=fallback"
-    " robot=(%.3f,%.3f) path_poses=%zu (no lethal cells sampled)",
+    " robot=(%.3f,%.3f) path_poses=%zu (no lethal cells sampled, none found"
+    " near robot either)",
     centroid.x, centroid.y, fallback_extent_m,
-    robot_pose.pose.position.x, robot_pose.pose.position.y,
+    robot_x, robot_y,
     have_path ? path.poses.size() : 0UL);
 
   return BT::NodeStatus::SUCCESS;
@@ -160,6 +191,83 @@ geometry_msgs::msg::Point CaptureBlockageContext::fallbackCentroidAlongPath(
   return centroid;
 }
 
+bool CaptureBlockageContext::nearestLethalCentroidNearRobot(
+  const nav_msgs::msg::OccupancyGrid & costmap,
+  double robot_x,
+  double robot_y,
+  double search_radius_m,
+  int lethal_threshold,
+  geometry_msgs::msg::Point & out_centroid)
+{
+  const auto & info = costmap.info;
+  if (info.width == 0 || info.height == 0 || info.resolution <= 0.0f) {
+    return false;
+  }
+
+  const auto expected_size =
+    static_cast<std::size_t>(info.width) * static_cast<std::size_t>(info.height);
+  if (costmap.data.size() < expected_size) {
+    return false;
+  }
+
+  const double origin_x = info.origin.position.x;
+  const double origin_y = info.origin.position.y;
+  const double resolution = static_cast<double>(info.resolution);
+
+  const int radius_cells = std::max(
+    0, static_cast<int>(std::ceil(search_radius_m / resolution)));
+  const int rx = static_cast<int>(std::floor((robot_x - origin_x) / resolution));
+  const int ry = static_cast<int>(std::floor((robot_y - origin_y) / resolution));
+
+  double sx = 0.0;
+  double sy = 0.0;
+  int count = 0;
+
+  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+      const int mx = rx + dx;
+      const int my = ry + dy;
+
+      if (mx < 0 || my < 0 ||
+        mx >= static_cast<int>(info.width) ||
+        my >= static_cast<int>(info.height))
+      {
+        continue;
+      }
+
+      const double wx = origin_x + (static_cast<double>(mx) + 0.5) * resolution;
+      const double wy = origin_y + (static_cast<double>(my) + 0.5) * resolution;
+
+      if (std::hypot(wx - robot_x, wy - robot_y) > search_radius_m) {
+        continue;
+      }
+
+      const std::size_t index =
+        static_cast<std::size_t>(my) * static_cast<std::size_t>(info.width) +
+        static_cast<std::size_t>(mx);
+
+      if (index >= costmap.data.size()) {
+        continue;
+      }
+
+      if (static_cast<int>(costmap.data[index]) >= lethal_threshold) {
+        sx += wx;
+        sy += wy;
+        ++count;
+      }
+    }
+  }
+
+  if (count == 0) {
+    return false;
+  }
+
+  out_centroid.x = sx / static_cast<double>(count);
+  out_centroid.y = sy / static_cast<double>(count);
+  out_centroid.z = 0.0;
+  return true;
+}
+
 BT::PortsList CaptureBlockageContext::providedPorts()
 {
   return {
@@ -191,6 +299,12 @@ BT::PortsList CaptureBlockageContext::providedPorts()
       "fallback_extent_m",
       0.6,
       "Blockage extent assumed for the fallback centroid"),
+    BT::InputPort<double>(
+      "fallback_search_radius_m",
+      2.0,
+      "When no lethal cell is sampled on the path, search this far around the"
+      " robot's TF position in the costmap for the nearest lethal cell before"
+      " falling back to pure path/robot-pose geometry"),
     BT::InputPort<std::string>(
       "global_frame",
       "map",

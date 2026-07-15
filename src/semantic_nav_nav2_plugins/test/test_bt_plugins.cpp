@@ -490,6 +490,59 @@ TEST(CaptureBlockageContextTest, fallbackClampsToPathEndWhenShort)
   EXPECT_NEAR(c.y, 0.0, 1e-6);
 }
 
+TEST(CaptureBlockageContextTest, nearestLethalCentroidFindsClusterNearRobot)
+{
+  // A fully-sealed corridor (S2 door): ComputePathToPose finds NO path at
+  // all, so fallbackCentroidAlongPath has nothing to project along and would
+  // otherwise return the robot's raw position -- which can be a couple of
+  // metres from the actual blocker after a Tier-2 backup (found 2026-07-15,
+  // S2: robot at (2.808,-0.116), true door at (4.862,-0.677), match found an
+  // unrelated "trash bin" instead). The costmap is the PERCEPTION-GROUNDED
+  // source of truth: it already shows the door as lethal cells right in
+  // front of the stopped robot, so search it directly instead of guessing.
+  auto costmap = makeCostmap(40, 40, 0.1f, 0.0f, 0.0f, 0);
+  // Lethal cluster centred around world (1.55, 0.05) -- ~1.5m ahead of the
+  // robot at (0,0), row my=0 so its world y (0.05) sits right at the robot.
+  for (int mx = 14; mx <= 16; ++mx) {
+    costmap.data[0 * 40 + mx] = 100;
+  }
+  geometry_msgs::msg::Point out;
+  bool found = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    nearestLethalCentroidNearRobot(costmap, 0.0, 0.0, 2.0, 90, out);
+  EXPECT_TRUE(found);
+  EXPECT_NEAR(out.x, 1.55, 0.1);
+  EXPECT_NEAR(out.y, 0.05, 0.1);
+}
+
+TEST(CaptureBlockageContextTest, nearestLethalCentroidReturnsFalseWhenNoneNearby)
+{
+  auto costmap = makeCostmap(40, 40, 0.1f, 0.0f, 0.0f, 0);
+  geometry_msgs::msg::Point out;
+  bool found = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    nearestLethalCentroidNearRobot(costmap, 0.0, 0.0, 2.0, 90, out);
+  EXPECT_FALSE(found);
+}
+
+TEST(CaptureBlockageContextTest, nearestLethalCentroidIgnoresCellsBeyondSearchRadius)
+{
+  auto costmap = makeCostmap(40, 40, 0.1f, 0.0f, 0.0f, 0);
+  // Lethal cell at world (3.95, 0.05) -- outside a 2.0m search radius from (0,0).
+  costmap.data[0 * 40 + 39] = 100;
+  geometry_msgs::msg::Point out;
+  bool found = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    nearestLethalCentroidNearRobot(costmap, 0.0, 0.0, 2.0, 90, out);
+  EXPECT_FALSE(found);
+}
+
+TEST(CaptureBlockageContextTest, nearestLethalCentroidMalformedCostmapReturnsFalse)
+{
+  nav_msgs::msg::OccupancyGrid costmap;   // width/height 0
+  geometry_msgs::msg::Point out;
+  bool found = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    nearestLethalCentroidNearRobot(costmap, 0.0, 0.0, 2.0, 90, out);
+  EXPECT_FALSE(found);
+}
+
 int main(int argc, char ** argv)
 {
   testing::InitGoogleTest(&argc, argv);
