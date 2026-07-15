@@ -27,6 +27,7 @@ class ObjectCandidate:
     bbox_extent: Tuple[float, float, float]
     state_detail: str = ""
     traversability: str = ""
+    source: str = ""               # "persistent_map" | "dynamic_overlay" | ""
 
 
 @dataclass(frozen=True)
@@ -146,8 +147,18 @@ def match_responsible_object(
     ]
 
     if verified:
+        # A static persistent-map record can share coordinates with a live
+        # -detected dynamic object placed on top of it (e.g. a chair spawned
+        # on a room partition's own bbox) -- both then satisfy inflated-bbox
+        # containment. The static record only reflects the map; the dynamic
+        # observation is what perception actually found there right now, so
+        # prefer it even when it is not the nearest bbox center -- "nearest"
+        # alone has no principled way to break this specific tie.
+        dynamic_verified = [c for c in verified if c.source == "dynamic_overlay"]
+        pool = dynamic_verified if dynamic_verified else verified
+
         nearest_verified = min(
-            verified,
+            pool,
             key=lambda candidate: _planar_distance_to_bbox_center(
                 blockage_centroid,
                 candidate,
@@ -156,6 +167,11 @@ def match_responsible_object(
 
         if len(verified) == 1:
             message = "verified inflated-bbox containment"
+        elif dynamic_verified:
+            message = (
+                f"verified dynamic-preferred nearest of {len(dynamic_verified)} "
+                f"live-perceived match(es) (of {len(verified)} total)"
+            )
         else:
             message = (
                 f"verified nearest of {len(verified)} inflated-bbox matches"

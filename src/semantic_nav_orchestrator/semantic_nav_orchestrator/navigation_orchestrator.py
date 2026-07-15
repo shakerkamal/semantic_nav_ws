@@ -4151,6 +4151,7 @@ class NavigationOrchestrator(Node):
             traversability=str(
                 getattr(msg, "traversability", "") or ""
             ),
+            source=str(getattr(msg, "source", "") or ""),
         )
 
     @staticmethod

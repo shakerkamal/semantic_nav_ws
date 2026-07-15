@@ -167,3 +167,82 @@ def test_multiple_verified_matches_remain_verified_and_choose_nearest():
     assert result.match_type == "verified"
     assert result.responsible_object_key == "chair:2"
     assert "nearest of 2" in result.message
+
+
+def test_colocated_verified_matches_prefer_dynamic_over_static_even_if_farther():
+    # A static persistent-map object (e.g. a room partition) can share
+    # coordinates with a live-detected dynamic object placed on top of it
+    # (e.g. a chair or person spawned at the same gap) -- both then satisfy
+    # inflated-bbox containment. The static record reflects the map, not what
+    # is physically there right now; the dynamic observation is what a live
+    # detector actually perceived. Prefer it even when it is NOT the nearest
+    # bbox center, since "nearest" alone has no way to break this tie
+    # correctly (found 2026-07-15, S3/S4/S5 co-location with object_121).
+    static_partition = ObjectCandidate(
+        object_key="partition:121",
+        object_tag="room partition",
+        object_state="semi-static",
+        safety_class="none",
+        openable=True,
+        clearable=False,
+        bbox_center=(0.0, 0.0, 0.0),
+        bbox_extent=(1.0, 1.0, 1.0),
+        source="persistent_map",
+    )
+    dynamic_chair = ObjectCandidate(
+        object_key="chair:901",
+        object_tag="chair",
+        object_state="movable",
+        safety_class="none",
+        openable=False,
+        clearable=True,
+        bbox_center=(0.05, 0.0, 0.0),
+        bbox_extent=(1.0, 1.0, 1.0),
+        source="dynamic_overlay",
+    )
+
+    result = match_responsible_object(
+        blockage_centroid=(0.0, 0.0, 0.0),
+        blockage_extent_m=0.2,
+        candidates=[static_partition, dynamic_chair],
+    )
+
+    assert result.success is True
+    assert result.match_type == "verified"
+    assert result.responsible_object_key == "chair:901"
+
+
+def test_colocated_static_only_still_chooses_nearest():
+    # No dynamic candidate at all -- preference has nothing to prefer, so the
+    # existing nearest-bbox-center tie-break is unchanged (no regression).
+    farther_static = ObjectCandidate(
+        object_key="wall:1",
+        object_tag="wall",
+        object_state="static",
+        safety_class="none",
+        openable=False,
+        clearable=False,
+        bbox_center=(0.1, 0.0, 0.0),
+        bbox_extent=(1.0, 1.0, 1.0),
+        source="persistent_map",
+    )
+    nearer_static = ObjectCandidate(
+        object_key="partition:121",
+        object_tag="room partition",
+        object_state="semi-static",
+        safety_class="none",
+        openable=True,
+        clearable=False,
+        bbox_center=(0.0, 0.0, 0.0),
+        bbox_extent=(1.0, 1.0, 1.0),
+        source="persistent_map",
+    )
+
+    result = match_responsible_object(
+        blockage_centroid=(0.0, 0.0, 0.0),
+        blockage_extent_m=0.2,
+        candidates=[farther_static, nearer_static],
+    )
+
+    assert result.success is True
+    assert result.responsible_object_key == "partition:121"
