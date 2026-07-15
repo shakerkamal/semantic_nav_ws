@@ -28,6 +28,7 @@ add_library(${library_name} SHARED
   src/register_nodes.cpp
   src/emit_obstacle_signal.cpp
   src/operator_prompt.cpp
+  src/compute_standoff_pose.cpp
 )
 
 target_include_directories(${library_name} PUBLIC

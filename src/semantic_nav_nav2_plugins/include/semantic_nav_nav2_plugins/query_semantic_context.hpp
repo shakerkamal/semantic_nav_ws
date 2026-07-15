@@ -10,6 +10,7 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "geometry_msgs/msg/point.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/vector3.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "semantic_nav_interfaces/srv/match_responsible_object.hpp"
 #include "semantic_nav_interfaces/srv/refresh_local_objects.hpp"

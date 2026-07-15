@@ -1,4 +1,5 @@
 // Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
+#include <cmath>
 #include <gtest/gtest.h>
 
 #include "behaviortree_cpp_v3/bt_factory.h"
@@ -11,6 +12,7 @@
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
+#include "semantic_nav_nav2_plugins/compute_standoff_pose.hpp"
 
 TEST(ValidateSemanticTest, hasGoalPoseInputPort)
 {
@@ -351,6 +353,21 @@ TEST(QuerySemanticContextTest, hasResponsibleSafetyClassOutputPort)
     BT::PortDirection::OUTPUT);
 }
 
+TEST(QuerySemanticContextTest, hasResponsibleBboxOutputPorts)
+{
+  // 2026-07-15 (Part A): the matched object's bbox was being discarded --
+  // QuerySemanticContext read it from MatchResponsibleObject's response but
+  // never surfaced it to the blackboard, so ComputeStandoffPose had nothing
+  // to stand off from.
+  const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("responsible_bbox_center"), 0u);
+  ASSERT_GT(ports.count("responsible_bbox_extent"), 0u);
+  EXPECT_EQ(
+    ports.at("responsible_bbox_center").direction(), BT::PortDirection::OUTPUT);
+  EXPECT_EQ(
+    ports.at("responsible_bbox_extent").direction(), BT::PortDirection::OUTPUT);
+}
+
 TEST(QuerySemanticContextTest, hasLocalDbVersionOutputPort)
 {
   const auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
@@ -554,6 +571,66 @@ TEST(CaptureBlockageContextTest, nearestLethalCentroidMalformedCostmapReturnsFal
   bool found = semantic_nav_nav2_plugins::CaptureBlockageContext::
     nearestLethalCentroidNearRobot(costmap, 0.0, 0.0, 2.0, 90, out);
   EXPECT_FALSE(found);
+}
+
+// ---- ComputeStandoffPose (Part A: en-route standoff-before-sampling) -----
+
+TEST(ComputeStandoffPoseTest, standoffIsOutsideBboxAndFacesObject)
+{
+  // Mirrors semantic_nav_semantics/test_standoff_planner.py exactly (same
+  // algorithm, ported to C++): standoff distance = 0.5*2.0 + 0.22 + 0.20 = 1.42.
+  auto pose = semantic_nav_nav2_plugins::ComputeStandoffPose::computeStandoffPose(
+    /*robot_x=*/0.0, /*robot_y=*/0.0,
+    /*bbox_center_x=*/5.0, /*bbox_center_y=*/0.0,
+    /*bbox_extent_x=*/2.0, /*bbox_extent_y=*/1.0,
+    /*robot_footprint_radius=*/0.22, /*clearance_margin=*/0.20,
+    "map");
+
+  const double dx = 5.0 - pose.pose.position.x;
+  const double dy = 0.0 - pose.pose.position.y;
+  const double actual_dist = std::hypot(dx, dy);
+  EXPECT_NEAR(actual_dist, 1.42, 1e-6);
+  // yaw faces from goal towards object (+x direction) -> quaternion ~identity
+  EXPECT_NEAR(pose.pose.orientation.z, 0.0, 1e-6);
+  EXPECT_NEAR(pose.pose.orientation.w, 1.0, 1e-6);
+  EXPECT_EQ(pose.header.frame_id, "map");
+}
+
+TEST(ComputeStandoffPoseTest, atObjectUsesFallbackDirection)
+{
+  auto pose = semantic_nav_nav2_plugins::ComputeStandoffPose::computeStandoffPose(
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.5, 0.22, 0.20, "map");
+  // fallback vector is (1, 0), so goal is to the -x side (same as Python test)
+  EXPECT_LT(pose.pose.position.x, 0.0);
+  EXPECT_NEAR(pose.pose.position.y, 0.0, 1e-6);
+}
+
+TEST(ComputeStandoffPoseTest, yaw45DegreesForDiagonalObject)
+{
+  auto pose = semantic_nav_nav2_plugins::ComputeStandoffPose::computeStandoffPose(
+    0.0, 0.0, 1.0, 1.0, 0.1, 0.1, 0.0, 0.0, "map");
+  // yaw = pi/4 -> z = sin(pi/8), w = cos(pi/8)
+  const double expected_z = std::sin(M_PI / 8.0);
+  const double expected_w = std::cos(M_PI / 8.0);
+  EXPECT_NEAR(pose.pose.orientation.z, expected_z, 1e-6);
+  EXPECT_NEAR(pose.pose.orientation.w, expected_w, 1e-6);
+}
+
+TEST(ComputeStandoffPoseTest, providedPortsIncludesBboxAndOutput)
+{
+  const auto ports = semantic_nav_nav2_plugins::ComputeStandoffPose::providedPorts();
+  ASSERT_GT(ports.count("responsible_bbox_center"), 0u);
+  ASSERT_GT(ports.count("responsible_bbox_extent"), 0u);
+  ASSERT_GT(ports.count("standoff_goal"), 0u);
+  EXPECT_EQ(ports.at("standoff_goal").direction(), BT::PortDirection::OUTPUT);
+}
+
+TEST(ComputeStandoffPoseTest, registersWithoutError)
+{
+  BT::BehaviorTreeFactory factory;
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::ComputeStandoffPose>(
+      "ComputeStandoffPose"));
 }
 
 int main(int argc, char ** argv)

@@ -10,6 +10,7 @@
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
+#include "semantic_nav_nav2_plugins/compute_standoff_pose.hpp"
 
 BT_REGISTER_NODES(factory)
 {
@@ -27,4 +28,6 @@ BT_REGISTER_NODES(factory)
     "EmitObstacleSignal");
   factory.registerNodeType<semantic_nav_nav2_plugins::OperatorPrompt>(
     "OperatorPrompt");
+  factory.registerNodeType<semantic_nav_nav2_plugins::ComputeStandoffPose>(
+    "ComputeStandoffPose");
 }
