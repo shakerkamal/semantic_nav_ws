@@ -27,7 +27,16 @@ from semantic_nav_interfaces.msg import (
     SemanticMapUpdate,
     SemanticStoreUpdated,
 )
-from semantic_nav_interfaces.srv import QuerySemanticRegion, RefreshLocalObjects
+from semantic_nav_interfaces.srv import (
+    InferAffordance,
+    QuerySemanticRegion,
+    RefreshLocalObjects,
+)
+from semantic_nav_semantics.affordance_classification import (
+    InferredAffordance,
+    accept_inference,
+    tag_is_classifiable,
+)
 from semantic_nav_semantics.dynamic_overlay import DynamicObjectCache
 
 from semantic_nav_semantics.semantic_store import (
@@ -251,6 +260,19 @@ class LocalObjectQueryNode(Node):
         self.declare_parameter("default_door_state_ttl_sec", 3.0)
         self.declare_parameter("max_door_state_ttl_sec", 15.0)
 
+        # Open-set affordance inference (spec 21.4) for DYNAMIC (live
+        # -perceived) objects. A live detector can report ANY tag, not just
+        # the ones already in object_action_attributes.json (the up-front
+        # path already gets this via navigation_orchestrator; en-route never
+        # did, leaving a genuinely novel detected tag stuck with restrictive
+        # table defaults -- found 2026-07-15, user: "we definitely need this
+        # enabled by default since we don't know what object will be
+        # detected"). Default True per that explicit direction.
+        self.declare_parameter("open_set_inference_enabled", True)
+        self.declare_parameter("infer_affordance_service", "/infer_affordance")
+        self.declare_parameter("affordance_confidence_floor", 60)
+        self.declare_parameter("open_set_timeout_sec", 10.0)
+
         map_path = (
             self.get_parameter("map_path")
             .get_parameter_value()
@@ -370,6 +392,29 @@ class LocalObjectQueryNode(Node):
         )
         self._provider_query_service_name = provider_query_service
 
+        infer_affordance_service = (
+            self.get_parameter("infer_affordance_service")
+            .get_parameter_value()
+            .string_value
+            .strip()
+            or "/infer_affordance"
+        )
+        self._affordance_confidence_floor = int(
+            self.get_parameter("affordance_confidence_floor")
+            .get_parameter_value()
+            .integer_value
+        )
+        self._open_set_timeout_sec = float(
+            self.get_parameter("open_set_timeout_sec")
+            .get_parameter_value()
+            .double_value
+        )
+        self._infer_affordance_client = self.create_client(
+            InferAffordance,
+            infer_affordance_service,
+            callback_group=self._reentrant_group,
+        )
+
         store_update_qos = QoSProfile(depth=1)
         store_update_qos.reliability = ReliabilityPolicy.RELIABLE
         store_update_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -485,38 +530,43 @@ class LocalObjectQueryNode(Node):
         )
 
     def _handle_dynamic_objects(self, msg: DynamicObjectArray) -> None:
-        now_sec = (
-            self.get_clock().now().nanoseconds / 1e9
-        )
+        # Classification (including a possible open-set /infer_affordance
+        # round trip, up to open_set_timeout_sec) happens OUTSIDE the
+        # _dynamic_lock critical section -- holding that lock during a slow
+        # LLM call would stall /refresh_local_objects for every OTHER
+        # concurrent query for the whole round trip, not just this ingestion.
+        classified = []
+        for obs in msg.observations:
+            obj = obs.object
+            key = obj.object_key.strip()
+            if not key:
+                continue
+            # Tag so downstream knows this came from the overlay.
+            obj.source = "dynamic_overlay"
+            # Affordances are the semantic layer's judgment, not the
+            # detector's: a provider reports WHAT it perceives (tag,
+            # caption, state, geometry); openable/clearable/safety come
+            # from the same table that classifies persistent-map objects
+            # (parity with row_to_object_instance and the up-front flow),
+            # falling back to open-set LLM inference for a tag the table
+            # cannot classify (spec 21.4) -- previously up-front only.
+            safety_class, openable, clearable = self._classify_dynamic_object(
+                obj.object_tag, obj.object_caption
+            )
+            obj.safety_class = safety_class
+            obj.openable = openable
+            obj.clearable = clearable
+            classified.append(obj)
+
+        now_sec = self.get_clock().now().nanoseconds / 1e9
         added = 0
         with self._dynamic_lock:
-            for obs in msg.observations:
-                obj = obs.object
-                key = obj.object_key.strip()
-                if not key:
-                    continue
-                cx = float(obj.bbox_center.x)
-                cy = float(obj.bbox_center.y)
-                ttl = float(obj.ttl_sec)
-                # Tag so downstream knows this came from the overlay.
-                obj.source = "dynamic_overlay"
-                # Affordances are the semantic layer's judgment, not the
-                # detector's: a provider reports WHAT it perceives (tag,
-                # caption, state, geometry); openable/clearable/safety come
-                # from the same table that classifies persistent-map objects
-                # (parity with row_to_object_instance and the up-front flow).
-                # Unclassifiable tags keep the restrictive defaults.
-                safety_class, openable, clearable = attributes_for_tag(
-                    self._action_attrs, obj.object_tag
-                )
-                obj.safety_class = safety_class
-                obj.openable = openable
-                obj.clearable = clearable
+            for obj in classified:
                 self._dynamic_cache.update(
-                    object_key=key,
-                    center_x=cx,
-                    center_y=cy,
-                    ttl_sec=ttl,
+                    object_key=obj.object_key.strip(),
+                    center_x=float(obj.bbox_center.x),
+                    center_y=float(obj.bbox_center.y),
+                    ttl_sec=float(obj.ttl_sec),
                     payload=obj,
                     now_sec=now_sec,
                 )
@@ -632,6 +682,89 @@ class LocalObjectQueryNode(Node):
             return None
 
         return result
+
+    def _open_set_inference_enabled(self) -> bool:
+        """Read live (not cached at init) so `ros2 param set` can flip this
+        ablation switch without a relaunch, matching the orchestrator's own
+        up-front switch of the same name."""
+        return bool(
+            self.get_parameter("open_set_inference_enabled")
+            .get_parameter_value()
+            .bool_value
+        )
+
+    def _infer_affordance(self, tag: str, caption: str) -> "InferredAffordance | None":
+        """Call /infer_affordance synchronously; None on any failure (caller
+        falls back to the table default). Same poll pattern as
+        _query_provider_region — no spin_until_future_complete, since this
+        can be invoked from within the dynamic-objects subscription callback
+        on a MultiThreadedExecutor."""
+        if not self._infer_affordance_client.service_is_ready():
+            self.get_logger().warn(
+                "[LOCAL_CONTEXT] infer_affordance service unavailable; "
+                "using table default."
+            )
+            return None
+
+        req = InferAffordance.Request()
+        req.object_tag = tag or ""
+        req.object_caption = caption or ""
+
+        try:
+            future = self._infer_affordance_client.call_async(req)
+            deadline = time.monotonic() + self._open_set_timeout_sec
+            while not future.done():
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.005)
+        except Exception as exc:
+            self.get_logger().warn(
+                f"[LOCAL_CONTEXT] infer_affordance call failed: {exc}"
+            )
+            return None
+
+        if not future.done():
+            self.get_logger().warn(
+                f"[LOCAL_CONTEXT] infer_affordance timed out after "
+                f"{self._open_set_timeout_sec:.1f} s; using table default."
+            )
+            return None
+
+        resp = future.result()
+        if resp is None or not resp.success:
+            return None
+
+        inf = InferredAffordance(
+            bool(resp.openable), bool(resp.clearable),
+            str(resp.safety_class or "none"), int(resp.confidence_percent),
+        )
+        self.get_logger().info(
+            f"[LOCAL_CONTEXT] open-set affordance inferred for tag='{tag}': "
+            f"openable={inf.openable} clearable={inf.clearable} "
+            f"safety={inf.safety_class} conf={inf.confidence}"
+        )
+        if not accept_inference(inf, self._affordance_confidence_floor):
+            self.get_logger().info(
+                "[LOCAL_CONTEXT] inference below confidence floor; "
+                "using table default."
+            )
+            return None
+        return inf
+
+    def _classify_dynamic_object(self, tag: str, caption: str) -> Tuple[str, bool, bool]:
+        """Table lookup first; open-set LLM inference ONLY for a tag the
+        table cannot classify (spec 21.4) -- a live detector can report ANY
+        tag, unlike the fixed set of persistent-map objects."""
+        by_tag = self._action_attrs.get("by_tag", {})
+        table_tags = set(by_tag.keys()) if isinstance(by_tag, dict) else set()
+
+        if (self._open_set_inference_enabled()
+                and not tag_is_classifiable(tag, table_tags)):
+            inferred = self._infer_affordance(tag, caption)
+            if inferred is not None:
+                return inferred.safety_class, inferred.openable, inferred.clearable
+
+        return attributes_for_tag(self._action_attrs, tag)
 
     def _handle_refresh_local_objects(
         self,
