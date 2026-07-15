@@ -10,6 +10,7 @@
 #include "behaviortree_cpp_v3/action_node.h"
 #include "rclcpp/rclcpp.hpp"
 #include "semantic_nav_interfaces/srv/operator_decision.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace semantic_nav_nav2_plugins
 {
@@ -27,6 +28,14 @@ namespace semantic_nav_nav2_plugins
  *
  * Uses std::optional<FutureAndRequestId> so pending requests can be cancelled
  * on halt, matching the established QuerySemanticContext pattern.
+ *
+ * On acknowledged=true, ALSO publishes responsible_object_key to
+ * confirmed_object_topic. The service response itself (OperatorDecision.srv)
+ * has no way to signal a simulation-specific action (e.g. deleting a spawned
+ * Gazebo obstacle) -- that would wrongly couple the operator-decision
+ * interface (also used by a real deployment with no Gazebo at all) to
+ * simulation concerns. This publish is the seam eval-only tooling can
+ * subscribe to instead, without touching the operator interface itself.
  */
 class OperatorPrompt : public BT::StatefulActionNode
 {
@@ -54,6 +63,7 @@ private:
 
   rclcpp::Node::SharedPtr node_;
   OperatorClient::SharedPtr client_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr confirmed_pub_;
 
   Phase phase_{Phase::kWaitService};
   std::chrono::steady_clock::time_point phase_deadline_;

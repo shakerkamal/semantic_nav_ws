@@ -451,6 +451,19 @@ TEST(OperatorPromptTest, hasRecoveryEventIdInputPort)
   EXPECT_EQ(ports.at("recovery_event_id").direction(), BT::PortDirection::INPUT);
 }
 
+TEST(OperatorPromptTest, hasConfirmedObjectTopicInputPort)
+{
+  // 2026-07-15: OperatorDecision.srv has no way to signal a simulation
+  // -specific follow-up (e.g. deleting a spawned Gazebo obstacle) -- the
+  // door stayed put even after an operator confirmed opening it, since
+  // nothing was watching for the confirmation. This port is the seam
+  // eval-only tooling subscribes to instead of coupling the operator
+  // interface itself to Gazebo.
+  const auto ports = semantic_nav_nav2_plugins::OperatorPrompt::providedPorts();
+  ASSERT_GT(ports.count("confirmed_object_topic"), 0u);
+  EXPECT_EQ(ports.at("confirmed_object_topic").direction(), BT::PortDirection::INPUT);
+}
+
 TEST(OperatorPromptTest, registersWithoutError)
 {
   BT::BehaviorTreeFactory factory;

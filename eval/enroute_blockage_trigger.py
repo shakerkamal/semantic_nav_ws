@@ -77,11 +77,35 @@ class BlockageTrigger(Node):
 
         self._spawn_cli = self.create_client(SpawnEntity, "/spawn_entity")
         self._delete_cli = self.create_client(DeleteEntity, "/delete_entity")
+
+        # Operator-confirm scenarios (delete_after_sec=0.0: S2 door "opens",
+        # S3 chair "clears") have NOTHING that removes the spawned entity on
+        # confirm -- OperatorDecision.srv only reports acknowledged/note, it
+        # cannot signal a simulation-specific follow-up (deleting a Gazebo
+        # obstacle would wrongly couple the operator interface to
+        # simulation-only concerns; a real deployment has no Gazebo at all).
+        # OperatorPrompt (2026-07-15) now publishes responsible_object_key on
+        # acknowledged=true specifically so eval tooling can react here.
+        if self._delete_after <= 0.0:
+            self.create_subscription(
+                String, "/operator_confirmed_object",
+                self._on_operator_confirmed, 10)
+
         self.create_timer(0.1, self._tick)
         self.get_logger().info(
             f"[TRIGGER] armed for {scenario_name}: "
             f"{self._trigger['axis']} {self._trigger['direction']} "
             f"{self._trigger['threshold']}")
+
+    def _on_operator_confirmed(self, msg: String) -> None:
+        if not msg.data:
+            return
+        if not self._fired or self._deleted:
+            return
+        self.get_logger().info(
+            f"[TRIGGER] operator confirmed '{msg.data}' -- deleting blocker")
+        self._deleted = True
+        self._delete()
 
     def _blocker_xml(self) -> str:
         b = self._blocker

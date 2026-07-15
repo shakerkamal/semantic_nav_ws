@@ -18,6 +18,11 @@ OperatorPrompt::OperatorPrompt(
   getInput("service_name", service_name);
 
   client_ = node_->create_client<ServiceT>(service_name);
+
+  std::string confirmed_topic{"/operator_confirmed_object"};
+  getInput("confirmed_object_topic", confirmed_topic);
+  confirmed_pub_ = node_->create_publisher<std_msgs::msg::String>(
+    confirmed_topic, rclcpp::QoS(10));
 }
 
 BT::NodeStatus OperatorPrompt::onStart()
@@ -108,6 +113,14 @@ BT::NodeStatus OperatorPrompt::onRunning()
           response->acknowledged ? "true" : "false",
           response->operator_note.c_str());
 
+        if (response->acknowledged) {
+          std::string responsible_object_key;
+          getInput("responsible_object_key", responsible_object_key);
+          std_msgs::msg::String confirmed_msg;
+          confirmed_msg.data = responsible_object_key;
+          confirmed_pub_->publish(confirmed_msg);
+        }
+
         return response->acknowledged ?
           BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
       }
@@ -144,6 +157,13 @@ BT::PortsList OperatorPrompt::providedPorts()
       "service_ready_timeout_ms", 2000, "Max wait for service availability (ms)"),
     BT::InputPort<int>(
       "response_timeout_ms", 120000, "Max wait for operator response (ms)"),
+    BT::InputPort<std::string>(
+      "confirmed_object_topic", "/operator_confirmed_object",
+      "Published with responsible_object_key when acknowledged=true -- the "
+      "seam eval-only tooling (e.g. a blockage trigger script) can subscribe "
+      "to for simulation-specific follow-up actions (deleting a spawned "
+      "obstacle), without coupling the operator-decision interface itself "
+      "to simulation concerns"),
   };
 }
 
