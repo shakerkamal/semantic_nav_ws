@@ -95,6 +95,30 @@ class BlockageTrigger(Node):
         raise FileNotFoundError(b["model"])
 
     def _spawn(self) -> None:
+        # Pre-spawn cleanup: a leftover entity with the SAME name from an
+        # earlier/aborted trial rep (S2 delete_after_sec=0 means only the
+        # operator-confirm path deletes it; if a rep is killed or the
+        # operator declines, the entity survives and every later rep's spawn
+        # is flatly rejected -- "Entity [...] already exists", found
+        # 2026-07-15). Idempotent: a "not found" failure here is EXPECTED
+        # and harmless, just logged for visibility, not an error.
+        req = DeleteEntity.Request()
+        req.name = self._blocker["entity"]
+        future = self._delete_cli.call_async(req)
+        future.add_done_callback(self._on_precleanup_response)
+
+    def _on_precleanup_response(self, future) -> None:
+        try:
+            resp = future.result()
+            self.get_logger().info(
+                f"[TRIGGER] pre-spawn cleanup: success={resp.success} "
+                f"message='{resp.status_message}'")
+        except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks spawn
+            self.get_logger().info(
+                f"[TRIGGER] pre-spawn cleanup call failed (ignored): {exc}")
+        self._do_spawn()
+
+    def _do_spawn(self) -> None:
         b = self._blocker
         x, y, yaw = (float(v) for v in b["pose"])
         req = SpawnEntity.Request()
