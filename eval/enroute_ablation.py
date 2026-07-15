@@ -31,6 +31,11 @@ FINISHED = re.compile(
 # NavigateToQuery service response captured by the run wrapper.
 RESPONSE = re.compile(
     r"NavigateToQuery_Response\(success=(True|False), outcome='([^']*)'")
+# Wall-clock markers the run wrapper stamps around the service call — the
+# reliable timing source when a silent successful drive lets the buffered
+# Executor-finished line get dropped from the log slice.
+DISPATCH_WALL = re.compile(r"\[TRIAL\] dispatch_wall=([0-9.]+)")
+FINISH_WALL = re.compile(r"\[TRIAL\] finish_wall=([0-9.]+)")
 PROPOSAL = re.compile(
     r"\[RECOVERY/BT\] BT proposal response: success=\S+, action='([^']*)'"
     r"(?:, target_object_tag='([^']*)')?")
@@ -145,12 +150,21 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     if llm_invocations and llm_responses:
         latency = round(llm_responses[0] - llm_invocations[0], 3)
 
-    # Prefer the Executor-finished stamp; fall back to the last stamped line
-    # for runs that terminate via the service (NEEDS_OPERATOR etc.).
-    end_t = t_finish if t_finish is not None else t_last
+    # Resolution time, most-accurate source first:
+    #  1. internal ROS timing (Executor-finished stamp - dispatch stamp);
+    #  2. the wrapper's wall-clock markers (survive the buffer race that drops
+    #     the Executor-finished line on a silent successful drive);
+    #  3. last stamped line - dispatch (recovery-exhausted runs keep logging to
+    #     the end, so their last stamp is a fair proxy).
+    dw = DISPATCH_WALL.search(text)
+    fw = FINISH_WALL.search(text)
     resolution = ""
-    if t_dispatch is not None and end_t is not None:
-        resolution = round(end_t - t_dispatch, 3)
+    if t_dispatch is not None and t_finish is not None:
+        resolution = round(t_finish - t_dispatch, 3)
+    elif dw is not None and fw is not None:
+        resolution = round(float(fw.group(1)) - float(dw.group(1)), 3)
+    elif t_dispatch is not None and t_last is not None:
+        resolution = round(t_last - t_dispatch, 3)
 
     return {
         "scenario": scenario,

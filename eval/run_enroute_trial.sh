@@ -79,11 +79,17 @@ fi
 
 echo "[TRIAL] scenario=$SCEN variant=$VARIANT rep=$REP commit=$COMMIT start=$(date +%s)" | tee "$OUT"
 
+# Wall-clock markers bracket the service call so time_to_resolution survives the
+# log-slice buffer race: on a silent successful drive the semantic nodes go
+# quiet and the final Executor-finished line is still buffered when we slice.
+echo "[TRIAL] dispatch_wall=$(date +%s.%N)" >> "$OUT"
+
 # Blocks until the pipeline finishes (success, abort, or operator handoff).
 ros2 service call /navigate_to_query semantic_nav_interfaces/srv/NavigateToQuery \
   "{query: '$QUERY', nl_command: '$NLCMD', intent_hint: '$HINT'}" \
   | tee -a "$OUT"
 
+echo "[TRIAL] finish_wall=$(date +%s.%N)" >> "$OUT"
 echo "[TRIAL] end=$(date +%s)" >> "$OUT"
 
 kill $TRIG_PID 2>/dev/null || true

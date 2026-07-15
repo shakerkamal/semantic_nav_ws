@@ -167,6 +167,32 @@ semantic_nav_interfaces.srv.NavigateToQuery_Response(success=False, outcome='NEE
 """
 
 
+# A silent successful run: after validation the semantic nodes go quiet for the
+# whole drive, so the buffered "Executor finished" line is lost from the slice.
+# The wrapper's wall-clock markers must supply time_to_resolution instead.
+FIXTURE_WALL_TIMED = """\
+[TRIAL] scenario=S1 variant=bllm rep=1 commit=76cd818 start=1784121414
+[TRIAL] dispatch_wall=1784121415.500000000
+response:
+semantic_nav_interfaces.srv.NavigateToQuery_Response(success=True, outcome='REACHED', failure_reason='', reached_target='refrigerator:6')
+[TRIAL] finish_wall=1784121433.600000000
+[TRIAL] end=1784121433
+[navigation_orchestrator-25] [INFO] [1784121415.589255104] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='refrigerator:6', db_version=3498918824, db_stamp=1784033173.75): frame='map', x=7.121, y=-0.736
+[INFO] [1784121420.607038790] [enroute_blockage_trigger]: [TRIGGER] spawned 'scenario_bucket' at (3.621, -0.542)
+"""
+
+
+def test_parse_trial_wall_clock_fallback():
+    from enroute_ablation import parse_trial
+    row = parse_trial(FIXTURE_WALL_TIMED, expected_directive="none")
+    assert row["terminal_outcome"] == "original-target-reached"
+    assert row["resolving_tier"] == "none"
+    assert row["directive_chosen"] == "none"
+    # No Executor-finished line (lost to the buffer race): resolution must come
+    # from the wall markers (18.1 s), NOT the last stamp (the +5 s spawn line).
+    assert abs(row["time_to_resolution_s"] - 18.1) < 0.05
+
+
 def test_parse_trial_needs_operator():
     from enroute_ablation import parse_trial
     row = parse_trial(FIXTURE_NEEDS_OPERATOR, expected_directive="none")
