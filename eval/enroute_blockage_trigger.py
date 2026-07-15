@@ -104,19 +104,49 @@ class BlockageTrigger(Node):
         req.initial_pose.position.y = y
         req.initial_pose.orientation.z = math.sin(yaw / 2.0)
         req.initial_pose.orientation.w = math.cos(yaw / 2.0)
-        self._spawn_cli.call_async(req)
+        req.reference_frame = "world"
         self._spawn_time = self.get_clock().now()
-        self._state_pub.publish(String(data="spawned"))
         self.get_logger().info(
-            f"[TRIGGER] spawned '{b['entity']}' at ({x:.3f}, {y:.3f})")
+            f"[TRIGGER] spawn requested '{b['entity']}' at ({x:.3f}, {y:.3f})")
+        future = self._spawn_cli.call_async(req)
+        future.add_done_callback(self._on_spawn_response)
+
+    def _on_spawn_response(self, future) -> None:
+        # The service response is the ONLY authoritative signal that Gazebo
+        # actually created the entity -- logging immediately after
+        # call_async() (the previous behaviour) only proves the REQUEST was
+        # sent, not that it was accepted. Publishing blocker_state=spawned is
+        # deferred to here so the mock detector never reports perceiving an
+        # object Gazebo rejected.
+        try:
+            resp = future.result()
+        except Exception as exc:  # noqa: BLE001 -- log and surface, do not hide
+            self.get_logger().error(f"[TRIGGER] spawn service call failed: {exc}")
+            return
+        self.get_logger().info(
+            f"[TRIGGER] spawn result: success={resp.success} "
+            f"message='{resp.status_message}'")
+        if resp.success:
+            self._state_pub.publish(String(data="spawned"))
 
     def _delete(self) -> None:
         req = DeleteEntity.Request()
         req.name = self._blocker["entity"]
-        self._delete_cli.call_async(req)
+        future = self._delete_cli.call_async(req)
+        future.add_done_callback(self._on_delete_response)
         self._state_pub.publish(String(data="deleted"))
         self.get_logger().info(
-            f"[TRIGGER] deleted '{self._blocker['entity']}'")
+            f"[TRIGGER] delete requested '{self._blocker['entity']}'")
+
+    def _on_delete_response(self, future) -> None:
+        try:
+            resp = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"[TRIGGER] delete service call failed: {exc}")
+            return
+        self.get_logger().info(
+            f"[TRIGGER] delete result: success={resp.success} "
+            f"message='{resp.status_message}'")
 
     def _tick(self) -> None:
         if self._fired:
