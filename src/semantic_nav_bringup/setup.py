@@ -18,6 +18,8 @@ setup(
             glob('models/door_scenario/*.sdf')),
         (os.path.join('share', package_name, 'models/person_scenario'),
             glob('models/person_scenario/*.sdf')),
+        (os.path.join('share', package_name, 'models/obstacle_scenario'),
+            glob('models/obstacle_scenario/*.sdf')),
         (os.path.join('share', package_name, 'models/ugv_rover_depth'),
             glob('models/ugv_rover_depth/*')),
         (os.path.join('share', package_name, 'scripts'), glob('scripts/*.sh')),

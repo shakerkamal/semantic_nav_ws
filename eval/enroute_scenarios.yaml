@@ -9,20 +9,26 @@ common:
   blocker_state_topic: /enroute_scenario/blocker_state   # trigger -> detector
 
 scenarios:
-  S1:   # transient/geometric negative control — no perception, no LLM expected.
-        # Post-158c726 the Tier-1 in-place retries may absorb the transient
-        # before the RoundRobin ever engages: resolving_tier none OR T2 both
-        # count as the expected negative result.
+  S1:   # geometric route-around negative control — no perception, no LLM
+        # expected. A compact bucket (0.4 m dia) drops in OPEN floor just before
+        # the kitchen doorway; Nav2's 1 Hz replanning detours around it and
+        # reaches the fridge WITHOUT any semantic escalation. resolving_tier
+        # none (pure replan) OR T2 (a costmap clear) both count as the expected
+        # negative result; any T3/LLM line is a FAILURE of the control.
+        # NB: a panel that SEALS the sole corridor is NOT a geometric control
+        # (it forces recovery and never self-clears on the depth-only rover) —
+        # that is the domain of S2-S5. Pose surveyed 2026-07-15 from /odom in
+        # the open approach; re-verify it leaves a passable side before a grid.
     goal_query: "refrigerator:6"
     nl_command: ""
     intent_hint: ""
     trigger: {axis: x, threshold: 2.0, direction: increasing}
     blocker:
-      entity: transient_panel
-      kind: sdf_file          # spawn from bringup's door_scenario_panel.sdf
-      model: door_scenario_panel.sdf
-      pose: [4.8622, -0.6772, -1.5577]
-    delete_after_sec: 8.0     # removed before Nav2 retries exhaust
+      entity: scenario_bucket
+      kind: sdf_file          # spawn from bringup's obstacle_scenario/bucket.sdf
+      model: bucket.sdf
+      pose: [3.621, -0.542, 0.0]
+    delete_after_sec: 0.0     # persistent: the robot must genuinely route around
     detector: null
     expected_directive: none
 

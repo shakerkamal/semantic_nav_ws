@@ -77,7 +77,7 @@ class BlockageTrigger(Node):
                 "<uri>model://{m}</uri></include></model></sdf>".format(
                     n=b["entity"], p=_pose_xml(x, y, yaw), m=b["model"]))
         share = get_package_share_directory("semantic_nav_bringup")
-        for sub in ("door_scenario", "person_scenario"):
+        for sub in ("door_scenario", "person_scenario", "obstacle_scenario"):
             path = os.path.join(share, "models", sub, b["model"])
             if os.path.exists(path):
                 return open(path).read()
