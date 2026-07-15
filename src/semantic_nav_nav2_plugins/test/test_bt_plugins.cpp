@@ -7,6 +7,7 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "semantic_nav_nav2_plugins/path_clear_condition.hpp"
+#include "semantic_nav_nav2_plugins/capture_blockage_context.hpp"
 #include "semantic_nav_nav2_plugins/query_semantic_context.hpp"
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
@@ -456,6 +457,37 @@ TEST(OperatorPromptTest, registersWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::OperatorPrompt>(
       "OperatorPrompt"));
+}
+
+TEST(CaptureBlockageContextTest, fallbackProjectsAheadOfRobotAlongPath)
+{
+  // Path runs west (decreasing x) toward the gap; robot sits at x=-1.3 having
+  // stopped ~1.2 m short of a blocker near x=-2.5. The fallback must land ~1 m
+  // further along the path (toward the blocker), NOT at the origin.
+  auto path = makeStraightPath(0.0, -0.5, -0.1, 40);   // x: 0.0 -> -3.9
+  auto c = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    fallbackCentroidAlongPath(path, -1.3, -0.5, 1.0);
+  EXPECT_NEAR(c.x, -2.3, 0.15);   // ~1 m past the robot along the path
+  EXPECT_NEAR(c.y, -0.5, 0.05);
+}
+
+TEST(CaptureBlockageContextTest, fallbackEmptyPathReturnsRobotPose)
+{
+  nav_msgs::msg::Path empty;
+  auto c = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    fallbackCentroidAlongPath(empty, 2.0, -0.7, 1.0);
+  EXPECT_NEAR(c.x, 2.0, 1e-6);
+  EXPECT_NEAR(c.y, -0.7, 1e-6);
+}
+
+TEST(CaptureBlockageContextTest, fallbackClampsToPathEndWhenShort)
+{
+  // Lookahead exceeds the remaining path -> returns the last pose, not (0,0).
+  auto path = makeStraightPath(0.0, 0.0, -0.1, 5);     // x: 0.0 -> -0.4
+  auto c = semantic_nav_nav2_plugins::CaptureBlockageContext::
+    fallbackCentroidAlongPath(path, 0.0, 0.0, 5.0);
+  EXPECT_NEAR(c.x, -0.4, 1e-6);
+  EXPECT_NEAR(c.y, 0.0, 1e-6);
 }
 
 int main(int argc, char ** argv)

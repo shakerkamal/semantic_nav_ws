@@ -36,6 +36,25 @@ public:
 
   static BT::PortsList providedPorts();
 
+  /**
+   * @brief Geometric fallback centroid when path-sampling finds no lethal cell.
+   *
+   * The stale {path}'s first lookahead metres can sit behind the robot (an old
+   * plan) or the blocker can fall outside the rolling local costmap, so
+   * isCorridorBlocked returns any_blocked=false and the centroid is never set.
+   * Rather than leave it at the default (0,0) — which sends the responsible
+   * -object match to the map origin — anchor at the robot and step forward
+   * ALONG THE PATH by lookahead_m. The blocker is on the path between the robot
+   * and the goal, so this lands on/near it regardless of the robot's heading
+   * (it may have rotated away during Tier-2 recovery). Empty path -> the robot's
+   * own position (best effort).
+   */
+  static geometry_msgs::msg::Point fallbackCentroidAlongPath(
+    const nav_msgs::msg::Path & path,
+    double robot_x,
+    double robot_y,
+    double lookahead_m);
+
 private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
