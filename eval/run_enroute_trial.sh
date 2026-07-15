@@ -24,14 +24,20 @@ OUT="$EVAL_DIR/logs/enroute_${SCEN}_${VARIANT}_r${REP}.log"
 
 # HARD pre-flight gate: a stale teleop publishing zero twists races the
 # velocity smoother (gazebo diff_drive has no cmd_vel timeout) and fakes a
-# controller bug — it poisons the trial SILENTLY, so refuse to run. Expected
-# publishers: velocity_smoother + behavior_server, nothing else.
-CMDVEL_PUBS=$(ros2 topic info /cmd_vel -v | awk '/Publisher count:/{print $3}')
-if [ "$CMDVEL_PUBS" -ne 2 ]; then
-  echo "ABORT: /cmd_vel has $CMDVEL_PUBS publishers (expected 2:"
-  echo "velocity_smoother + behavior_server). Offending nodes:"
-  ros2 topic info /cmd_vel -v
-  echo "Kill the stale publisher (usually teleop_twist_keyboard) and retry."
+# controller bug — it poisons the trial SILENTLY, so refuse to run. Gate on
+# the publisher NODE-NAME SET, not the count: Nav2's behavior_server creates
+# one /cmd_vel publisher per behavior plugin (spin/backup/drive_on_heading/
+# wait/assisted_teleop), so the healthy set is {velocity_smoother,
+# behavior_server} at any multiplicity (6 on this rover). Anything else — a
+# teleop_twist_keyboard, a second driver — is the poison we must catch.
+STRAY=$(ros2 topic info /cmd_vel -v \
+  | awk '/Node name:/{n=$3} /Endpoint type: PUBLISHER/{print n}' \
+  | grep -vE '^(velocity_smoother|behavior_server)$' | sort -u || true)
+if [ -n "$STRAY" ]; then
+  echo "ABORT: unexpected /cmd_vel publisher(s):"
+  echo "$STRAY"
+  echo "Expected only velocity_smoother + behavior_server. Kill the stray"
+  echo "publisher (usually teleop_twist_keyboard) and retry."
   exit 1
 fi
 
