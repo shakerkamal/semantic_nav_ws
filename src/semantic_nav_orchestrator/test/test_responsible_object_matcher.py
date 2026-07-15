@@ -5,7 +5,25 @@ from typing import Tuple
 from semantic_nav_orchestrator.responsible_object_matcher import (
     ObjectCandidate,
     match_responsible_object,
+    should_trust_supplied_match,
 )
+
+
+def test_should_trust_supplied_match_verified_and_inferred():
+    # A match_type already determined by an upstream matcher that DOES see
+    # dynamic candidates (e.g. /match_responsible_object) must be trusted,
+    # not re-derived from a static-only catalog that cannot see them at all
+    # (found 2026-07-15, S2: a dynamically-perceived 'door:903' was silently
+    # swapped for the co-located static 'door:119' because the orchestrator's
+    # internal static-only re-match couldn't find the dynamic key).
+    assert should_trust_supplied_match("verified") is True
+    assert should_trust_supplied_match("inferred") is True
+
+
+def test_should_trust_supplied_match_rejects_unknown_and_empty():
+    assert should_trust_supplied_match("unknown") is False
+    assert should_trust_supplied_match("") is False
+    assert should_trust_supplied_match(None) is False
 
 
 def _cand(

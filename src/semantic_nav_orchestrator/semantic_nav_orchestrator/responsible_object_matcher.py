@@ -8,10 +8,22 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 
 INFERRED_FALLBACK_RADIUS_M = 0.75
+
+
+def should_trust_supplied_match(match_type: Optional[str]) -> bool:
+    """True if a match_type already supplied by an upstream matcher (e.g.
+    /match_responsible_object, which sees BOTH static and dynamic candidates)
+    should be trusted as-is, rather than re-derived from a source that can
+    only see static/persistent-map objects (e.g. a static-only catalog that
+    has no knowledge of live-perceived detections at all). Only "unknown"
+    (or empty/missing) means "nothing to trust" and callers should fall back
+    to their own re-match.
+    """
+    return (match_type or "").strip().lower() in {"verified", "inferred"}
 
 
 @dataclass(frozen=True)

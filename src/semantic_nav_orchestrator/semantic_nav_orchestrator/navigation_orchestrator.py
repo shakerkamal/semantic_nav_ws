@@ -48,6 +48,7 @@ from semantic_nav_interfaces.srv import (
 from semantic_nav_orchestrator.responsible_object_matcher import (
     ObjectCandidate,
     match_responsible_object,
+    should_trust_supplied_match,
 )
 from semantic_nav_orchestrator.costmap_adapter import occupancygrid_to_costgrid
 from semantic_nav_orchestrator.affordance_classification import (
@@ -2286,6 +2287,37 @@ class NavigationOrchestrator(Node):
                         f"match_type='{trigger.match_type}', "
                         f"object_state='{obj.state}', safety_class='{obj.safety_class}', "
                         f"openable={obj.openable}, clearable={obj.clearable}."
+                    ),
+                )
+                return
+
+            if should_trust_supplied_match(trigger.match_type):
+                # Not in the STATIC catalog -- this does NOT mean "unknown".
+                # Dynamic (live-perceived) objects are deliberately never
+                # added here (see local_object_query_node), so a key sourced
+                # from a detector will always miss this lookup. The caller
+                # (en-route: /match_responsible_object, which DOES see
+                # dynamic candidates, commit a6f5e9c) already determined a
+                # valid match_type -- trust it. Re-deriving from this static
+                # -only catalog would silently discard a correct
+                # live-perceived match for a possibly-unrelated static object
+                # that merely happens to be co-located (e.g. object_121's
+                # partition sharing coordinates with a live-detected
+                # chair/person/door -- found 2026-07-15, S2: 'door:903' was
+                # swapped for 'door:119', harmless there only because they
+                # are the same physical door).
+                trigger.responsible_bbox_center = trigger.blockage_centroid
+                extent = float(trigger.blockage_extent_m)
+                trigger.responsible_bbox_extent = Vector3(
+                    x=extent, y=extent, z=extent,
+                )
+                self._log_stage_info(
+                    "RECOVERY/OBJECT",
+                    (
+                        f"responsible_object_key='{trigger.responsible_object_key}' is a "
+                        "dynamically-perceived object (not in the static catalog); "
+                        f"keeping the already-supplied match_type='{trigger.match_type}' "
+                        "and affordances instead of re-deriving from static geometry alone."
                     ),
                 )
                 return
