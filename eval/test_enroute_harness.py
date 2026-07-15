@@ -82,3 +82,14 @@ def test_load_scenarios_merges_common():
     assert data["common"]["perception_range_m"] == 3.0
     assert s4["detector"]["tag"] == "person"
     assert s4["delete_after_sec"] == 40.0
+
+
+def test_trigger_line_crossing():
+    from enroute_blockage_trigger import crossed
+    # S1/S2 style: robot driving east, fires once x exceeds 2.0
+    assert not crossed("x", 2.0, "increasing", (1.9, 0.0))
+    assert crossed("x", 2.0, "increasing", (2.1, 0.0))
+    # S3/S4/S5 style: robot driving west, fires once x drops below -1.0
+    assert not crossed("x", -1.0, "decreasing", (-0.5, 0.0))
+    assert crossed("x", -1.0, "decreasing", (-1.2, 0.0))
+    assert crossed("y", 1.0, "increasing", (0.0, 1.5))
