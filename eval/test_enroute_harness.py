@@ -93,3 +93,56 @@ def test_trigger_line_crossing():
     assert not crossed("x", -1.0, "decreasing", (-0.5, 0.0))
     assert crossed("x", -1.0, "decreasing", (-1.2, 0.0))
     assert crossed("y", 1.0, "increasing", (0.0, 1.5))
+
+
+FIXTURE_TRIAL = """\
+[TRIAL] scenario=S5 variant=bllm_retry rep=1 commit=abc1234 start=1783880000
+[navigation_orchestrator-25] [INFO] [1783880010.100000000] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='bed:120', db_version=1193208084, db_stamp=1.0): frame='map', x=-4.8, y=2.2
+[behavior_server-19] [INFO] [1783880020.000000000] [behavior_server]: Running backup
+[navigator_node-10] [WARN] [1783880025.000000000] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='bed:120', failure_stage='execution', trigger_source='bt_recovery_plugin', match_type='unknown', responsible_object_key='', nav2_message='path blocked or navigation aborted', remaining_retry_budget=3
+[navigation_orchestrator-25] [INFO] [1783880027.500000000] [navigation_orchestrator]: [RECOVERY/BT] BT proposal response: success=True, action='retry_target', target_object_tag='couch', target_intent_hint='a place to rest', confidence=80, message='ok'
+[navigation_orchestrator-25] [INFO] [1783880027.600000000] [navigation_orchestrator]: [RECOVERY/BT] eligible=['retry_target', 'give_up'] llm='retry_target' -> action=retry_target (overridden=False reason=llm_selected)
+[navigation_orchestrator-25] [INFO] [1783880027.700000000] [navigation_orchestrator]: [RECOVERY/BT] Retry target redirected from blocked 'bed:120' to reachable alternative 'couch:33' (tag='couch').
+[navigation_orchestrator-25] [INFO] [1783880060.000000000] [navigation_orchestrator]: [EXECUTION] Executor finished with status=SUCCEEDED(4), success=True, object_key='bed:120', db_version=1193208084, db_stamp=1.0, message='Navigation succeeded'
+[TRIAL] end=1783880061
+[MOCK_DETECTOR] dist=2.80 publishing=True
+[MOCK_DETECTOR] dist=1.10 publishing=True
+[MOCK_DETECTOR] dist=1.90 publishing=True
+[MOCK_DETECTOR] dist=0.95 publishing=True
+"""
+
+
+def test_parse_trial_s5_redirected_run():
+    from enroute_ablation import parse_trial
+    row = parse_trial(FIXTURE_TRIAL, expected_directive="retry_target")
+    assert row["scenario"] == "S5"
+    assert row["variant"] == "bllm_retry"
+    assert row["rep"] == 1
+    assert row["terminal_outcome"] == "intent-preserving-alternative"
+    assert row["resolving_tier"] == "T3"
+    assert row["directive_chosen"] == "retry_target"
+    assert row["directive_correct"] is True
+    assert row["target_object_tag"] == "couch"
+    assert row["recovery_cycles"] == 1
+    assert row["llm_calls"] == 1
+    assert abs(row["llm_latency_s"] - 2.5) < 0.01
+    assert abs(row["time_to_resolution_s"] - 49.9) < 0.2
+    assert row["min_standoff_m"] == 0.95
+    assert row["reapproach_count"] == 2   # two descents below 1.5 after being above
+    assert row["db_version"] == "1193208084"
+    assert row["code_commit"] == "abc1234"
+
+
+def test_parse_trial_geo_abort():
+    text = FIXTURE_TRIAL.replace("variant=bllm_retry", "variant=bgeo")
+    # strip every T3 and redirect line, flip the terminal to failure
+    lines = [l for l in text.splitlines()
+             if "RECOVERY/BT" not in l and "LLM recovery invoked" not in l]
+    lines = [l.replace("status=SUCCEEDED(4), success=True",
+                       "status=ABORTED(6), success=False") for l in lines]
+    from enroute_ablation import parse_trial
+    row = parse_trial("\n".join(lines), expected_directive="retry_target")
+    assert row["terminal_outcome"] == "aborted"
+    assert row["resolving_tier"] == "T2"
+    assert row["llm_calls"] == 0
+    assert row["directive_chosen"] == "none"
