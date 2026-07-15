@@ -140,6 +140,13 @@ def test_scenarios_yaml_complete():
     assert data["scenarios"]["S3"]["expected_directive"] == "clear_object_then_replan"
     assert data["scenarios"]["S4"]["expected_directive"] == "wait_then_replan"
     assert data["scenarios"]["S5"]["expected_directive"] == "retry_target"
+    # S2's door:119 is a persistent-map object, but attribution via a wide
+    # static-map lookup alone proved unreliable (2026-07-15: it only ever
+    # produced 'inferred', never 'verified', matches). Mirrors S3/S4: the
+    # detector reports what it actually perceives, so match_responsible_object
+    # can use the dynamic-preferred tie-break (commit a6f5e9c) here too.
+    assert data["scenarios"]["S2"]["detector"] is not None
+    assert data["scenarios"]["S2"]["detector"]["tag"] == "door"
     # Perception-only contract: detectors never carry affordance fields.
     for name, sc in data["scenarios"].items():
         det = sc["detector"]

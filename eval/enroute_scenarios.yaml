@@ -32,7 +32,15 @@ scenarios:
     detector: null
     expected_directive: none
 
-  S2:   # closed door mid-route — persistent-map object door:119, no detector
+  S2:   # closed door mid-route — persistent-map object door:119, NOW ALSO
+        # perceived live (2026-07-15): a static-only lookup proved unreliable
+        # (the centroid rarely lands precisely enough for verified inflated
+        # -bbox containment; it only ever produced 'inferred' matches, which
+        # are ineligible for operator-action directives). Detector fields
+        # mirror door:119's own static entry (map_v002.json) for consistency
+        # -- this models perceiving the SAME physical door, not a different
+        # object; match_responsible_object's dynamic-preferred tie-break
+        # (commit a6f5e9c) picks this live observation over the static one.
     goal_query: "refrigerator:6"
     nl_command: ""
     intent_hint: ""
@@ -43,7 +51,13 @@ scenarios:
       model: aws_robomaker_residential_Door_01
       pose: [4.8622, -0.6772, -1.5577]
     delete_after_sec: 0.0     # operator "opens" via prompt (delete on confirm)
-    detector: null
+    detector:
+      object_key: "door:903"
+      tag: door
+      caption: "The doorway connecting the hallway to the kitchen, near the
+        refrigerator and counter, now standing closed."
+      state: semi-static
+      extent: [0.2, 0.9, 2.0]
     expected_directive: open_door_then_replan
 
   S3:   # clearable chair seals the narrow gap — detected at encounter

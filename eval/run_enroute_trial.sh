@@ -66,12 +66,12 @@ print(sc['intent_hint'])")
 COMMIT=$(git -C "$EVAL_DIR/.." rev-parse --short HEAD)
 CHILD_LOG=$(mktemp)
 
-# World-changer and (S3/S4 only) perception stand-in, in the background.
+# World-changer and (S2/S3/S4 only) perception stand-in, in the background.
 python3 "$EVAL_DIR/enroute_blockage_trigger.py" --scenario "$SCEN" \
   >> "$CHILD_LOG" 2>&1 &
 TRIG_PID=$!
 DET_PID=""
-if [ "$SCEN" = "S3" ] || [ "$SCEN" = "S4" ]; then
+if [ "$SCEN" = "S2" ] || [ "$SCEN" = "S3" ] || [ "$SCEN" = "S4" ]; then
   python3 "$EVAL_DIR/mock_concept_graph_detector.py" --scenario "$SCEN" \
     >> "$CHILD_LOG" 2>&1 &
   DET_PID=$!

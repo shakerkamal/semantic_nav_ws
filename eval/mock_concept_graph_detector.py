@@ -118,7 +118,7 @@ class MockConceptGraphDetector(Node):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True,
-                        choices=["S3", "S4"])
+                        choices=["S2", "S3", "S4"])
     parser.add_argument("--config", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "enroute_scenarios.yaml"))
