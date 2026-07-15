@@ -146,3 +146,36 @@ def test_parse_trial_geo_abort():
     assert row["resolving_tier"] == "T2"
     assert row["llm_calls"] == 0
     assert row["directive_chosen"] == "none"
+
+
+# A recovery-exhausted run ends with the NavigateToQuery service returning
+# NEEDS_OPERATOR — there is NO "Executor finished" line. The terminal outcome,
+# db_version, and time_to_resolution must come from the response + dispatch.
+FIXTURE_NEEDS_OPERATOR = """\
+[TRIAL] scenario=S1 variant=bllm rep=1 commit=625d2e2 start=1784111956
+requester: making request: semantic_nav_interfaces.srv.NavigateToQuery_Request(query='refrigerator:6', nl_command='', intent_hint='')
+
+response:
+semantic_nav_interfaces.srv.NavigateToQuery_Response(success=False, outcome='NEEDS_OPERATOR', failure_reason="Could not reach 'refrigerator:6'. Geometric and semantic recovery were exhausted and no reachable alternative was found. Operator input required.", reached_target='')
+
+[TRIAL] end=1784111978
+[navigation_orchestrator-25] [INFO] [1784111956.982362773] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='refrigerator:6', db_version=3498918824, db_stamp=1784033173.75): frame='map', x=7.117, y=-0.780
+[behavior_server-13] [INFO] [1784111965.400297694] [behavior_server]: Running backup
+[navigator_node-24] [WARN] [1784111970.396543454] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='refrigerator:6', failure_stage='execution', trigger_source='bt_recovery_plugin', match_type='unknown', responsible_object_key='', nav2_message='path blocked or navigation aborted', remaining_retry_budget=3
+[navigation_orchestrator-25] [INFO] [1784111971.232631218] [navigation_orchestrator]: [RECOVERY/BT] BT proposal response: success=True, action='give_up', target_object_tag='', target_intent_hint='', confidence=100, message='LLM recovery chose give_up.'
+[behavior_server-13] [INFO] [1784111978.024669882] [behavior_server]: backup completed successfully
+"""
+
+
+def test_parse_trial_needs_operator():
+    from enroute_ablation import parse_trial
+    row = parse_trial(FIXTURE_NEEDS_OPERATOR, expected_directive="none")
+    assert row["terminal_outcome"] == "needs-operator"
+    assert row["resolving_tier"] == "T3"
+    assert row["directive_chosen"] == "give_up"
+    assert row["llm_calls"] == 1
+    # db_version and time_to_resolution come from the dispatch line + last stamp,
+    # since there is no Executor-finished line to read them from.
+    assert row["db_version"] == "3498918824"
+    assert abs(row["time_to_resolution_s"] - 21.042) < 0.1
+    assert row["code_commit"] == "625d2e2"

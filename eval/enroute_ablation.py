@@ -21,10 +21,16 @@ EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 STAMP = re.compile(r"\[(\d+)\.(\d+)\]")
 TRIAL = re.compile(
     r"\[TRIAL\] scenario=(\S+) variant=(\S+) rep=(\d+) commit=(\S+)")
-DISPATCH = re.compile(r"\[EXECUTION\] Sending goal to execute_pose")
+DISPATCH = re.compile(
+    r"\[EXECUTION\] Sending goal to execute_pose.*?db_version=(\d+)")
 FINISHED = re.compile(
     r"\[EXECUTION\] Executor finished with status=\S+, success=(True|False),"
     r" object_key='([^']*)', db_version=(\d+)")
+# Authoritative terminal signal for runs that end without an Executor-finished
+# line (recovery exhausted -> NEEDS_OPERATOR, RESOLUTION_FAILED, ...): the
+# NavigateToQuery service response captured by the run wrapper.
+RESPONSE = re.compile(
+    r"NavigateToQuery_Response\(success=(True|False), outcome='([^']*)'")
 PROPOSAL = re.compile(
     r"\[RECOVERY/BT\] BT proposal response: success=\S+, action='([^']*)'"
     r"(?:, target_object_tag='([^']*)')?")
@@ -63,9 +69,10 @@ def parse_trial(text: str, expected_directive: str) -> dict:
         raise ValueError("no [TRIAL] marker")
     scenario, variant, rep, commit = meta.groups()
 
-    t_dispatch = t_finish = None
+    t_dispatch = t_finish = t_last = None
     success = None
     db_version = ""
+    dispatch_dbv = ""
     directives = []
     target_tag = ""
     redirected_tag = ""
@@ -75,8 +82,13 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     dists = []
 
     for ln in lines:
-        if DISPATCH.search(ln) and t_dispatch is None:
+        s = _stamp(ln)
+        if s is not None and (t_last is None or s > t_last):
+            t_last = s
+        m = DISPATCH.search(ln)
+        if m and t_dispatch is None:
             t_dispatch = _stamp(ln)
+            dispatch_dbv = m.group(1)
         m = FINISHED.search(ln)
         if m:
             success = (m.group(1) == "True")
@@ -107,7 +119,22 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     else:
         tier = "none"
 
-    if success and redirected_tag:
+    # The service response is authoritative when present; the Executor-finished
+    # success flag is the fallback (used by the fixtures and any run where the
+    # wrapper did not capture the response line).
+    resp = RESPONSE.search(text)
+    if resp is not None:
+        code = resp.group(2)
+        if code == "REACHED":
+            outcome = ("intent-preserving-alternative" if redirected_tag
+                       else "original-target-reached")
+        elif code == "NEEDS_OPERATOR":
+            outcome = "needs-operator"
+        elif code == "EXECUTION_FAILED":
+            outcome = "aborted"
+        else:
+            outcome = code.lower().replace("_", "-")
+    elif success and redirected_tag:
         outcome = "intent-preserving-alternative"
     elif success:
         outcome = "original-target-reached"
@@ -118,9 +145,12 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     if llm_invocations and llm_responses:
         latency = round(llm_responses[0] - llm_invocations[0], 3)
 
+    # Prefer the Executor-finished stamp; fall back to the last stamped line
+    # for runs that terminate via the service (NEEDS_OPERATOR etc.).
+    end_t = t_finish if t_finish is not None else t_last
     resolution = ""
-    if t_dispatch is not None and t_finish is not None:
-        resolution = round(t_finish - t_dispatch, 3)
+    if t_dispatch is not None and end_t is not None:
+        resolution = round(end_t - t_dispatch, 3)
 
     return {
         "scenario": scenario,
@@ -139,7 +169,7 @@ def parse_trial(text: str, expected_directive: str) -> dict:
         "time_to_resolution_s": resolution,
         "reapproach_count": _reapproach_count(dists) if dists else "",
         "min_standoff_m": min(dists) if dists else "",
-        "db_version": db_version,
+        "db_version": db_version or dispatch_dbv,
         "code_commit": commit,
     }
 
