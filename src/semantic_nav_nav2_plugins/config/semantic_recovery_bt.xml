@@ -1,372 +1,114 @@
-<!--
-  BT-LR M6: three-tier recovery architecture.
-
-  Tier 1 — primary navigation:
-    ValidateSemantic + RateController(1Hz ComputePathToPose) + FollowPath,
-    each planning/control node wrapped in its own RecoveryNode(1) with a
-    context-specific costmap clear. Small navigable obstacles are handled by
-    continuous replanning; no PathClearCondition in the primary path to avoid
-    spurious recovery.
-
-  Tier 2 — geometric recovery (RoundRobin child 0):
-    Clear local/global costmaps + BackUp. Resolves stale costmap state,
-    transient stuck situations, and minor physical blockages.
-
-  Tier 3 — semantic recovery (RoundRobin child 1):
-    CaptureBlockageContext samples the stale path against the current
-    costmap to compute blockage_centroid/extent so QuerySemanticContext
-    has accurate spatial context. Then EscalateToLLMRecovery → directive
-    branch (retry_target, wait_then_replan, give_up, operator actions).
-
-  RecoveryNode(number_of_retries=3) with a RoundRobin recovery child alternates:
-    attempt 1 = Geometric, attempt 2 = Semantic (LLM picks a *reachability-
-    validated* retry_target — the orchestrator only returns alternatives the
-    planner can reach now), attempt 3 = Geometric again. Attempt 3 gives the
-    chosen reachable alternative a second navigation attempt with a freshly
-    cleared costmap before the run is aborted. No second LLM cycle is spent, so
-    recovery stays responsive. When no reachable alternative exists the semantic
-    tier degrades to give_up and the orchestrator escalates to the operator.
-
-  PathClearCondition is kept ONLY inside SignalWaitRecheck for per-attempt
-  clear-path checking during the animate-blocker retry loop.
--->
+<?xml version="1.0"?>
 <root main_tree_to_execute="SemanticNavigateWithRecovery">
+    <BehaviorTree ID="SemanticNavigateWithRecovery">
+        <RecoveryNode number_of_retries="3" name="SemanticRecovery">
 
-  <BehaviorTree ID="SemanticNavigateWithRecovery">
+            <PipelineSequence name="NavigateWithValidation">
 
-    <RecoveryNode number_of_retries="3" name="SemanticRecovery">
+                <PathClearCondition name="PersistentBlockageGate" path="{path}" lookahead_m="1.5" lethal_threshold="90" debounce_ticks="2" sample_radius_m="0.05" min_blocked_length_m="0.45" min_blocked_samples="4" blocked_fraction_threshold="0.30" allow_geometric_detour_first="true" plan_topic="/plan" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
+                <ValidateSemantic service_name="/validate_pose_goal" server_timeout="10000" goal_pose="{goal}" validation_reason="{validation_reason}"/>
 
-      <!-- ===== Primary child: validate, replan continuously, follow ===== -->
-      <PipelineSequence name="NavigateWithValidation">
+                <RateController hz="1.0">
+                    <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+                        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+                        <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+                    </RecoveryNode>
+                </RateController>
+                <RecoveryNode number_of_retries="1" name="FollowPath">
+                    <FollowPath path="{path}" controller_id="FollowPath"/>
+                    <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+                </RecoveryNode>
+            </PipelineSequence>
 
-        <!-- Hard gate for a PERSISTENT, SIGNIFICANT blockage that a real A*
-             planner can still nominally route around one marginal detour at
-             a time. Without this, SmacPlanner2D can keep finding a different
-             barely-feasible detour every 1Hz replan cycle while the rotation
-             shim re-orients toward each new heading; PoseProgressChecker
-             credits that rotation as "progress" (by design, so it does not
-             kill legitimate settling turns), so neither ComputePathToPose
-             nor FollowPath ever hard-fails and Tier 1 livelocks forever
-             instead of escalating (found 2026-07-15, en-route S4). Reuses
-             the SAME severity+debounce gate already proven in
-             SignalWaitRecheck below: allow_geometric_detour_first still lets
-             small/transient blockages pass through untouched via continuous
-             replanning; only a blockage that is wide, long, AND persists
-             across 2 consecutive ticks trips FAILURE, which
-             PipelineSequence's re-tick-all-priors semantics turns into an
-             abort of the running FollowPath, bubbling to the outer
-             RecoveryNode(3). -->
-        <PathClearCondition
-            name="PersistentBlockageGate"
-            path="{path}"
-            lookahead_m="1.5"
-            lethal_threshold="90"
-            debounce_ticks="2"
-            sample_radius_m="0.05"
-            min_blocked_length_m="0.45"
-            min_blocked_samples="4"
-            blocked_fraction_threshold="0.30"
-            allow_geometric_detour_first="true"
-            plan_topic="/plan"
-            local_costmap_topic="/local_costmap/costmap"
-            blockage_centroid="{blockage_centroid}"
-            blockage_extent_m="{blockage_extent_m}"/>
+            <RoundRobin name="RecoveryActions">
 
-        <ValidateSemantic
-            service_name="/validate_pose_goal"
-            server_timeout="10000"
-            goal_pose="{goal}"
-            validation_reason="{validation_reason}"/>
+                <Sequence name="GeometricSafeRecovery">
+                    <ClearEntireCostmap name="ClearLocalGeometric" service_name="local_costmap/clear_entirely_local_costmap"/>
+                    <ClearEntireCostmap name="ClearGlobalGeometric" service_name="global_costmap/clear_entirely_global_costmap"/>
+                    <BackUp name="BackUpToSafePose" backup_dist="0.20" backup_speed="0.05" time_allowance="10.0" server_name="backup" server_timeout="10000"/>
+                </Sequence>
 
-        <!-- Replans at 1 Hz so FollowPath always has a current plan that
-             accounts for new costmap obstacles. Navigable obstacles are
-             routed around naturally by continuous replanning; the gate above
-             is what catches a PERSISTENT blockage this alone cannot resolve.
+                <Sequence name="SemanticRecoveryBranch">
 
-             Each fallible node carries its own single-retry with a
-             context-specific costmap clear (as in Nav2's stock tree). A lone
-             transient failure — a planner miss into unmapped space, one
-             progress-checker timeout — is retried in place and must fail
-             TWICE before the tiered recovery below is entered. Without this,
-             the first hiccup escalates straight to the LLM. -->
-        <RateController hz="1.0">
-          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose
-                goal="{goal}"
-                path="{path}"
-                planner_id="GridBased"/>
-            <ClearEntireCostmap
-                name="ClearGlobalCostmap-Context"
-                service_name="global_costmap/clear_entirely_global_costmap"/>
-          </RecoveryNode>
-        </RateController>
+                    <CaptureBlockageContext path="{path}" lookahead_m="3.0" lethal_threshold="90" sample_radius_m="0.05" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
+                    <QuerySemanticContext blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" radius_m="4.0" service_ready_timeout_ms="2000" response_timeout_ms="30000" refresh_service="/refresh_local_objects" match_service="/match_responsible_object" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" local_db_version="{local_db_version}" local_db_source="{local_db_source}"/>
+                    <Fallback name="ApproachBlockage">
 
-        <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath
-              path="{path}"
-              controller_id="FollowPath"/>
-          <ClearEntireCostmap
-              name="ClearLocalCostmap-Context"
-              service_name="local_costmap/clear_entirely_local_costmap"/>
+                        <Sequence name="ApproachKnownCandidate">
+                            <HasResponsibleObjectCandidate match_type="{responsible_match_type}"/>
+                            <ComputeStandoffPose responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" robot_footprint_radius="0.1" clearance_margin="0.20" global_frame="map" robot_base_frame="base_footprint" standoff_goal="{standoff_goal}"/>
+                            <RecoveryNode number_of_retries="1" name="ComputePathToStandoff">
+                                <ComputePathToPose goal="{standoff_goal}" path="{standoff_path}" planner_id="GridBased"/>
+                                <ClearEntireCostmap name="ClearGlobalStandoff" service_name="global_costmap/clear_entirely_global_costmap"/>
+                            </RecoveryNode>
+                            <RecoveryNode number_of_retries="1" name="FollowPathToStandoff">
+                                <FollowPath path="{standoff_path}" controller_id="FollowPath"/>
+                                <ClearEntireCostmap name="ClearLocalStandoff" service_name="local_costmap/clear_entirely_local_costmap"/>
+                            </RecoveryNode>
+                        </Sequence>
+
+                        <ForceSuccess>
+                            <DriveOnHeading dist_to_travel="2.5" speed="0.15" time_allowance="20.0" server_name="drive_on_heading" server_timeout="10000"/>
+                        </ForceSuccess>
+                    </Fallback>
+
+                    <CaptureBlockageContext path="{path}" lookahead_m="3.0" lethal_threshold="90" sample_radius_m="0.05" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
+                    <QuerySemanticContext blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" radius_m="4.0" service_ready_timeout_ms="2000" response_timeout_ms="30000" refresh_service="/refresh_local_objects" match_service="/match_responsible_object" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" local_db_version="{local_db_version}" local_db_source="{local_db_source}"/>
+                    <EscalateToLLMRecovery service_name="/request_recovery" server_timeout="300000" failure_stage="execution" nav2_message="path blocked or navigation aborted" original_object_tag="{original_object_tag}" original_intent_hint="{original_intent_hint}" current_target_object_key="{current_target_object_key}" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" local_db_version="{local_db_version}" local_db_source="{local_db_source}" directive_action="{directive_action}" directive_target_pose="{directive_target_pose}" directive_target_object_key="{directive_target_object_key}" directive_target_object_tag="{directive_target_object_tag}" directive_target_intent_hint="{directive_target_intent_hint}" directive_wait_seconds="{directive_wait_seconds}" directive_emit_signal_during_wait="{directive_emit_signal_during_wait}" directive_signal_attempts="{directive_signal_attempts}" directive_operator_message="{directive_operator_message}" directive_rationale="{directive_rationale}" directive_confidence_percent="{directive_confidence_percent}" directive_escalate_to_operator="{directive_escalate_to_operator}" recovery_event_id="{recovery_event_id}"/>
+                    <Switch3 variable="{directive_action}" case_1="retry_target" case_2="wait_then_replan" case_3="give_up">
+
+                        <Sequence name="RetryTargetBranch">
+                            <ClearEntireCostmap name="ClearGlobalRetry" service_name="global_costmap/clear_entirely_global_costmap"/>
+                            <ClearEntireCostmap name="ClearLocalRetry" service_name="local_costmap/clear_entirely_local_costmap"/>
+                        </Sequence>
+
+                        <Fallback name="WaitThenReplanBranch">
+
+                            <Sequence name="SignalWaitRecheck">
+                                <EmitObstacleSignal emit_enabled="{directive_emit_signal_during_wait}" publish_signal="false" signal_class="{responsible_safety_class}" signal_topic="/robot_obstacle_signal"/>
+                                <RetryUntilSuccessful num_attempts="{directive_signal_attempts}">
+                                    <Sequence name="SignalCycle">
+                                        <EmitObstacleSignal emit_enabled="true" publish_signal="true" signal_class="{responsible_safety_class}" signal_topic="/robot_obstacle_signal"/>
+                                        <Wait wait_duration="2"/>
+
+                                        <PathClearCondition path="{path}" lookahead_m="1.5" lethal_threshold="90" debounce_ticks="1" sample_radius_m="0.05" allow_geometric_detour_first="false" plan_topic="/plan" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
+                                    </Sequence>
+                                </RetryUntilSuccessful>
+                                <ClearEntireCostmap name="ClearLocalSignal" service_name="local_costmap/clear_entirely_local_costmap"/>
+                            </Sequence>
+
+                            <Sequence name="PassiveWait">
+                                <Wait wait_duration="{directive_wait_seconds}"/>
+                                <ClearEntireCostmap name="ClearGlobalPassive" service_name="global_costmap/clear_entirely_global_costmap"/>
+                                <ClearEntireCostmap name="ClearLocalPassive" service_name="local_costmap/clear_entirely_local_costmap"/>
+                            </Sequence>
+                        </Fallback>
+
+                        <ForceFailure name="GiveUpTerminal">
+                            <AlwaysSuccess/>
+                        </ForceFailure>
+
+                        <Switch3 name="OperatorDirectiveSwitch" variable="{directive_action}" case_1="open_door_then_replan" case_2="clear_object_then_replan" case_3="__unused_operator_case__">
+                            <Sequence name="OpenDoorThenReplanBranch">
+                                <OperatorPrompt service_name="/operator_decision" prompt_text="{directive_operator_message}" responsible_object_key="{responsible_object_key}" failure_stage="execution" directive_action="{directive_action}" recovery_event_id="{recovery_event_id}" service_ready_timeout_ms="2000" response_timeout_ms="120000"/>
+                                <ClearEntireCostmap name="ClearGlobalOpenDoor" service_name="global_costmap/clear_entirely_global_costmap"/>
+                                <ClearEntireCostmap name="ClearLocalOpenDoor" service_name="local_costmap/clear_entirely_local_costmap"/>
+                            </Sequence>
+                            <Sequence name="ClearObjectThenReplanBranch">
+                                <OperatorPrompt service_name="/operator_decision" prompt_text="{directive_operator_message}" responsible_object_key="{responsible_object_key}" failure_stage="execution" directive_action="{directive_action}" recovery_event_id="{recovery_event_id}" service_ready_timeout_ms="2000" response_timeout_ms="120000"/>
+                                <ClearEntireCostmap name="ClearGlobalClearObject" service_name="global_costmap/clear_entirely_global_costmap"/>
+                                <ClearEntireCostmap name="ClearLocalClearObject" service_name="local_costmap/clear_entirely_local_costmap"/>
+                            </Sequence>
+                            <ForceFailure name="UnusedOperatorCase">
+                                <AlwaysSuccess/>
+                            </ForceFailure>
+                            <ForceFailure name="UnexpectedDirective">
+                                <AlwaysSuccess/>
+                            </ForceFailure>
+                        </Switch3>
+                    </Switch3>
+                </Sequence>
+            </RoundRobin>
         </RecoveryNode>
-
-      </PipelineSequence>
-
-      <!-- ===== Recovery child: geometric first, semantic second ===== -->
-      <RoundRobin name="RecoveryActions">
-
-        <!-- Tier 2: clear stale costmap data then back up to free space.
-             Handles transient stuck situations and local costmap artifacts. -->
-        <Sequence name="GeometricSafeRecovery">
-          <ClearEntireCostmap
-              name="ClearLocalGeometric"
-              service_name="local_costmap/clear_entirely_local_costmap"/>
-          <ClearEntireCostmap
-              name="ClearGlobalGeometric"
-              service_name="global_costmap/clear_entirely_global_costmap"/>
-          <BackUp
-              name="BackUpToSafePose"
-              backup_dist="0.20"
-              backup_speed="0.05"
-              time_allowance="10.0"
-              server_name="backup"
-              server_timeout="10000"/>
-        </Sequence>
-
-        <!-- Tier 3: approach the blockage, capture spatial context, then
-             escalate to LLM. CaptureBlockageContext samples the last known
-             path against the current costmap so QuerySemanticContext has a
-             real centroid.
-
-             Mirrors UP-FRONT's standoff-before-query pattern: rather than
-             sampling from wherever Tier-2's small 0.2m backup happened to
-             leave the robot (an uncontrolled, scenario-dependent distance
-             from the real blocker, observed ~2.1-2.3m short of a fully
-             sealed door, S2, 2026-07-15, defeating any fixed search-radius
-             heuristic), DriveOnHeading advances the robot toward the
-             blockage first. Its own built-in collision-checking
-             (simulate_ahead_time) means it always stops exactly as far as
-             it safely can, landing the robot right next to the real
-             obstacle. DriveOnHeading returns FAILED on BOTH a detected
-             collision ahead AND on timeout; only reaching the full
-             requested distance returns SUCCESS, so it is wrapped in
-             ForceSuccess: the robot ends up close either way, and the
-             branch must continue to CaptureBlockageContext regardless of
-             which outcome stopped it. -->
-        <Sequence name="SemanticRecoveryBranch">
-
-          <ForceSuccess>
-            <DriveOnHeading
-                dist_to_travel="2.5"
-                speed="0.15"
-                time_allowance="20.0"
-                server_name="drive_on_heading"
-                server_timeout="10000"/>
-          </ForceSuccess>
-
-          <CaptureBlockageContext
-              path="{path}"
-              lookahead_m="3.0"
-              lethal_threshold="90"
-              sample_radius_m="0.05"
-              local_costmap_topic="/local_costmap/costmap"
-              blockage_centroid="{blockage_centroid}"
-              blockage_extent_m="{blockage_extent_m}"/>
-
-          <QuerySemanticContext
-              blockage_centroid="{blockage_centroid}"
-              blockage_extent_m="{blockage_extent_m}"
-              radius_m="4.0"
-              service_ready_timeout_ms="2000"
-              response_timeout_ms="30000"
-              refresh_service="/refresh_local_objects"
-              match_service="/match_responsible_object"
-              responsible_object_key="{responsible_object_key}"
-              responsible_object_tag="{responsible_object_tag}"
-              responsible_object_state="{responsible_object_state}"
-              responsible_safety_class="{responsible_safety_class}"
-              responsible_openable="{responsible_openable}"
-              responsible_clearable="{responsible_clearable}"
-              responsible_match_type="{responsible_match_type}"
-              responsible_state_detail="{responsible_state_detail}"
-              responsible_traversability="{responsible_traversability}"
-              local_db_version="{local_db_version}"
-              local_db_source="{local_db_source}"/>
-
-          <EscalateToLLMRecovery
-              service_name="/request_recovery"
-              server_timeout="300000"
-              failure_stage="execution"
-              nav2_message="path blocked or navigation aborted"
-              original_object_tag="{original_object_tag}"
-              original_intent_hint="{original_intent_hint}"
-              current_target_object_key="{current_target_object_key}"
-              responsible_object_key="{responsible_object_key}"
-              responsible_object_tag="{responsible_object_tag}"
-              responsible_object_state="{responsible_object_state}"
-              responsible_safety_class="{responsible_safety_class}"
-              responsible_openable="{responsible_openable}"
-              responsible_clearable="{responsible_clearable}"
-              responsible_match_type="{responsible_match_type}"
-              responsible_state_detail="{responsible_state_detail}"
-              responsible_traversability="{responsible_traversability}"
-              blockage_centroid="{blockage_centroid}"
-              blockage_extent_m="{blockage_extent_m}"
-              local_db_version="{local_db_version}"
-              local_db_source="{local_db_source}"
-              directive_action="{directive_action}"
-              directive_target_pose="{directive_target_pose}"
-              directive_target_object_key="{directive_target_object_key}"
-              directive_target_object_tag="{directive_target_object_tag}"
-              directive_target_intent_hint="{directive_target_intent_hint}"
-              directive_wait_seconds="{directive_wait_seconds}"
-              directive_emit_signal_during_wait="{directive_emit_signal_during_wait}"
-              directive_signal_attempts="{directive_signal_attempts}"
-              directive_operator_message="{directive_operator_message}"
-              directive_rationale="{directive_rationale}"
-              directive_confidence_percent="{directive_confidence_percent}"
-              directive_escalate_to_operator="{directive_escalate_to_operator}"
-              recovery_event_id="{recovery_event_id}"/>
-
-          <Switch3
-              variable="{directive_action}"
-              case_1="retry_target"
-              case_2="wait_then_replan"
-              case_3="give_up">
-
-            <!-- retry_target: goal is already updated by EscalateToLLMRecovery -->
-            <Sequence name="RetryTargetBranch">
-              <ClearEntireCostmap
-                  name="ClearGlobalRetry"
-                  service_name="global_costmap/clear_entirely_global_costmap"/>
-              <ClearEntireCostmap
-                  name="ClearLocalRetry"
-                  service_name="local_costmap/clear_entirely_local_costmap"/>
-            </Sequence>
-
-            <!-- wait_then_replan: signal-wait-recheck or passive-wait -->
-            <Fallback name="WaitThenReplanBranch">
-
-              <!-- Branch A: signal-wait-recheck for animate obstacles. -->
-              <Sequence name="SignalWaitRecheck">
-                <EmitObstacleSignal
-                    emit_enabled="{directive_emit_signal_during_wait}"
-                    publish_signal="false"
-                    signal_class="{responsible_safety_class}"
-                    signal_topic="/robot_obstacle_signal"/>
-
-                <RetryUntilSuccessful num_attempts="{directive_signal_attempts}">
-                  <Sequence name="SignalCycle">
-                    <EmitObstacleSignal
-                        emit_enabled="true"
-                        publish_signal="true"
-                        signal_class="{responsible_safety_class}"
-                        signal_topic="/robot_obstacle_signal"/>
-
-                    <Wait wait_duration="2"/>
-
-                    <!-- PathClearCondition ONLY here: per-attempt clear-path
-                         check inside the animate-blocker retry loop. -->
-                    <PathClearCondition
-                        path="{path}"
-                        lookahead_m="1.5"
-                        lethal_threshold="90"
-                        debounce_ticks="1"
-                        sample_radius_m="0.05"
-                        allow_geometric_detour_first="false"
-                        plan_topic="/plan"
-                        local_costmap_topic="/local_costmap/costmap"
-                        blockage_centroid="{blockage_centroid}"
-                        blockage_extent_m="{blockage_extent_m}"/>
-
-                  </Sequence>
-                </RetryUntilSuccessful>
-
-                <ClearEntireCostmap
-                    name="ClearLocalSignal"
-                    service_name="local_costmap/clear_entirely_local_costmap"/>
-
-              </Sequence>
-
-              <!-- Branch B: passive wait for non-animate obstacles. -->
-              <Sequence name="PassiveWait">
-                <Wait wait_duration="{directive_wait_seconds}"/>
-                <ClearEntireCostmap
-                    name="ClearGlobalPassive"
-                    service_name="global_costmap/clear_entirely_global_costmap"/>
-                <ClearEntireCostmap
-                    name="ClearLocalPassive"
-                    service_name="local_costmap/clear_entirely_local_costmap"/>
-              </Sequence>
-
-            </Fallback>
-
-            <!-- give_up: visible terminal failure -->
-            <ForceFailure name="GiveUpTerminal">
-              <AlwaysSuccess/>
-            </ForceFailure>
-
-            <!-- default: operator-action directives -->
-            <Switch3 name="OperatorDirectiveSwitch"
-                     variable="{directive_action}"
-                     case_1="open_door_then_replan"
-                     case_2="clear_object_then_replan"
-                     case_3="__unused_operator_case__">
-
-              <Sequence name="OpenDoorThenReplanBranch">
-                <OperatorPrompt
-                    service_name="/operator_decision"
-                    prompt_text="{directive_operator_message}"
-                    responsible_object_key="{responsible_object_key}"
-                    failure_stage="execution"
-                    directive_action="{directive_action}"
-                    recovery_event_id="{recovery_event_id}"
-                    service_ready_timeout_ms="2000"
-                    response_timeout_ms="120000"/>
-                <ClearEntireCostmap
-                    name="ClearGlobalOpenDoor"
-                    service_name="global_costmap/clear_entirely_global_costmap"/>
-                <ClearEntireCostmap
-                    name="ClearLocalOpenDoor"
-                    service_name="local_costmap/clear_entirely_local_costmap"/>
-              </Sequence>
-
-              <Sequence name="ClearObjectThenReplanBranch">
-                <OperatorPrompt
-                    service_name="/operator_decision"
-                    prompt_text="{directive_operator_message}"
-                    responsible_object_key="{responsible_object_key}"
-                    failure_stage="execution"
-                    directive_action="{directive_action}"
-                    recovery_event_id="{recovery_event_id}"
-                    service_ready_timeout_ms="2000"
-                    response_timeout_ms="120000"/>
-                <ClearEntireCostmap
-                    name="ClearGlobalClearObject"
-                    service_name="global_costmap/clear_entirely_global_costmap"/>
-                <ClearEntireCostmap
-                    name="ClearLocalClearObject"
-                    service_name="local_costmap/clear_entirely_local_costmap"/>
-              </Sequence>
-
-              <ForceFailure name="UnusedOperatorCase">
-                <AlwaysSuccess/>
-              </ForceFailure>
-
-              <ForceFailure name="UnexpectedDirective">
-                <AlwaysSuccess/>
-              </ForceFailure>
-
-            </Switch3>
-
-          </Switch3>
-
-        </Sequence>
-
-      </RoundRobin>
-
-    </RecoveryNode>
-
-  </BehaviorTree>
-
+    </BehaviorTree>
 </root>

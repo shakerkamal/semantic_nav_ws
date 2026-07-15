@@ -76,33 +76,78 @@ def test_tier1_has_persistent_blockage_gate_in_both_trees():
             f"PipelineSequence in {path} so it is reticked every cycle")
 
 
-def test_tier3_approaches_blockage_before_sampling():
-    # 2026-07-15: en-route Tier-3 sampled spatial context from wherever the
-    # robot happened to stop after Tier-2's small 0.2m backup (observed
-    # ~2.1-2.3m from the true blocker in S2), causing repeated
-    # misattribution no amount of fallback-radius tuning could fix reliably
-    # -- the stopping distance isn't a fixed quantity. UP-FRONT never has
-    # this problem because it drives to a standoff pose before querying.
-    # Mirrors that here with the already-registered, already-safe
-    # drive_on_heading behavior (built-in collision-checking -- it advances
-    # exactly as far as it safely can and no further). DriveOnHeading
-    # returns FAILED both on a detected collision ahead AND on timeout (only
-    # reaching the full requested distance returns SUCCESS) -- the robot
-    # still ends up close either way, so it MUST be wrapped in ForceSuccess
-    # or the branch would abort before CaptureBlockageContext ever runs.
+def _semantic_recovery_branch_no_comments():
     src = open(BLLM_BT).read()
     no_comments = re.sub(r"<!--.*?-->", "", src, flags=re.S)
     m = re.search(
-        r"<Sequence name=\"SemanticRecoveryBranch\">\s*"
-        r"<ForceSuccess>\s*<DriveOnHeading\b([^/]*)/>\s*</ForceSuccess>\s*"
-        r"<CaptureBlockageContext\b",
+        r"<Sequence name=\"SemanticRecoveryBranch\">(.*?)</Sequence>\s*"
+        r"</RoundRobin>",
         no_comments, re.S)
-    assert m, (
-        "SemanticRecoveryBranch must approach the blockage (ForceSuccess-"
-        "wrapped DriveOnHeading) BEFORE CaptureBlockageContext samples it")
-    attrs = m.group(1)
-    assert 'server_name="drive_on_heading"' in attrs
-    assert "dist_to_travel=" in attrs
+    assert m, "SemanticRecoveryBranch not found in semantic_recovery_bt.xml"
+    return m.group(1)
+
+
+def test_tier3_queries_wide_before_deciding_how_to_approach():
+    # Part A (2026-07-15): a blind DriveOnHeading shove to the collision
+    # boundary (the ORIGINAL fix for the stopping-distance problem, see
+    # git history) still only ever produced 'inferred' matches, never
+    # 'verified' -- proximity alone doesn't fix attribution quality.
+    # Redesigned: query WIDE from wherever the robot already is (no approach
+    # yet) to discover any known candidate; if one exists, compute a REAL
+    # standoff from its bbox and navigate there properly; only fall back to
+    # the blind approach if nothing is known. Sequence must be:
+    #   CaptureBlockageContext -> QuerySemanticContext -> Fallback(
+    #     Sequence(HasResponsibleObjectCandidate, ComputeStandoffPose,
+    #              ComputePathToPose/FollowPath to the standoff),
+    #     ForceSuccess(DriveOnHeading))
+    #   -> CaptureBlockageContext -> QuerySemanticContext (pass 2, re-sample
+    #      now that the robot is close) -> EscalateToLLMRecovery.
+    branch = _semantic_recovery_branch_no_comments()
+
+    capture_positions = [m.start() for m in re.finditer(r"<CaptureBlockageContext\b", branch)]
+    query_positions = [m.start() for m in re.finditer(r"<QuerySemanticContext\b", branch)]
+    fallback_pos = branch.find("<Fallback name=\"ApproachBlockage\">")
+    has_candidate_pos = branch.find("<HasResponsibleObjectCandidate")
+    standoff_pos = branch.find("<ComputeStandoffPose")
+    drive_on_heading_pos = branch.find("<DriveOnHeading")
+    escalate_pos = branch.find("<EscalateToLLMRecovery")
+
+    assert len(capture_positions) == 2, "expected 2 CaptureBlockageContext passes"
+    assert len(query_positions) == 2, "expected 2 QuerySemanticContext passes"
+    for pos in (fallback_pos, has_candidate_pos, standoff_pos,
+                drive_on_heading_pos, escalate_pos):
+        assert pos != -1
+
+    # Strict ordering: pass 1 (capture, query) -> Fallback(standoff-approach
+    # containing the gate+compute, blind-approach containing DriveOnHeading)
+    # -> pass 2 (capture, query) -> escalate.
+    assert capture_positions[0] < query_positions[0] < fallback_pos
+    assert fallback_pos < has_candidate_pos < standoff_pos < drive_on_heading_pos
+    assert drive_on_heading_pos < capture_positions[1] < query_positions[1] < escalate_pos
+
+    # DriveOnHeading is still ForceSuccess-wrapped (returns FAILED on both a
+    # detected collision ahead and on timeout; only reaching the full
+    # requested distance returns SUCCESS -- the branch must continue
+    # regardless of which outcome stopped it).
+    m = re.search(
+        r"<ForceSuccess>\s*<DriveOnHeading\b([^/]*)/>\s*</ForceSuccess>",
+        branch, re.S)
+    assert m, "DriveOnHeading must stay ForceSuccess-wrapped"
+    assert 'server_name="drive_on_heading"' in m.group(1)
+
+
+def test_query_semantic_context_passes_carry_bbox_ports():
+    # Both QuerySemanticContext passes must surface
+    # responsible_bbox_center/extent -- pass 1 feeds ComputeStandoffPose;
+    # pass 2 feeds EscalateToLLMRecovery/logging. (ComputeStandoffPose ALSO
+    # binds the same attribute string as its own input port, so a blind
+    # whole-branch substring count isn't precise enough here.)
+    branch = _semantic_recovery_branch_no_comments()
+    query_elements = re.findall(r"<QuerySemanticContext\b[^>]*/>", branch)
+    assert len(query_elements) == 2
+    for element in query_elements:
+        assert 'responsible_bbox_center="{responsible_bbox_center}"' in element
+        assert 'responsible_bbox_extent="{responsible_bbox_extent}"' in element
 
 
 def test_geometric_bt_has_no_semantic_branch():
