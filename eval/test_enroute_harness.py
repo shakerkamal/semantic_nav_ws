@@ -16,13 +16,54 @@ REQUIRED_SCENARIO_KEYS = {
 }
 
 
+import re
 import xml.etree.ElementTree as ET
 
 WS_ROOT = os.path.dirname(EVAL_DIR)
-GEO_BT = os.path.join(
-    WS_ROOT, "src", "semantic_nav_nav2_plugins", "config",
-    "semantic_recovery_bt_geometric.xml",
-)
+BT_CONFIG_DIR = os.path.join(
+    WS_ROOT, "src", "semantic_nav_nav2_plugins", "config")
+BLLM_BT = os.path.join(BT_CONFIG_DIR, "semantic_recovery_bt.xml")
+GEO_BT = os.path.join(BT_CONFIG_DIR, "semantic_recovery_bt_geometric.xml")
+
+
+def _tier1_block(path):
+    src = open(path).read()
+    m = re.search(r"<PipelineSequence.*?</PipelineSequence>", src, re.S)
+    assert m, f"no PipelineSequence found in {path}"
+    return m.group(0)
+
+
+def test_tier1_byte_parity_between_bllm_and_bgeo():
+    # B-GEO must differ from B-LLM in the recovery child ONLY (plan invariant).
+    # A persisted version of the one-off parity check from Task 2, so future
+    # Tier-1 edits (like the PersistentBlockageGate below) can't silently land
+    # in only one of the two trees.
+    assert _tier1_block(BLLM_BT) == _tier1_block(GEO_BT)
+
+
+def test_tier1_has_persistent_blockage_gate_in_both_trees():
+    # 2026-07-15: SmacPlanner2D can keep finding a marginal detour around a
+    # soft/partial obstruction every 1Hz replan cycle while the rotation shim
+    # re-orients toward each new heading; PoseProgressChecker credits that
+    # rotation as "progress" and the controller never hard-fails, so a
+    # persistent-but-not-fully-sealed blockage can livelock Tier 1 forever
+    # without ever escalating to Tier 2/3. PathClearCondition's existing
+    # severity+debounce gate (already proven in SignalWaitRecheck) is reused
+    # as the FIRST child of the Tier-1 PipelineSequence: PipelineSequence
+    # re-ticks all prior children while a later one is RUNNING, so a FAILURE
+    # here aborts the running FollowPath and bubbles to the outer
+    # RecoveryNode(3) -- the missing complement to "planner keeps nominally
+    # succeeding." Small/transient blockages still pass through untouched via
+    # allow_geometric_detour_first.
+    for path in (BLLM_BT, GEO_BT):
+        block = _tier1_block(path)
+        gate = re.search(r"<PathClearCondition\b.*?/>", block, re.S)
+        assert gate, f"PersistentBlockageGate missing from Tier-1 in {path}"
+        no_comments = re.sub(r"<!--.*?-->", "", block, flags=re.S)
+        first_child = re.search(r"<PipelineSequence[^>]*>\s*<(\w+)", no_comments)
+        assert first_child.group(1) == "PathClearCondition", (
+            f"PathClearCondition must be the FIRST child of the Tier-1 "
+            f"PipelineSequence in {path} so it is reticked every cycle")
 
 
 def test_geometric_bt_has_no_semantic_branch():

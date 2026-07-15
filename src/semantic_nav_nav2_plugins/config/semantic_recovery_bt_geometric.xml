@@ -17,6 +17,39 @@
       <!-- ===== Primary child: validate, replan continuously, follow ===== -->
       <PipelineSequence name="NavigateWithValidation">
 
+        <!-- Hard gate for a PERSISTENT, SIGNIFICANT blockage that a real A*
+             planner can still nominally route around one marginal detour at
+             a time. Without this, SmacPlanner2D can keep finding a different
+             barely-feasible detour every 1Hz replan cycle while the rotation
+             shim re-orients toward each new heading; PoseProgressChecker
+             credits that rotation as "progress" (by design, so it does not
+             kill legitimate settling turns), so neither ComputePathToPose
+             nor FollowPath ever hard-fails and Tier 1 livelocks forever
+             instead of escalating (found 2026-07-15, en-route S4). Reuses
+             the SAME severity+debounce gate already proven in
+             SignalWaitRecheck below: allow_geometric_detour_first still lets
+             small/transient blockages pass through untouched via continuous
+             replanning; only a blockage that is wide, long, AND persists
+             across 2 consecutive ticks trips FAILURE, which
+             PipelineSequence's re-tick-all-priors semantics turns into an
+             abort of the running FollowPath, bubbling to the outer
+             RecoveryNode(3). -->
+        <PathClearCondition
+            name="PersistentBlockageGate"
+            path="{path}"
+            lookahead_m="1.5"
+            lethal_threshold="90"
+            debounce_ticks="2"
+            sample_radius_m="0.05"
+            min_blocked_length_m="0.45"
+            min_blocked_samples="4"
+            blocked_fraction_threshold="0.30"
+            allow_geometric_detour_first="true"
+            plan_topic="/plan"
+            local_costmap_topic="/local_costmap/costmap"
+            blockage_centroid="{blockage_centroid}"
+            blockage_extent_m="{blockage_extent_m}"/>
+
         <ValidateSemantic
             service_name="/validate_pose_goal"
             server_timeout="10000"
@@ -25,7 +58,8 @@
 
         <!-- Replans at 1 Hz so FollowPath always has a current plan that
              accounts for new costmap obstacles. Navigable obstacles are
-             routed around naturally; no PathClearCondition needed here.
+             routed around naturally by continuous replanning; the gate above
+             is what catches a PERSISTENT blockage this alone cannot resolve.
 
              Each fallible node carries its own single-retry with a
              context-specific costmap clear (as in Nav2's stock tree). A lone
