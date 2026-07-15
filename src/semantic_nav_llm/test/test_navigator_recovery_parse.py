@@ -58,8 +58,94 @@ def test_prompt_eligibility_uses_allowed_actions():
     text = node._render_action_eligibility(req)
     assert "approach_and_recheck: ELIGIBLE" in text
     assert "retry_target: ELIGIBLE" in text
-    assert "open_door_then_replan: INELIGIBLE" in text  # not in allowed_actions
-    assert "give_up: ELIGIBLE" in text
+
+
+def _parsed_action(key="door:119", message="Open the door"):
+    from semantic_nav_llm.navigator_node import ParsedRecoveryAction
+    return ParsedRecoveryAction(
+        action="open_door_then_replan",
+        target_object_tag="",
+        target_intent_hint="",
+        waypoints=[],
+        wait_seconds=0,
+        responsible_object_key=key,
+        operator_message=message,
+        rationale="",
+        confidence=90,
+    )
+
+
+def _request(match_type, key="door:119", safety_class="none"):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        match_type=match_type,
+        responsible_object_key=key,
+        responsible_safety_class=safety_class,
+    )
+
+
+def test_operator_action_rejects_unknown_match_type():
+    # 2026-07-15: real-world detection/matching noise means a strict
+    # "verified only" gate would reject correct picks far more often than in
+    # simulation -- but "unknown" (no plausible match at all) must still be
+    # refused; there is nothing to safely act on.
+    node = NavigatorNode.__new__(NavigatorNode)
+    error = node._validate_operator_object_action_common(
+        parsed=_parsed_action(), request=_request("unknown"),
+        action_name="open_door_then_replan",
+    )
+    assert error is not None
+    assert "not verified" in error or "unknown" in error.lower()
+
+
+def test_operator_action_accepts_verified_match_type():
+    node = NavigatorNode.__new__(NavigatorNode)
+    error = node._validate_operator_object_action_common(
+        parsed=_parsed_action(), request=_request("verified"),
+        action_name="open_door_then_replan",
+    )
+    assert error is None
+
+
+def test_operator_action_accepts_inferred_match_type():
+    # THE fix: "inferred" already means "within a bounded proximity radius of
+    # the blockage centroid" (responsible_object_matcher's
+    # inferred_fallback_radius_m), not "anywhere in the map" -- it is a real,
+    # existing confidence tier, not a free-for-all. Requiring exact inflated
+    # -bbox containment (verified) before ANY operator action is eligible is
+    # an unrealistic bar once real sensor/geometry noise is in play (a few cm
+    # of centroid error against e.g. a 0.2m-thick door is enough to miss
+    # "verified" every time) -- confirmed live 2026-07-15, S2 (a match at
+    # 0.41m, a few mm outside the inflated bbox, was rejected outright).
+    node = NavigatorNode.__new__(NavigatorNode)
+    error = node._validate_operator_object_action_common(
+        parsed=_parsed_action(), request=_request("inferred"),
+        action_name="open_door_then_replan",
+    )
+    assert error is None
+
+
+def test_operator_action_still_rejects_mismatched_object_key():
+    # Loosening the match_type gate must not loosen the OTHER checks.
+    node = NavigatorNode.__new__(NavigatorNode)
+    error = node._validate_operator_object_action_common(
+        parsed=_parsed_action(key="door:119"),
+        request=_request("inferred", key="door:999"),
+        action_name="open_door_then_replan",
+    )
+    assert error is not None
+    assert "does not match" in error
+
+
+def test_operator_action_still_rejects_unsafe_safety_class():
+    node = NavigatorNode.__new__(NavigatorNode)
+    error = node._validate_operator_object_action_common(
+        parsed=_parsed_action(),
+        request=_request("verified", safety_class="human"),
+        action_name="open_door_then_replan",
+    )
+    assert error is not None
+    assert "safety_class" in error
 
 
 def test_validate_fills_approach_and_recheck_response():

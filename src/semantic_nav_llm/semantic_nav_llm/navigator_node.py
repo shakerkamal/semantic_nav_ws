@@ -2067,7 +2067,21 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         request,
         action_name: str,
     ) -> Optional[str]:
-        if (getattr(request, "match_type", "") or "").strip() != "verified":
+        # "verified" (blockage centroid inside the inflated mapped bbox) and
+        # "inferred" (nearest candidate within a bounded proximity fallback
+        # radius -- responsible_object_matcher.INFERRED_FALLBACK_RADIUS_M)
+        # are both real, existing confidence tiers, not "verified vs anything
+        # goes". Requiring exact inflated-bbox containment before ANY
+        # operator action is eligible is an unrealistic bar once real sensor
+        # /geometry noise is in play: a few cm of centroid error against a
+        # thin object (e.g. a 0.2m-thick door) is enough to miss "verified"
+        # on nearly every attempt, and real hardware will be noisier than
+        # simulation, not less (confirmed live 2026-07-15, S2: a match at
+        # 0.41m, a few mm outside the inflated bbox, was rejected outright).
+        # Only "unknown" (no plausible candidate at all) is refused here.
+        if (getattr(request, "match_type", "") or "").strip() not in {
+            "verified", "inferred",
+        }:
             return f"{action_name} ineligible: responsible object match is not verified."
 
         request_object_key = (
