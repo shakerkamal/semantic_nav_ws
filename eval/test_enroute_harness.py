@@ -136,6 +136,24 @@ def test_trigger_line_crossing():
     assert crossed("y", 1.0, "increasing", (0.0, 1.5))
 
 
+def test_database_include_xml_matches_gazebo_ros_template():
+    from enroute_blockage_trigger import database_include_xml
+    xml = database_include_xml("aws_robomaker_residential_Door_01")
+    # Must mirror gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE
+    # exactly: <world><include>, with NO pose inside the xml at all --
+    # placement comes entirely from the SpawnEntity service's separate
+    # initial_pose field. A synthesized <model><pose>...<include>...</model>
+    # wrapper (the previous, WRONG approach) is not how gazebo_ros resolves
+    # database models: the door spawned but never actually blocked the
+    # corridor (S2 smoke run, 2026-07-15) because it landed away from the
+    # intended pose.
+    assert "<world" in xml
+    assert "<include>" in xml
+    assert "<uri>model://aws_robomaker_residential_Door_01</uri>" in xml
+    assert "<pose>" not in xml
+    assert "<model " not in xml and "<model>" not in xml
+
+
 FIXTURE_TRIAL = """\
 [TRIAL] scenario=S5 variant=bllm_retry rep=1 commit=abc1234 start=1783880000
 [navigation_orchestrator-25] [INFO] [1783880010.100000000] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='bed:120', db_version=1193208084, db_stamp=1.0): frame='map', x=-4.8, y=2.2

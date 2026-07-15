@@ -37,8 +37,23 @@ def crossed(axis: str, threshold: float, direction: str,
     return value < threshold
 
 
-def _pose_xml(x: float, y: float, yaw: float) -> str:
-    return f"<pose>{x} {y} 0 0 0 {yaw}</pose>"
+def database_include_xml(model_name: str) -> str:
+    """SDF payload for a Gazebo model-database spawn.
+
+    Mirrors gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE exactly:
+    <world><include>, with NO pose in the xml -- placement comes entirely
+    from the SpawnEntity service's separate initial_pose field (set in
+    _spawn() below), the same as the proven close_door.sh/close_partition.sh
+    `spawn_entity.py -database ... -x -y -z -Y` invocations. A synthesized
+    <model><pose>...<include>...</model> wrapper (the previous approach) is
+    not how gazebo_ros resolves database models: the door spawned but never
+    actually blocked the corridor (S2 smoke run, 2026-07-15) because it
+    landed away from the intended pose.
+    """
+    return (
+        "<sdf version='1.6'><world name='default'><include>"
+        "<uri>model://{}</uri></include></world></sdf>"
+    ).format(model_name)
 
 
 class BlockageTrigger(Node):
@@ -70,12 +85,8 @@ class BlockageTrigger(Node):
 
     def _blocker_xml(self) -> str:
         b = self._blocker
-        x, y, yaw = (float(v) for v in b["pose"])
         if b["kind"] == "database":
-            return (
-                "<sdf version='1.6'><model name='{n}'>{p}<include>"
-                "<uri>model://{m}</uri></include></model></sdf>".format(
-                    n=b["entity"], p=_pose_xml(x, y, yaw), m=b["model"]))
+            return database_include_xml(b["model"])
         share = get_package_share_directory("semantic_nav_bringup")
         for sub in ("door_scenario", "person_scenario", "obstacle_scenario"):
             path = os.path.join(share, "models", sub, b["model"])
