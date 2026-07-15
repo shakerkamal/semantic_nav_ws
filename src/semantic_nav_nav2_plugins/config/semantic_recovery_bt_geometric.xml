@@ -1,0 +1,80 @@
+<!--
+  B-GEO ablation variant (Ch7 s7.5): Tier-1 primary navigation copied
+  VERBATIM from semantic_recovery_bt.xml (including the per-node in-place
+  single retries added in 158c726 — a transient must fail twice before the
+  tiered recovery engages, same as B-LLM). The RecoveryNode's recovery child
+  is ONLY the Tier-2 geometric sequence — the SemanticRecoveryBranch
+  (CaptureBlockageContext -> QuerySemanticContext -> EscalateToLLMRecovery ->
+  directive switch) is removed. All 3 retries = clear costmaps + back up.
+  Any blockage that geometry cannot resolve ends in abort.
+-->
+<root main_tree_to_execute="SemanticNavigateWithRecovery">
+
+  <BehaviorTree ID="SemanticNavigateWithRecovery">
+
+    <RecoveryNode number_of_retries="3" name="SemanticRecovery">
+
+      <!-- ===== Primary child: validate, replan continuously, follow ===== -->
+      <PipelineSequence name="NavigateWithValidation">
+
+        <ValidateSemantic
+            service_name="/validate_pose_goal"
+            server_timeout="10000"
+            goal_pose="{goal}"
+            validation_reason="{validation_reason}"/>
+
+        <!-- Replans at 1 Hz so FollowPath always has a current plan that
+             accounts for new costmap obstacles. Navigable obstacles are
+             routed around naturally; no PathClearCondition needed here.
+
+             Each fallible node carries its own single-retry with a
+             context-specific costmap clear (as in Nav2's stock tree). A lone
+             transient failure — a planner miss into unmapped space, one
+             progress-checker timeout — is retried in place and must fail
+             TWICE before the tiered recovery below is entered. Without this,
+             the first hiccup escalates straight to the LLM. -->
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose
+                goal="{goal}"
+                path="{path}"
+                planner_id="GridBased"/>
+            <ClearEntireCostmap
+                name="ClearGlobalCostmap-Context"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+          </RecoveryNode>
+        </RateController>
+
+        <RecoveryNode number_of_retries="1" name="FollowPath">
+          <FollowPath
+              path="{path}"
+              controller_id="FollowPath"/>
+          <ClearEntireCostmap
+              name="ClearLocalCostmap-Context"
+              service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+
+      </PipelineSequence>
+
+      <!-- ===== Recovery child: geometric ONLY (no semantic Tier 3) ===== -->
+      <Sequence name="GeometricSafeRecovery">
+        <ClearEntireCostmap
+            name="ClearLocalGeometric"
+            service_name="local_costmap/clear_entirely_local_costmap"/>
+        <ClearEntireCostmap
+            name="ClearGlobalGeometric"
+            service_name="global_costmap/clear_entirely_global_costmap"/>
+        <BackUp
+            name="BackUpToSafePose"
+            backup_dist="0.20"
+            backup_speed="0.05"
+            time_allowance="10.0"
+            server_name="backup"
+            server_timeout="10000"/>
+      </Sequence>
+
+    </RecoveryNode>
+
+  </BehaviorTree>
+
+</root>
