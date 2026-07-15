@@ -1,19 +1,28 @@
 <?xml version="1.0"?>
-<!-- Static stand-in for a person: cylinder 0.3m radius x 1.7m tall.
-     Collision is what matters (seals the ~0.9m gap, marks the costmap);
-     the SEMANTIC identity comes from the mock ConceptGraph detector, not
-     from this model. Spawned/deleted at runtime by the blockage trigger. -->
+<!-- Static stand-in for a person: cylinder 0.45m radius x 1.7m tall.
+     Radius sized to PROVABLY seal the narrow gap: the measured costmap
+     corridor there is 0.75-0.80m free width (reference_map_vs_world_mismatch
+     memory); a 0.30m-radius (0.6m diameter) person left a ~0.15-0.2m margin
+     per side that SmacPlanner2D (a real A*) could still thread, causing the
+     robot to livelock re-planning/re-rotating without ever failing hard
+     enough to trigger recovery (found 2026-07-15, S4 smoke run). At 0.45m
+     radius (0.9m diameter) no lethal-free channel remains on either side,
+     regardless of inflation/cost gradient details, so ComputePathToPose must
+     genuinely fail and Tier-1/2/3 escalate normally. Collision is what
+     matters; the SEMANTIC identity comes from the mock ConceptGraph
+     detector, not from this model. Spawned/deleted at runtime by the
+     blockage trigger. -->
 <sdf version="1.6">
   <model name="person_scenario">
     <static>true</static>
     <link name="body">
       <collision name="collision">
         <pose>0 0 0.85 0 0 0</pose>
-        <geometry><cylinder><radius>0.30</radius><length>1.70</length></cylinder></geometry>
+        <geometry><cylinder><radius>0.45</radius><length>1.70</length></cylinder></geometry>
       </collision>
       <visual name="visual">
         <pose>0 0 0.85 0 0 0</pose>
-        <geometry><cylinder><radius>0.30</radius><length>1.70</length></cylinder></geometry>
+        <geometry><cylinder><radius>0.45</radius><length>1.70</length></cylinder></geometry>
         <material><ambient>0.8 0.5 0.3 1</ambient><diffuse>0.8 0.5 0.3 1</diffuse></material>
       </visual>
     </link>

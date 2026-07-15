@@ -74,15 +74,18 @@ scenarios:
     blocker:
       entity: scenario_person
       kind: sdf_file
-      model: person_scenario.sdf
+      model: person_scenario.sdf   # 0.45m radius -- provably seals the gap, see model comment
       pose: [-2.507, -1.350, 0.0]
-    delete_after_sec: 40.0    # person moves only after B-GEO exhausts retries
+    delete_after_sec: 40.0    # RETUNE after confirming real escalation timing (2026-07-15:
+                              # radius was widened so ComputePathToPose now genuinely fails
+                              # instead of livelocking; re-time against the observed Tier-1
+                              # ->2->3 escalation duration before trusting this value)
     detector:
       object_key: "person:902"
       tag: person
       caption: "A person standing in the narrow passage, facing the robot."
       state: movable
-      extent: [0.5, 0.5, 1.7]
+      extent: [0.9, 0.9, 1.7]   # matches the widened 0.45m-radius collision model
     expected_directive: wait_then_replan
 
   S5:   # target region sealed, blocker deliberately UNATTRIBUTED — flagship
