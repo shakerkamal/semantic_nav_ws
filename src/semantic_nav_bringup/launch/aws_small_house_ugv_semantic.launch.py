@@ -91,6 +91,10 @@ def generate_launch_description():
     # Rover-only: run the orchestrator as a daemon, or drive it one-shot from the CLI.
     start_orchestrator = LaunchConfiguration('start_orchestrator')
 
+    # En-route ablation: BT XML the orchestrator dispatches with (B-LLM default,
+    # or the geometric-only B-GEO variant).
+    recovery_bt_xml = LaunchConfiguration('recovery_bt_xml')
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
@@ -312,6 +316,16 @@ def generate_launch_description():
                     'Set false to drive it one-shot via the CLI instead.',
     )
 
+    recovery_bt_xml_arg = DeclareLaunchArgument(
+        'recovery_bt_xml',
+        default_value=os.path.join(
+            get_package_share_directory('semantic_nav_nav2_plugins'),
+            'config', 'semantic_recovery_bt.xml'),
+        description='BT XML the orchestrator dispatches with (B-LLM default). '
+                    'En-route ablation B-GEO arm: pass the installed '
+                    'semantic_recovery_bt_geometric.xml path instead.',
+    )
+
     # AWS world + ugv_rover spawn (this launch already delays its own spawn).
     aws_small_house_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -431,6 +445,9 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'up_front_llm_enabled': up_front_llm_enabled,
             'open_set_inference_enabled': open_set_inference_enabled,
+            # En-route ablation: B-LLM default XML, or the geometric-only B-GEO
+            # variant passed via recovery_bt_xml:=... at launch.
+            'behavior_tree': recovery_bt_xml,
             # The orchestrator loads the map under TWO params; both must point at v002
             # or it would diagnose blockages against objects the rover's world lacks.
             'semantic_map_path': semantic_map_path,
@@ -496,6 +513,7 @@ def generate_launch_description():
         up_front_llm_enabled_arg,
         open_set_inference_enabled_arg,
         start_orchestrator_arg,
+        recovery_bt_xml_arg,
 
         aws_small_house_sim_launch,
 

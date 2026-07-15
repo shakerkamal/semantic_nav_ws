@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!-- Static stand-in for a person: cylinder 0.3m radius x 1.7m tall.
+     Collision is what matters (seals the ~0.9m gap, marks the costmap);
+     the SEMANTIC identity comes from the mock ConceptGraph detector, not
+     from this model. Spawned/deleted at runtime by the blockage trigger. -->
+<sdf version="1.6">
+  <model name="person_scenario">
+    <static>true</static>
+    <link name="body">
+      <collision name="collision">
+        <pose>0 0 0.85 0 0 0</pose>
+        <geometry><cylinder><radius>0.30</radius><length>1.70</length></cylinder></geometry>
+      </collision>
+      <visual name="visual">
+        <pose>0 0 0.85 0 0 0</pose>
+        <geometry><cylinder><radius>0.30</radius><length>1.70</length></cylinder></geometry>
+        <material><ambient>0.8 0.5 0.3 1</ambient><diffuse>0.8 0.5 0.3 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

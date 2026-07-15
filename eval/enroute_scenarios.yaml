@@ -1,0 +1,94 @@
+# Scenario constants for the BT-LLM en-route recovery ablation (Ch7 s7.5).
+# Poses are map-frame == world-frame (robot spawns at the world origin).
+# RE-SURVEY before the grid: folding doors moved 2026-07-12 — narrow gap
+# panel pose (-2.507, -1.350); kitchen gap door:119 at (4.862, -0.677).
+common:
+  perception_range_m: 3.0     # camera-like detection radius for the mock detector
+  detect_rate_hz: 2.0
+  ttl_sec: 5.0                # dynamic-overlay TTL; expiry = "no longer perceived"
+  blocker_state_topic: /enroute_scenario/blocker_state   # trigger -> detector
+
+scenarios:
+  S1:   # transient/geometric negative control — no perception, no LLM expected.
+        # Post-158c726 the Tier-1 in-place retries may absorb the transient
+        # before the RoundRobin ever engages: resolving_tier none OR T2 both
+        # count as the expected negative result.
+    goal_query: "refrigerator:6"
+    nl_command: ""
+    intent_hint: ""
+    trigger: {axis: x, threshold: 2.0, direction: increasing}
+    blocker:
+      entity: transient_panel
+      kind: sdf_file          # spawn from bringup's door_scenario_panel.sdf
+      model: door_scenario_panel.sdf
+      pose: [4.8622, -0.6772, -1.5577]
+    delete_after_sec: 8.0     # removed before Nav2 retries exhaust
+    detector: null
+    expected_directive: none
+
+  S2:   # closed door mid-route — persistent-map object door:119, no detector
+    goal_query: "refrigerator:6"
+    nl_command: ""
+    intent_hint: ""
+    trigger: {axis: x, threshold: 2.0, direction: increasing}
+    blocker:
+      entity: aws_robomaker_residential_Door_01
+      kind: database
+      model: aws_robomaker_residential_Door_01
+      pose: [4.8622, -0.6772, -1.5577]
+    delete_after_sec: 0.0     # operator "opens" via prompt (delete on confirm)
+    detector: null
+    expected_directive: open_door_then_replan
+
+  S3:   # clearable chair seals the narrow gap — detected at encounter
+    goal_query: "bed:120"
+    nl_command: "I want to rest"
+    intent_hint: "sleeping or resting"
+    trigger: {axis: x, threshold: -1.0, direction: decreasing}
+    blocker:
+      entity: scenario_chair
+      kind: database
+      model: aws_robomaker_residential_ChairA_01
+      pose: [-2.507, -1.350, 1.5708]
+    delete_after_sec: 0.0     # operator "clears" via prompt (delete on confirm)
+    detector:
+      object_key: "chair:901"
+      tag: chair
+      caption: "A wooden chair standing in the middle of the narrow passage
+        between the folding screens; it can be picked up and moved aside."
+      state: movable
+      extent: [0.5, 0.5, 0.9]
+    expected_directive: clear_object_then_replan
+
+  S4:   # person in the gap — safety scenario, leaves after B-GEO's budget
+    goal_query: "bed:120"
+    nl_command: "I want to rest"
+    intent_hint: "sleeping or resting"
+    trigger: {axis: x, threshold: -1.0, direction: decreasing}
+    blocker:
+      entity: scenario_person
+      kind: sdf_file
+      model: person_scenario.sdf
+      pose: [-2.507, -1.350, 0.0]
+    delete_after_sec: 40.0    # person moves only after B-GEO exhausts retries
+    detector:
+      object_key: "person:902"
+      tag: person
+      caption: "A person standing in the narrow passage, facing the robot."
+      state: movable
+      extent: [0.5, 0.5, 1.7]
+    expected_directive: wait_then_replan
+
+  S5:   # target region sealed, blocker deliberately UNATTRIBUTED — flagship
+    goal_query: "bed:120"
+    nl_command: "I want to rest"
+    intent_hint: "sleeping or resting"
+    trigger: {axis: x, threshold: -1.0, direction: decreasing}
+    blocker:
+      entity: sealed_barrier
+      kind: sdf_file
+      model: door_scenario_panel.sdf
+      pose: [-2.507, -1.350, 1.5708]
+    delete_after_sec: 0.0     # never removed; alternative anchor is the answer
+    detector: null            # no perception -> match_type=unknown by design
+    expected_directive: retry_target
