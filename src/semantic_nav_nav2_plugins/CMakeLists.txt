@@ -29,6 +29,7 @@ add_library(${library_name} SHARED
   src/emit_obstacle_signal.cpp
   src/operator_prompt.cpp
   src/compute_standoff_pose.cpp
+  src/has_responsible_object_candidate.cpp
 )
 
 target_include_directories(${library_name} PUBLIC

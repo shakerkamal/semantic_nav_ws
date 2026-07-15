@@ -11,6 +11,7 @@
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
 #include "semantic_nav_nav2_plugins/compute_standoff_pose.hpp"
+#include "semantic_nav_nav2_plugins/has_responsible_object_candidate.hpp"
 
 BT_REGISTER_NODES(factory)
 {
@@ -30,4 +31,6 @@ BT_REGISTER_NODES(factory)
     "OperatorPrompt");
   factory.registerNodeType<semantic_nav_nav2_plugins::ComputeStandoffPose>(
     "ComputeStandoffPose");
+  factory.registerNodeType<semantic_nav_nav2_plugins::HasResponsibleObjectCandidate>(
+    "HasResponsibleObjectCandidate");
 }

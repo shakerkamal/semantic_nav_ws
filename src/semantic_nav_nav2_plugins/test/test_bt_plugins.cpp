@@ -13,6 +13,7 @@
 #include "semantic_nav_nav2_plugins/emit_obstacle_signal.hpp"
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
 #include "semantic_nav_nav2_plugins/compute_standoff_pose.hpp"
+#include "semantic_nav_nav2_plugins/has_responsible_object_candidate.hpp"
 
 TEST(ValidateSemanticTest, hasGoalPoseInputPort)
 {
@@ -631,6 +632,32 @@ TEST(ComputeStandoffPoseTest, registersWithoutError)
   EXPECT_NO_THROW(
     factory.registerNodeType<semantic_nav_nav2_plugins::ComputeStandoffPose>(
       "ComputeStandoffPose"));
+}
+
+// ---- HasResponsibleObjectCandidate (Part A gate) --------------------------
+
+TEST(HasResponsibleObjectCandidateTest, verifiedAndInferredAreCandidates)
+{
+  EXPECT_TRUE(
+    semantic_nav_nav2_plugins::HasResponsibleObjectCandidate::hasCandidate("verified"));
+  EXPECT_TRUE(
+    semantic_nav_nav2_plugins::HasResponsibleObjectCandidate::hasCandidate("inferred"));
+}
+
+TEST(HasResponsibleObjectCandidateTest, unknownAndEmptyAreNotCandidates)
+{
+  EXPECT_FALSE(
+    semantic_nav_nav2_plugins::HasResponsibleObjectCandidate::hasCandidate("unknown"));
+  EXPECT_FALSE(
+    semantic_nav_nav2_plugins::HasResponsibleObjectCandidate::hasCandidate(""));
+}
+
+TEST(HasResponsibleObjectCandidateTest, registersWithoutError)
+{
+  BT::BehaviorTreeFactory factory;
+  EXPECT_NO_THROW(
+    factory.registerNodeType<semantic_nav_nav2_plugins::HasResponsibleObjectCandidate>(
+      "HasResponsibleObjectCandidate"));
 }
 
 int main(int argc, char ** argv)
