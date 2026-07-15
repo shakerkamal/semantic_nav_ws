@@ -133,10 +133,36 @@
               server_timeout="10000"/>
         </Sequence>
 
-        <!-- Tier 3: capture spatial context then escalate to LLM.
-             CaptureBlockageContext samples the last known path against the
-             current costmap so QuerySemanticContext has a real centroid. -->
+        <!-- Tier 3: approach the blockage, capture spatial context, then
+             escalate to LLM. CaptureBlockageContext samples the last known
+             path against the current costmap so QuerySemanticContext has a
+             real centroid.
+
+             Mirrors UP-FRONT's standoff-before-query pattern: rather than
+             sampling from wherever Tier-2's small 0.2m backup happened to
+             leave the robot (an uncontrolled, scenario-dependent distance
+             from the real blocker, observed ~2.1-2.3m short of a fully
+             sealed door, S2, 2026-07-15, defeating any fixed search-radius
+             heuristic), DriveOnHeading advances the robot toward the
+             blockage first. Its own built-in collision-checking
+             (simulate_ahead_time) means it always stops exactly as far as
+             it safely can, landing the robot right next to the real
+             obstacle. DriveOnHeading returns FAILED on BOTH a detected
+             collision ahead AND on timeout; only reaching the full
+             requested distance returns SUCCESS, so it is wrapped in
+             ForceSuccess: the robot ends up close either way, and the
+             branch must continue to CaptureBlockageContext regardless of
+             which outcome stopped it. -->
         <Sequence name="SemanticRecoveryBranch">
+
+          <ForceSuccess>
+            <DriveOnHeading
+                dist_to_travel="2.5"
+                speed="0.15"
+                time_allowance="20.0"
+                server_name="drive_on_heading"
+                server_timeout="10000"/>
+          </ForceSuccess>
 
           <CaptureBlockageContext
               path="{path}"

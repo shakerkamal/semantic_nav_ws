@@ -26,6 +26,16 @@ BLLM_BT = os.path.join(BT_CONFIG_DIR, "semantic_recovery_bt.xml")
 GEO_BT = os.path.join(BT_CONFIG_DIR, "semantic_recovery_bt_geometric.xml")
 
 
+def test_bt_xmls_are_well_formed():
+    # colcon build never validates XML syntax (config/ is a directory
+    # install), so a broken tree can sit undetected until Nav2 tries to load
+    # it at runtime. Caught live 2026-07-15: a literal "--" inside an XML
+    # comment's TEXT (not the <!-- / --> delimiters) is illegal per the XML
+    # spec and silently passed every prior check in this file.
+    for path in (BLLM_BT, GEO_BT):
+        ET.parse(path)   # raises ET.ParseError if malformed
+
+
 def _tier1_block(path):
     src = open(path).read()
     m = re.search(r"<PipelineSequence.*?</PipelineSequence>", src, re.S)
@@ -64,6 +74,35 @@ def test_tier1_has_persistent_blockage_gate_in_both_trees():
         assert first_child.group(1) == "PathClearCondition", (
             f"PathClearCondition must be the FIRST child of the Tier-1 "
             f"PipelineSequence in {path} so it is reticked every cycle")
+
+
+def test_tier3_approaches_blockage_before_sampling():
+    # 2026-07-15: en-route Tier-3 sampled spatial context from wherever the
+    # robot happened to stop after Tier-2's small 0.2m backup (observed
+    # ~2.1-2.3m from the true blocker in S2), causing repeated
+    # misattribution no amount of fallback-radius tuning could fix reliably
+    # -- the stopping distance isn't a fixed quantity. UP-FRONT never has
+    # this problem because it drives to a standoff pose before querying.
+    # Mirrors that here with the already-registered, already-safe
+    # drive_on_heading behavior (built-in collision-checking -- it advances
+    # exactly as far as it safely can and no further). DriveOnHeading
+    # returns FAILED both on a detected collision ahead AND on timeout (only
+    # reaching the full requested distance returns SUCCESS) -- the robot
+    # still ends up close either way, so it MUST be wrapped in ForceSuccess
+    # or the branch would abort before CaptureBlockageContext ever runs.
+    src = open(BLLM_BT).read()
+    no_comments = re.sub(r"<!--.*?-->", "", src, flags=re.S)
+    m = re.search(
+        r"<Sequence name=\"SemanticRecoveryBranch\">\s*"
+        r"<ForceSuccess>\s*<DriveOnHeading\b([^/]*)/>\s*</ForceSuccess>\s*"
+        r"<CaptureBlockageContext\b",
+        no_comments, re.S)
+    assert m, (
+        "SemanticRecoveryBranch must approach the blockage (ForceSuccess-"
+        "wrapped DriveOnHeading) BEFORE CaptureBlockageContext samples it")
+    attrs = m.group(1)
+    assert 'server_name="drive_on_heading"' in attrs
+    assert "dist_to_travel=" in attrs
 
 
 def test_geometric_bt_has_no_semantic_branch():
