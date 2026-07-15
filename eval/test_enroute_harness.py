@@ -67,3 +67,18 @@ def test_scenarios_yaml_complete():
             assert "openable" not in det and "clearable" not in det \
                 and "safety_class" not in det, \
                 f"{name}: detector must publish perception only"
+
+
+def test_planar_dist():
+    from enroute_common import planar_dist
+    assert abs(planar_dist((0.0, 0.0), (3.0, 4.0)) - 5.0) < 1e-9
+
+
+def test_load_scenarios_merges_common():
+    from enroute_common import load_scenarios
+    data = load_scenarios(SCENARIOS_PATH)
+    s4 = data["scenarios"]["S4"]
+    # common block is exposed alongside scenarios
+    assert data["common"]["perception_range_m"] == 3.0
+    assert s4["detector"]["tag"] == "person"
+    assert s4["delete_after_sec"] == 40.0
