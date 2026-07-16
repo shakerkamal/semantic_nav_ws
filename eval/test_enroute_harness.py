@@ -51,6 +51,48 @@ def test_tier1_byte_parity_between_bllm_and_bgeo():
     assert _tier1_block(BLLM_BT) == _tier1_block(GEO_BT)
 
 
+def test_bllm_retreats_to_a_standoff_after_the_post_approach_query():
+    # 2026-07-16 S2: when the pass-1 wide query finds no candidate (the robot
+    # is still ~2.5m out when Tier-3 starts), the blind DriveOnHeading
+    # collision-stops the robot ~0.4m from the blocker at an arbitrary angle
+    # where the 59-degree camera sees only a sliver of it. Pass-2 then
+    # perceives and matches the object -- but nothing acted on that match,
+    # so the robot escalated (and later re-observed after the operator
+    # cleared the blocker) from the jammed pose. Once pass-2 has a
+    # candidate, the tree must retreat to a standoff computed from the
+    # PERCEIVED bbox (ComputeStandoffPose's yaw faces the object) before
+    # EscalateToLLMRecovery -- ForceSuccess-wrapped: failing to reach the
+    # standoff must never abort the semantic branch itself.
+    root = ET.parse(BLLM_BT).getroot()
+    branch = root.iter("Sequence")
+    branch = [s for s in branch if s.get("name") == "SemanticRecoveryBranch"]
+    assert len(branch) == 1
+    children = list(branch[0])
+
+    query_idxs = [
+        i for i, el in enumerate(children) if el.tag == "QuerySemanticContext"
+    ]
+    assert len(query_idxs) == 2, "expected the pass-1 and pass-2 queries"
+    escalate_idxs = [
+        i for i, el in enumerate(children) if el.tag == "EscalateToLLMRecovery"
+    ]
+    assert len(escalate_idxs) == 1
+
+    retreat = [
+        el for el in children[query_idxs[1] + 1:escalate_idxs[0]]
+        if el.tag == "ForceSuccess"
+        and el.find(".//ComputeStandoffPose") is not None
+    ]
+    assert retreat, (
+        "no ForceSuccess-wrapped standoff retreat between the pass-2 query"
+        " and EscalateToLLMRecovery"
+    )
+    gate = retreat[0].find(".//HasResponsibleObjectCandidate")
+    assert gate is not None, "retreat must be gated on a pass-2 candidate"
+    follow = retreat[0].find(".//FollowPath")
+    assert follow is not None and follow.get("path") == "{standoff_path}"
+
+
 def test_tier1_has_persistent_blockage_gate_in_both_trees():
     # 2026-07-15: SmacPlanner2D can keep finding a marginal detour around a
     # soft/partial obstruction every 1Hz replan cycle while the rotation shim
