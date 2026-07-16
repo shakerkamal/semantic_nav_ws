@@ -41,6 +41,23 @@ if [ -n "$STRAY" ]; then
   exit 1
 fi
 
+# Operator-confirm scenarios (S2 door "opens", S3 chair "clears") end with an
+# OperatorPrompt -> /operator_decision -> operator confirms -> the trigger
+# deletes the spawned blocker. Without a live server for that service the
+# prompt is undeliverable ("/operator_decision not ready before timeout"),
+# the trial can only abort, and the blocker survives -- which looks EXACTLY
+# like a deletion bug (burned a full S2 run on 2026-07-16 after a relaunch
+# without restarting navigation_terminal). Refuse to start instead.
+if [ "$SCEN" = "S2" ] || [ "$SCEN" = "S3" ]; then
+  if ! ros2 service list 2>/dev/null | grep -qx "/operator_decision"; then
+    echo "ABORT: no server for /operator_decision (navigation_terminal not running?)."
+    echo "$SCEN needs an operator confirm to remove its blocker. Start the terminal"
+    echo "in its own TTY, then retry:"
+    echo "  ros2 run semantic_nav_orchestrator navigation_terminal --ros-args -p use_sim_time:=true"
+    exit 1
+  fi
+fi
+
 RUN_LOG=$(ls -t "$EVAL_DIR"/logs/*key.log | head -1)
 [ -n "$RUN_LOG" ] || { echo "no *key.log found — is the stack logging?"; exit 1; }
 START_LINE=$(wc -l < "$RUN_LOG")
