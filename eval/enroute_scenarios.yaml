@@ -2,69 +2,62 @@
 # Poses are map-frame == world-frame (robot spawns at the world origin).
 # RE-SURVEY before the grid: folding doors moved 2026-07-12 — narrow gap
 # panel pose (-2.507, -1.350); kitchen gap door:119 at (4.862, -0.677).
+
 common:
-  perception_range_m: 3.0     # camera-like detection radius for the mock detector
+  perception_range_m: 3.0  # camera-like detection radius for mock detector
   detect_rate_hz: 2.0
-  ttl_sec: 5.0                # dynamic-overlay TTL; expiry = "no longer perceived"
-  blocker_state_topic: /enroute_scenario/blocker_state   # trigger -> detector
+  ttl_sec: 5.0  # dynamic-overlay TTL; expiry = no longer perceived
+  blocker_state_topic: /enroute_scenario/blocker_state
+  operator_action_request_topic: /operator_action_request
+  operator_action_completion_topic: /operator_action_completion
+  # One mock-detector cycle after Gazebo confirms deletion. This lets fresh
+  # depth/scan observations arrive before the BT clears costmaps and replans.
+  operator_action_settle_sec: 0.5
 
 scenarios:
-  S1:   # geometric route-around negative control — no perception, no LLM
-        # expected. A compact bucket (0.4 m dia) drops in OPEN floor just before
-        # the kitchen doorway; Nav2's 1 Hz replanning detours around it and
-        # reaches the fridge WITHOUT any semantic escalation. resolving_tier
-        # none (pure replan) OR T2 (a costmap clear) both count as the expected
-        # negative result; any T3/LLM line is a FAILURE of the control.
-        # NB: a panel that SEALS the sole corridor is NOT a geometric control
-        # (it forces recovery and never self-clears on the depth-only rover) —
-        # that is the domain of S2-S5. Pose surveyed 2026-07-15 from /odom in
-        # the open approach; re-verify it leaves a passable side before a grid.
+  S1:  # geometric route-around negative control — no perception, no LLM
+    # expected. A compact bucket (0.4 m dia) drops in OPEN floor just before
+    # the kitchen doorway; Nav2's 1 Hz replanning detours around it and
+    # reaches the fridge WITHOUT semantic escalation. resolving_tier none
+    # (pure replan) OR T2 (a costmap clear) both count as expected; any T3/LLM
+    # line is a failure of the control.
     goal_query: "refrigerator:6"
     nl_command: ""
     intent_hint: ""
     trigger: {axis: x, threshold: 2.0, direction: increasing}
     blocker:
       entity: scenario_bucket
-      kind: sdf_file          # spawn from bringup's obstacle_scenario/bucket.sdf
+      kind: sdf_file
       model: bucket.sdf
       pose: [3.621, -0.542, 0.0]
-    delete_after_sec: 0.0     # persistent: the robot must genuinely route around
+    delete_after_sec: 0.0
     detector: null
     expected_directive: none
 
-  S2:   # closed door mid-route — persistent-map object door:119, NOW ALSO
-        # perceived live (2026-07-15): a static-only lookup proved unreliable
-        # (the centroid rarely lands precisely enough for verified inflated
-        # -bbox containment; it only ever produced 'inferred' matches, which
-        # are ineligible for operator-action directives). Detector fields
-        # mirror door:119's own static entry (map_v002.json) for consistency
-        # -- this models perceiving the SAME physical door, not a different
-        # object; match_responsible_object's dynamic-preferred tie-break
-        # (commit a6f5e9c) picks this live observation over the static one.
+  S2:  # closed kitchen door, perceived as a live semantic object
     goal_query: "refrigerator:6"
     nl_command: ""
     intent_hint: ""
     trigger: {axis: x, threshold: 2.0, direction: increasing}
     blocker:
-      # entity must NOT equal the model name: the world nests a model with
-      # this leaf name inside its own <model name='Door_01_001'> wrapper, so
-      # a same-named insert gets auto-renamed by gzserver and DeleteEntity
-      # can never find it again (S2 delete failed 'does not exist', 2026-07-16).
+      # Entity differs from the database model name so Gazebo deletion can
+      # address the inserted model deterministically.
       entity: scenario_door
       kind: database
       model: aws_robomaker_residential_Door_01
       pose: [4.8622, -0.6772, -1.5577]
-    delete_after_sec: 0.0     # operator "opens" via prompt (delete on confirm)
+    delete_after_sec: 0.0
     detector:
       object_key: "door:903"
       tag: door
-      caption: "The doorway connecting the hallway to the kitchen, near the
-        refrigerator and counter, now standing closed."
+      caption: >-
+        The doorway connecting the hallway to the kitchen, near the
+        refrigerator and counter, now standing closed.
       state: semi-static
       extent: [0.2, 0.9, 2.0]
     expected_directive: open_door_then_replan
 
-  S3:   # clearable chair seals the narrow gap — detected at encounter
+  S3:  # clearable chair seals the narrow gap — detected at encounter
     goal_query: "bed:120"
     nl_command: "I want to rest"
     intent_hint: "sleeping or resting"
@@ -74,17 +67,18 @@ scenarios:
       kind: database
       model: aws_robomaker_residential_ChairA_01
       pose: [-2.507, -1.350, 1.5708]
-    delete_after_sec: 0.0     # operator "clears" via prompt (delete on confirm)
+    delete_after_sec: 0.0
     detector:
       object_key: "chair:901"
       tag: chair
-      caption: "A wooden chair standing in the middle of the narrow passage
-        between the folding screens; it can be picked up and moved aside."
+      caption: >-
+        A wooden chair standing in the middle of the narrow passage between
+        the folding screens; it can be picked up and moved aside.
       state: movable
       extent: [0.5, 0.5, 0.9]
     expected_directive: clear_object_then_replan
 
-  S4:   # person in the gap — safety scenario, leaves after B-GEO's budget
+  S4:  # person in the gap — safety scenario, leaves after a fixed delay
     goal_query: "bed:120"
     nl_command: "I want to rest"
     intent_hint: "sleeping or resting"
@@ -92,21 +86,18 @@ scenarios:
     blocker:
       entity: scenario_person
       kind: sdf_file
-      model: person_scenario.sdf   # 0.45m radius -- provably seals the gap, see model comment
+      model: person_scenario.sdf
       pose: [-2.507, -1.350, 0.0]
-    delete_after_sec: 40.0    # RETUNE after confirming real escalation timing (2026-07-15:
-                              # radius was widened so ComputePathToPose now genuinely fails
-                              # instead of livelocking; re-time against the observed Tier-1
-                              # ->2->3 escalation duration before trusting this value)
+    delete_after_sec: 40.0
     detector:
       object_key: "person:902"
       tag: person
       caption: "A person standing in the narrow passage, facing the robot."
       state: movable
-      extent: [0.9, 0.9, 1.7]   # matches the widened 0.45m-radius collision model
+      extent: [0.9, 0.9, 1.7]
     expected_directive: wait_then_replan
 
-  S5:   # target region sealed, blocker deliberately UNATTRIBUTED — flagship
+  S5:  # sealed target region, deliberately unattributed blocker
     goal_query: "bed:120"
     nl_command: "I want to rest"
     intent_hint: "sleeping or resting"
@@ -116,6 +107,6 @@ scenarios:
       kind: sdf_file
       model: door_scenario_panel.sdf
       pose: [-2.507, -1.350, 1.5708]
-    delete_after_sec: 0.0     # never removed; alternative anchor is the answer
-    detector: null            # no perception -> match_type=unknown by design
+    delete_after_sec: 0.0
+    detector: null
     expected_directive: retry_target

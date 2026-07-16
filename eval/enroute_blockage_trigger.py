@@ -1,60 +1,62 @@
 #!/usr/bin/env python3
-"""En-route blockage trigger (eval-only): changes the WORLD, nothing else.
+"""En-route blockage trigger (eval-only): changes the world, nothing else.
 
-Watches the robot pose; when it crosses the scenario's trigger line, spawns
-the blocker at its fixed pose (reproducible mid-route injection). Optionally
-deletes it after delete_after_sec (S1 transient, S4 person-leaves). Announces
-spawned/deleted on a latched topic so the mock detector knows the object
-exists to be perceived.
+Watches the robot pose; when it crosses the scenario trigger line, spawns the
+blocker at its fixed pose. Optionally deletes it after ``delete_after_sec``.
+For operator-action scenarios, deletion is requested only after a keyed action
+request and completion is published only after Gazebo confirms deletion.
 
 Usage:
-  python3 eval/enroute_blockage_trigger.py --scenario S2
+    python3 eval/enroute_blockage_trigger.py --scenario S2
 """
+
 import argparse
 import math
 import os
 import sys
-from typing import Tuple
+from typing import Optional, Tuple
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
+from gazebo_msgs.srv import DeleteEntity, SpawnEntity
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
-
-from gazebo_msgs.srv import DeleteEntity, SpawnEntity
-from ament_index_python.packages import get_package_share_directory
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from enroute_common import load_scenarios, robot_map_pose  # noqa: E402
 
 
-def crossed(axis: str, threshold: float, direction: str,
-            xy: Tuple[float, float]) -> bool:
+def crossed(
+    axis: str,
+    threshold: float,
+    direction: str,
+    xy: Tuple[float, float],
+) -> bool:
     value = xy[0] if axis == "x" else xy[1]
     if direction == "increasing":
         return value > threshold
     return value < threshold
 
 
-def database_include_xml(model_name: str, entity_name: str) -> str:
-    """SDF payload for a Gazebo model-database spawn.
+def parse_action_token(token: str) -> Tuple[str, str, str]:
+    """Parse ``event_id|object_key|directive_action`` used by M2."""
+    parts = token.split("|")
+    if len(parts) != 3 or any(not part.strip() for part in parts):
+        raise ValueError(
+            "action token must be event_id|object_key|directive_action"
+        )
+    return parts[0], parts[1], parts[2]
 
-    Mirrors gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE
-    (<world><include>, with NO pose in the xml -- placement comes entirely
-    from the SpawnEntity service's separate initial_pose field, set in
-    _spawn() below), PLUS an explicit SDF <include><name> override.
-    gazebo_ros_factory applies request.name only to a direct <model>/<light>
-    element, never to an <include>, so without the override the inserted
-    model keeps its model.sdf name -- or, when that leaf name collides with
-    a model NESTED inside the world's own <model><include> wrappers (the
-    small-house worlds wrap aws_robomaker_residential_Door_01 that way),
-    gzserver auto-renames the insert and DeleteEntity by the request name
-    fails with 'does not exist' while the blocker stays in the world
-    (S2, 2026-07-16). A synthesized <model><pose>...<include>...</model>
-    wrapper (the original approach) is not how gazebo_ros resolves database
-    models: the door spawned but never actually blocked the corridor
-    (S2 smoke run, 2026-07-15) because it landed away from the intended pose.
+
+def database_include_xml(model_name: str, entity_name: str) -> str:
+    """Return an SDF payload for a Gazebo model-database spawn.
+
+    Mirrors gazebo_ros's own ``spawn_entity.py`` model-database template, with
+    no pose in the XML. Placement comes from ``SpawnEntity.initial_pose``.
+    The explicit ``<include><name>`` override makes ``DeleteEntity`` address
+    the inserted model by the requested scenario entity name.
     """
     return (
         "<sdf version='1.6'><world name='default'><include>"
@@ -63,178 +65,337 @@ def database_include_xml(model_name: str, entity_name: str) -> str:
 
 
 class BlockageTrigger(Node):
+    """Spawn and remove deterministic evaluation blockers."""
+
     def __init__(self, scenario_name: str, config: dict):
         super().__init__("enroute_blockage_trigger")
-        sc = config["scenarios"][scenario_name]
-        self._trigger = sc["trigger"]
-        self._blocker = sc["blocker"]
-        self._delete_after = float(sc.get("delete_after_sec") or 0.0)
+
+        common = config["common"]
+        scenario = config["scenarios"][scenario_name]
+
+        self._trigger = scenario["trigger"]
+        self._blocker = scenario["blocker"]
+        self._detector = scenario.get("detector")
+        self._expected_directive = str(
+            scenario.get("expected_directive") or ""
+        )
+        self._delete_after = float(
+            scenario.get("delete_after_sec") or 0.0
+        )
+        self._action_settle_sec = max(
+            0.0,
+            float(common.get("operator_action_settle_sec", 0.0)),
+        )
+
         self._fired = False
         self._deleted = False
+        self._delete_in_flight = False
         self._spawn_time = None
+        self._pending_action_token: Optional[str] = None
+        self._completion_timer = None
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         latched = QoSProfile(
-            depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
         self._state_pub = self.create_publisher(
-            String, str(config["common"]["blocker_state_topic"]), latched)
+            String,
+            str(common["blocker_state_topic"]),
+            latched,
+        )
+        self._action_completion_pub = self.create_publisher(
+            String,
+            str(common["operator_action_completion_topic"]),
+            latched,
+        )
 
         self._spawn_cli = self.create_client(SpawnEntity, "/spawn_entity")
         self._delete_cli = self.create_client(DeleteEntity, "/delete_entity")
 
-        # Operator-confirm scenarios (delete_after_sec=0.0: S2 door "opens",
-        # S3 chair "clears") have NOTHING that removes the spawned entity on
-        # confirm -- OperatorDecision.srv only reports acknowledged/note, it
-        # cannot signal a simulation-specific follow-up (deleting a Gazebo
-        # obstacle would wrongly couple the operator interface to
-        # simulation-only concerns; a real deployment has no Gazebo at all).
-        # OperatorPrompt (2026-07-15) now publishes responsible_object_key on
-        # acknowledged=true specifically so eval tooling can react here.
-        if self._delete_after <= 0.0:
+        # Only operator-action scenarios consume the request/completion seam.
+        if self._expected_directive in (
+            "open_door_then_replan",
+            "clear_object_then_replan",
+        ):
             self.create_subscription(
-                String, "/operator_confirmed_object",
-                self._on_operator_confirmed, 10)
+                String,
+                str(common["operator_action_request_topic"]),
+                self._on_operator_action_requested,
+                latched,
+            )
 
         self.create_timer(0.1, self._tick)
         self.get_logger().info(
             f"[TRIGGER] armed for {scenario_name}: "
             f"{self._trigger['axis']} {self._trigger['direction']} "
-            f"{self._trigger['threshold']}")
+            f"{self._trigger['threshold']}"
+        )
 
-    def _on_operator_confirmed(self, msg: String) -> None:
+    def _on_operator_action_requested(self, msg: String) -> None:
         if not msg.data:
             return
-        if not self._fired or self._deleted:
+
+        try:
+            event_id, object_key, directive_action = parse_action_token(
+                msg.data
+            )
+        except ValueError as exc:
+            self.get_logger().warning(
+                "[TRIGGER] ignoring malformed operator action token: "
+                f"{exc}"
+            )
             return
+
+        if not self._fired or self._deleted or self._delete_in_flight:
+            return
+
+        expected_object_key = (
+            str(self._detector.get("object_key"))
+            if self._detector is not None
+            else ""
+        )
+        if expected_object_key and object_key != expected_object_key:
+            self.get_logger().warning(
+                "[TRIGGER] ignoring operator action for unrelated object "
+                f"'{object_key}' (expected '{expected_object_key}')"
+            )
+            return
+
+        if directive_action != self._expected_directive:
+            self.get_logger().warning(
+                "[TRIGGER] ignoring operator action "
+                f"'{directive_action}' "
+                f"(expected '{self._expected_directive}')"
+            )
+            return
+
+        self._pending_action_token = msg.data
         self.get_logger().info(
-            f"[TRIGGER] operator confirmed '{msg.data}' -- deleting blocker")
-        self._deleted = True
+            "[TRIGGER] operator action requested "
+            f"event_id='{event_id}' object='{object_key}' "
+            f"action='{directive_action}' -- deleting blocker"
+        )
         self._delete()
 
     def _blocker_xml(self) -> str:
-        b = self._blocker
-        if b["kind"] == "database":
-            return database_include_xml(b["model"], b["entity"])
+        blocker = self._blocker
+        if blocker["kind"] == "database":
+            return database_include_xml(
+                blocker["model"], blocker["entity"]
+            )
+
         share = get_package_share_directory("semantic_nav_bringup")
-        for sub in ("door_scenario", "person_scenario", "obstacle_scenario"):
-            path = os.path.join(share, "models", sub, b["model"])
+        for subdirectory in (
+            "door_scenario",
+            "person_scenario",
+            "obstacle_scenario",
+        ):
+            path = os.path.join(
+                share,
+                "models",
+                subdirectory,
+                blocker["model"],
+            )
             if os.path.exists(path):
-                return open(path).read()
-        raise FileNotFoundError(b["model"])
+                with open(path, encoding="utf-8") as stream:
+                    return stream.read()
+
+        raise FileNotFoundError(blocker["model"])
 
     def _spawn(self) -> None:
-        # Pre-spawn cleanup: a leftover entity with the SAME name from an
-        # earlier/aborted trial rep (S2 delete_after_sec=0 means only the
-        # operator-confirm path deletes it; if a rep is killed or the
-        # operator declines, the entity survives and every later rep's spawn
-        # is flatly rejected -- "Entity [...] already exists", found
-        # 2026-07-15). Idempotent: a "not found" failure here is EXPECTED
-        # and harmless, just logged for visibility, not an error.
-        req = DeleteEntity.Request()
-        req.name = self._blocker["entity"]
-        future = self._delete_cli.call_async(req)
+        # Remove a leftover entity from an interrupted previous repetition.
+        request = DeleteEntity.Request()
+        request.name = self._blocker["entity"]
+        future = self._delete_cli.call_async(request)
         future.add_done_callback(self._on_precleanup_response)
 
     def _on_precleanup_response(self, future) -> None:
         try:
-            resp = future.result()
+            response = future.result()
             self.get_logger().info(
-                f"[TRIGGER] pre-spawn cleanup: success={resp.success} "
-                f"message='{resp.status_message}'")
-        except Exception as exc:  # noqa: BLE001 -- best-effort, never blocks spawn
+                "[TRIGGER] pre-spawn cleanup: "
+                f"success={response.success} "
+                f"message='{response.status_message}'"
+            )
+        except Exception as exc:  # noqa: BLE001
             self.get_logger().info(
-                f"[TRIGGER] pre-spawn cleanup call failed (ignored): {exc}")
+                "[TRIGGER] pre-spawn cleanup call failed "
+                f"(ignored): {exc}"
+            )
+
         self._do_spawn()
 
     def _do_spawn(self) -> None:
-        b = self._blocker
-        x, y, yaw = (float(v) for v in b["pose"])
-        req = SpawnEntity.Request()
-        req.name = b["entity"]
-        req.xml = self._blocker_xml()
-        req.initial_pose.position.x = x
-        req.initial_pose.position.y = y
-        req.initial_pose.orientation.z = math.sin(yaw / 2.0)
-        req.initial_pose.orientation.w = math.cos(yaw / 2.0)
-        req.reference_frame = "world"
+        blocker = self._blocker
+        x, y, yaw = (float(value) for value in blocker["pose"])
+
+        request = SpawnEntity.Request()
+        request.name = blocker["entity"]
+        request.xml = self._blocker_xml()
+        request.initial_pose.position.x = x
+        request.initial_pose.position.y = y
+        request.initial_pose.orientation.z = math.sin(yaw / 2.0)
+        request.initial_pose.orientation.w = math.cos(yaw / 2.0)
+        request.reference_frame = "world"
+
         self._spawn_time = self.get_clock().now()
         self.get_logger().info(
-            f"[TRIGGER] spawn requested '{b['entity']}' at ({x:.3f}, {y:.3f})")
-        future = self._spawn_cli.call_async(req)
+            f"[TRIGGER] spawn requested '{blocker['entity']}' "
+            f"at ({x:.3f}, {y:.3f})"
+        )
+
+        future = self._spawn_cli.call_async(request)
         future.add_done_callback(self._on_spawn_response)
 
     def _on_spawn_response(self, future) -> None:
-        # The service response is the ONLY authoritative signal that Gazebo
-        # actually created the entity -- logging immediately after
-        # call_async() (the previous behaviour) only proves the REQUEST was
-        # sent, not that it was accepted. Publishing blocker_state=spawned is
-        # deferred to here so the mock detector never reports perceiving an
-        # object Gazebo rejected.
         try:
-            resp = future.result()
-        except Exception as exc:  # noqa: BLE001 -- log and surface, do not hide
-            self.get_logger().error(f"[TRIGGER] spawn service call failed: {exc}")
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(
+                f"[TRIGGER] spawn service call failed: {exc}"
+            )
             return
+
         self.get_logger().info(
-            f"[TRIGGER] spawn result: success={resp.success} "
-            f"message='{resp.status_message}'")
-        if resp.success:
+            f"[TRIGGER] spawn result: success={response.success} "
+            f"message='{response.status_message}'"
+        )
+        if response.success:
             self._state_pub.publish(String(data="spawned"))
 
     def _delete(self) -> None:
-        req = DeleteEntity.Request()
-        req.name = self._blocker["entity"]
-        future = self._delete_cli.call_async(req)
+        if self._deleted or self._delete_in_flight:
+            return
+
+        self._delete_in_flight = True
+        request = DeleteEntity.Request()
+        request.name = self._blocker["entity"]
+
+        future = self._delete_cli.call_async(request)
         future.add_done_callback(self._on_delete_response)
-        self._state_pub.publish(String(data="deleted"))
         self.get_logger().info(
-            f"[TRIGGER] delete requested '{self._blocker['entity']}'")
+            f"[TRIGGER] delete requested '{self._blocker['entity']}'"
+        )
 
     def _on_delete_response(self, future) -> None:
         try:
-            resp = future.result()
+            response = future.result()
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f"[TRIGGER] delete service call failed: {exc}")
+            self._delete_in_flight = False
+            self.get_logger().error(
+                f"[TRIGGER] delete service call failed: {exc}"
+            )
             return
+
+        self._delete_in_flight = False
         self.get_logger().info(
-            f"[TRIGGER] delete result: success={resp.success} "
-            f"message='{resp.status_message}'")
+            f"[TRIGGER] delete result: success={response.success} "
+            f"message='{response.status_message}'"
+        )
+
+        if not response.success:
+            self.get_logger().error(
+                "[TRIGGER] blocker deletion was rejected; action "
+                "completion will not be published"
+            )
+            return
+
+        # Gazebo success is the authoritative transition to deleted.
+        self._deleted = True
+        self._state_pub.publish(String(data="deleted"))
+
+        if self._pending_action_token is None:
+            return
+
+        if self._action_settle_sec <= 0.0:
+            self._publish_action_completion()
+            return
+
+        self.get_logger().info(
+            "[TRIGGER] deletion confirmed; waiting "
+            f"{self._action_settle_sec:.2f}s for fresh sensor frames"
+        )
+        self._completion_timer = self.create_timer(
+            self._action_settle_sec,
+            self._publish_action_completion,
+        )
+
+    def _publish_action_completion(self) -> None:
+        timer = self._completion_timer
+        self._completion_timer = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+        token = self._pending_action_token
+        if token is None:
+            return
+
+        self._pending_action_token = None
+        self._action_completion_pub.publish(String(data=token))
+        self.get_logger().info(
+            f"[TRIGGER] operator action completed token='{token}'"
+        )
 
     def _tick(self) -> None:
         if self._fired:
-            if (self._delete_after > 0.0 and not self._deleted
-                    and self._spawn_time is not None):
-                elapsed = (self.get_clock().now()
-                           - self._spawn_time).nanoseconds / 1e9
+            if (
+                self._delete_after > 0.0
+                and not self._deleted
+                and not self._delete_in_flight
+                and self._spawn_time is not None
+            ):
+                elapsed = (
+                    self.get_clock().now() - self._spawn_time
+                ).nanoseconds / 1e9
                 if elapsed >= self._delete_after:
-                    self._deleted = True
                     self._delete()
             return
+
         robot = robot_map_pose(self._tf_buffer)
         if robot is None:
             return
-        if crossed(self._trigger["axis"], float(self._trigger["threshold"]),
-                   self._trigger["direction"], robot):
+
+        if crossed(
+            self._trigger["axis"],
+            float(self._trigger["threshold"]),
+            self._trigger["direction"],
+            robot,
+        ):
             self._fired = True
             self._spawn()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", required=True,
-                        choices=["S1", "S2", "S3", "S4", "S5"])
-    parser.add_argument("--config", default=os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "enroute_scenarios.yaml"))
+    parser.add_argument(
+        "--scenario",
+        required=True,
+        choices=["S1", "S2", "S3", "S4", "S5"],
+    )
+    parser.add_argument(
+        "--config",
+        default=os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "enroute_scenarios.yaml",
+        ),
+    )
     args = parser.parse_args()
+
     rclpy.init()
     node = BlockageTrigger(args.scenario, load_scenarios(args.config))
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

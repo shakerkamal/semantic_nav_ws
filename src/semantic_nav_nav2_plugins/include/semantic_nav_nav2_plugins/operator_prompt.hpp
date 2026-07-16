@@ -16,26 +16,27 @@ namespace semantic_nav_nav2_plugins
 {
 
 /**
- * @brief BT stateful action that sends an OperatorDecision service request.
+ * @brief BT stateful action for operator acknowledgement and action completion.
  *
- * Blocks the BT tick (not the ROS spin) until the operator acknowledges or
- * the response_timeout_ms fires. Returns SUCCESS on acknowledgement, FAILURE
- * on rejection, timeout, service unavailability, or null response.
+ * The OperatorDecision service records the operator's decision. When
+ * wait_for_action_completion is false, acknowledgement preserves the legacy
+ * behavior and returns SUCCESS immediately.
+ *
+ * When wait_for_action_completion is true, acknowledgement publishes a keyed
+ * action request and this node remains RUNNING until the identical token is
+ * received on action_completion_topic. This prevents costmap clearing and
+ * replanning before the requested environmental action has completed.
+ *
+ * Token format:
+ *   recovery_event_id|responsible_object_key|directive_action
  *
  * Phases:
- *   kWaitService  — poll service_is_ready() up to service_ready_timeout_ms.
- *   kWaitResponse — wait for the async response up to response_timeout_ms.
+ *   kWaitService          - bounded service availability polling.
+ *   kWaitResponse         - bounded OperatorDecision response wait.
+ *   kWaitActionCompletion - bounded keyed environmental-action wait.
  *
- * Uses std::optional<FutureAndRequestId> so pending requests can be cancelled
- * on halt, matching the established QuerySemanticContext pattern.
- *
- * On acknowledged=true, ALSO publishes responsible_object_key to
- * confirmed_object_topic. The service response itself (OperatorDecision.srv)
- * has no way to signal a simulation-specific action (e.g. deleting a spawned
- * Gazebo obstacle) -- that would wrongly couple the operator-decision
- * interface (also used by a real deployment with no Gazebo at all) to
- * simulation concerns. This publish is the seam eval-only tooling can
- * subscribe to instead, without touching the operator interface itself.
+ * Uses FutureAndRequestId so pending Humble service requests are removed when
+ * the node is halted.
  */
 class OperatorPrompt : public BT::StatefulActionNode
 {
@@ -58,20 +59,31 @@ private:
   enum class Phase
   {
     kWaitService,
-    kWaitResponse
+    kWaitResponse,
+    kWaitActionCompletion
   };
+
+  void onActionCompletion(const std_msgs::msg::String::SharedPtr msg);
 
   rclcpp::Node::SharedPtr node_;
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
+
   OperatorClient::SharedPtr client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr confirmed_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr action_request_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr action_completion_sub_;
 
   Phase phase_{Phase::kWaitService};
   std::chrono::steady_clock::time_point phase_deadline_;
 
   int service_ready_timeout_ms_{2000};
   int response_timeout_ms_{120000};
+  int action_completion_timeout_ms_{30000};
+
+  bool wait_for_action_completion_{false};
+  bool action_completed_{false};
+  std::string expected_action_token_;
 
   std::optional<OperatorFuture> future_;
 };
