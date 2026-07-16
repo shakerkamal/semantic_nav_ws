@@ -386,6 +386,31 @@ def _input_thread(cmd_q: queue.Queue) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Idle command wait — also serves operator prompts.
+#
+# navigate() drains _op_req_q while a terminal-issued navigation is active,
+# but an eval harness dispatches /navigate_to_query from its own requester:
+# the controller then sits idle right here while the BT raises
+# /operator_decision, and a prompt left in the queue would never be printed
+# (the BT side times out after response_timeout_ms and the trial aborts).
+# ---------------------------------------------------------------------------
+
+def _next_command(node: "NavigationTerminal", cmd_q: queue.Queue):
+    """Block until the next user command, serving operator prompts meanwhile."""
+    while True:
+        try:
+            op_req = node._op_req_q.get_nowait()
+            node._handle_operator_prompt(op_req, cmd_q)
+            continue
+        except queue.Empty:
+            pass
+        try:
+            return cmd_q.get(timeout=0.05)
+        except queue.Empty:
+            continue
+
+
+# ---------------------------------------------------------------------------
 # Command resolver
 # ---------------------------------------------------------------------------
 
@@ -486,7 +511,7 @@ def _controller(node: NavigationTerminal, cmd_q: queue.Queue) -> None:
     _emit(dim("  Ctrl-C cancels active navigation.  Ctrl-D exits.\n"))
 
     while True:
-        raw = cmd_q.get()          # block until input_thread has something
+        raw = _next_command(node, cmd_q)  # blocks; also serves operator prompts
 
         # Ctrl-D / explicit None → exit
         if raw is None:
