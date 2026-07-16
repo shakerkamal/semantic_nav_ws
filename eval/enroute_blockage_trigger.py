@@ -37,23 +37,29 @@ def crossed(axis: str, threshold: float, direction: str,
     return value < threshold
 
 
-def database_include_xml(model_name: str) -> str:
+def database_include_xml(model_name: str, entity_name: str) -> str:
     """SDF payload for a Gazebo model-database spawn.
 
-    Mirrors gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE exactly:
-    <world><include>, with NO pose in the xml -- placement comes entirely
-    from the SpawnEntity service's separate initial_pose field (set in
-    _spawn() below), the same as the proven close_door.sh/close_partition.sh
-    `spawn_entity.py -database ... -x -y -z -Y` invocations. A synthesized
-    <model><pose>...<include>...</model> wrapper (the previous approach) is
-    not how gazebo_ros resolves database models: the door spawned but never
-    actually blocked the corridor (S2 smoke run, 2026-07-15) because it
-    landed away from the intended pose.
+    Mirrors gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE
+    (<world><include>, with NO pose in the xml -- placement comes entirely
+    from the SpawnEntity service's separate initial_pose field, set in
+    _spawn() below), PLUS an explicit SDF <include><name> override.
+    gazebo_ros_factory applies request.name only to a direct <model>/<light>
+    element, never to an <include>, so without the override the inserted
+    model keeps its model.sdf name -- or, when that leaf name collides with
+    a model NESTED inside the world's own <model><include> wrappers (the
+    small-house worlds wrap aws_robomaker_residential_Door_01 that way),
+    gzserver auto-renames the insert and DeleteEntity by the request name
+    fails with 'does not exist' while the blocker stays in the world
+    (S2, 2026-07-16). A synthesized <model><pose>...<include>...</model>
+    wrapper (the original approach) is not how gazebo_ros resolves database
+    models: the door spawned but never actually blocked the corridor
+    (S2 smoke run, 2026-07-15) because it landed away from the intended pose.
     """
     return (
         "<sdf version='1.6'><world name='default'><include>"
-        "<uri>model://{}</uri></include></world></sdf>"
-    ).format(model_name)
+        "<name>{}</name><uri>model://{}</uri></include></world></sdf>"
+    ).format(entity_name, model_name)
 
 
 class BlockageTrigger(Node):
@@ -110,7 +116,7 @@ class BlockageTrigger(Node):
     def _blocker_xml(self) -> str:
         b = self._blocker
         if b["kind"] == "database":
-            return database_include_xml(b["model"])
+            return database_include_xml(b["model"], b["entity"])
         share = get_package_share_directory("semantic_nav_bringup")
         for sub in ("door_scenario", "person_scenario", "obstacle_scenario"):
             path = os.path.join(share, "models", sub, b["model"])

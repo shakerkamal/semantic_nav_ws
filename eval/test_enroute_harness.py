@@ -229,20 +229,40 @@ def test_trigger_line_crossing():
 
 def test_database_include_xml_matches_gazebo_ros_template():
     from enroute_blockage_trigger import database_include_xml
-    xml = database_include_xml("aws_robomaker_residential_Door_01")
-    # Must mirror gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE
-    # exactly: <world><include>, with NO pose inside the xml at all --
-    # placement comes entirely from the SpawnEntity service's separate
-    # initial_pose field. A synthesized <model><pose>...<include>...</model>
-    # wrapper (the previous, WRONG approach) is not how gazebo_ros resolves
-    # database models: the door spawned but never actually blocked the
-    # corridor (S2 smoke run, 2026-07-15) because it landed away from the
-    # intended pose.
+    xml = database_include_xml(
+        "aws_robomaker_residential_Door_01", "scenario_door")
+    # Mirrors gazebo_ros's OWN spawn_entity.py MODEL_DATABASE_TEMPLATE
+    # (<world><include>, NO pose inside the xml -- placement comes entirely
+    # from the SpawnEntity service's separate initial_pose field), PLUS an
+    # explicit SDF <include><name> override. gazebo_ros_factory only applies
+    # request.name to a direct <model>/<light> element, never to an
+    # <include>, so without the override the inserted model keeps (or, on a
+    # leaf-name collision with a model nested inside the world's own
+    # <model><include> wrappers, gets auto-renamed FROM) its model.sdf name
+    # -- and DeleteEntity by the request name then fails with 'does not
+    # exist' while the blocker stays in the world (S2, 2026-07-16).
     assert "<world" in xml
     assert "<include>" in xml
+    assert "<name>scenario_door</name>" in xml
     assert "<uri>model://aws_robomaker_residential_Door_01</uri>" in xml
     assert "<pose>" not in xml
     assert "<model " not in xml and "<model>" not in xml
+
+
+def test_database_blocker_entities_do_not_shadow_their_model_name():
+    # An entity named exactly like its database model collides with the
+    # same-named model NESTED inside the world's own include wrappers
+    # (e.g. small_house*.world's <model name='Door_01_001'><include>
+    # aws_robomaker_residential_Door_01), which is what made gzserver
+    # auto-rename the spawned S2 door so DeleteEntity could never find it.
+    with open(SCENARIOS_PATH) as f:
+        scenarios = yaml.safe_load(f)["scenarios"]
+    for name, scenario in scenarios.items():
+        blocker = scenario.get("blocker", {})
+        if blocker.get("kind") == "database":
+            assert blocker["entity"] != blocker["model"], (
+                f"{name}: blocker entity must not equal the database model name"
+            )
 
 
 FIXTURE_TRIAL = """\

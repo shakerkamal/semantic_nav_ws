@@ -46,7 +46,11 @@ scenarios:
     intent_hint: ""
     trigger: {axis: x, threshold: 2.0, direction: increasing}
     blocker:
-      entity: aws_robomaker_residential_Door_01
+      # entity must NOT equal the model name: the world nests a model with
+      # this leaf name inside its own <model name='Door_01_001'> wrapper, so
+      # a same-named insert gets auto-renamed by gzserver and DeleteEntity
+      # can never find it again (S2 delete failed 'does not exist', 2026-07-16).
+      entity: scenario_door
       kind: database
       model: aws_robomaker_residential_Door_01
       pose: [4.8622, -0.6772, -1.5577]
