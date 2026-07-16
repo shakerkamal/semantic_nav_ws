@@ -17,7 +17,17 @@ OperatorPrompt::OperatorPrompt(
   std::string service_name{"/operator_decision"};
   getInput("service_name", service_name);
 
-  client_ = node_->create_client<ServiceT>(service_name);
+  // Dedicated callback group + executor, spun from onRunning(): bt_navigator's
+  // client node is never added to any executor, so a client on its default
+  // callback group would never resolve its future -- the prompt would time out
+  // even when the operator answered (QuerySemanticContext pattern).
+  callback_group_ = node_->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  callback_group_executor_.add_callback_group(
+    callback_group_, node_->get_node_base_interface());
+
+  client_ = node_->create_client<ServiceT>(
+    service_name, rmw_qos_profile_services_default, callback_group_);
 
   std::string confirmed_topic{"/operator_confirmed_object"};
   getInput("confirmed_object_topic", confirmed_topic);
@@ -49,6 +59,8 @@ BT::NodeStatus OperatorPrompt::onStart()
 
 BT::NodeStatus OperatorPrompt::onRunning()
 {
+  callback_group_executor_.spin_some(std::chrono::nanoseconds(0));
+
   const auto now = std::chrono::steady_clock::now();
 
   switch (phase_) {

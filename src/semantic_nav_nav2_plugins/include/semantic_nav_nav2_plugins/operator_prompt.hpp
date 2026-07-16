@@ -62,6 +62,8 @@ private:
   };
 
   rclcpp::Node::SharedPtr node_;
+  rclcpp::CallbackGroup::SharedPtr callback_group_;
+  rclcpp::executors::SingleThreadedExecutor callback_group_executor_;
   OperatorClient::SharedPtr client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr confirmed_pub_;
 

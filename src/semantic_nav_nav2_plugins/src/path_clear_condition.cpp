@@ -25,13 +25,26 @@ PathClearCondition::PathClearCondition(
 
   const auto qos = rclcpp::SystemDefaultsQoS();
 
+  // Dedicated callback group + executor, spun from tick(): bt_navigator's
+  // client node is never added to any executor, so a subscription on its
+  // default callback group would silently never deliver -- the condition
+  // would then read "no data yet" (clear) forever and the gate never fires.
+  callback_group_ = node_->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  callback_group_executor_.add_callback_group(
+    callback_group_, node_->get_node_base_interface());
+
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.callback_group = callback_group_;
+
   plan_sub_ = node_->create_subscription<nav_msgs::msg::Path>(
     plan_topic,
     qos,
     [this](nav_msgs::msg::Path::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(data_mutex_);
       latest_plan_ = msg;
-    });
+    },
+    sub_options);
 
   costmap_sub_ = node_->create_subscription<nav_msgs::msg::OccupancyGrid>(
     costmap_topic,
@@ -39,11 +52,14 @@ PathClearCondition::PathClearCondition(
     [this](nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(data_mutex_);
       latest_costmap_ = msg;
-    });
+    },
+    sub_options);
 }
 
 BT::NodeStatus PathClearCondition::tick()
 {
+  callback_group_executor_.spin_some(std::chrono::nanoseconds(0));
+
   nav_msgs::msg::Path path_from_blackboard;
   const bool have_blackboard_path =
     getInput<nav_msgs::msg::Path>("path", path_from_blackboard) &&

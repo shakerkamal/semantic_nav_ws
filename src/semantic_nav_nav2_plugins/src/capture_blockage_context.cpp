@@ -21,17 +21,32 @@ CaptureBlockageContext::CaptureBlockageContext(
   std::string costmap_topic{"/local_costmap/costmap"};
   getInput("local_costmap_topic", costmap_topic);
 
+  // Dedicated callback group + executor, spun from tick(): bt_navigator's
+  // client node is never added to any executor, so a subscription on its
+  // default callback group would silently never deliver (same reason
+  // QuerySemanticContext spins its own group for service futures).
+  callback_group_ = node_->create_callback_group(
+    rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  callback_group_executor_.add_callback_group(
+    callback_group_, node_->get_node_base_interface());
+
+  rclcpp::SubscriptionOptions sub_options;
+  sub_options.callback_group = callback_group_;
+
   costmap_sub_ = node_->create_subscription<nav_msgs::msg::OccupancyGrid>(
     costmap_topic,
     rclcpp::SystemDefaultsQoS(),
     [this](nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
       std::lock_guard<std::mutex> lock(data_mutex_);
       latest_costmap_ = msg;
-    });
+    },
+    sub_options);
 }
 
 BT::NodeStatus CaptureBlockageContext::tick()
 {
+  callback_group_executor_.spin_some(std::chrono::nanoseconds(0));
+
   nav_msgs::msg::Path path;
   const bool have_path =
     getInput<nav_msgs::msg::Path>("path", path) && !path.poses.empty();

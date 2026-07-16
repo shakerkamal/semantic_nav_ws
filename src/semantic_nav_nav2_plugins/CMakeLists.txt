@@ -75,6 +75,22 @@ if(BUILD_TESTING)
     nav2_util
     tf2_ros
   )
+
+  ament_add_gtest(test_bt_plugins_live test/test_bt_plugins_live.cpp)
+  target_include_directories(test_bt_plugins_live PRIVATE include)
+  target_link_libraries(test_bt_plugins_live ${library_name})
+  ament_target_dependencies(test_bt_plugins_live
+    rclcpp
+    nav2_behavior_tree
+    behaviortree_cpp_v3
+    semantic_nav_interfaces
+    geometry_msgs
+    builtin_interfaces
+    nav_msgs
+    std_msgs
+    nav2_util
+    tf2_ros
+  )
 endif()
 
 ament_package()
