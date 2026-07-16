@@ -93,29 +93,57 @@ def test_bllm_retreats_to_a_standoff_after_the_post_approach_query():
     assert follow is not None and follow.get("path") == "{standoff_path}"
 
 
-def test_tier1_has_persistent_blockage_gate_in_both_trees():
-    # 2026-07-15: SmacPlanner2D can keep finding a marginal detour around a
-    # soft/partial obstruction every 1Hz replan cycle while the rotation shim
-    # re-orients toward each new heading; PoseProgressChecker credits that
-    # rotation as "progress" and the controller never hard-fails, so a
-    # persistent-but-not-fully-sealed blockage can livelock Tier 1 forever
-    # without ever escalating to Tier 2/3. PathClearCondition's existing
-    # severity+debounce gate (already proven in SignalWaitRecheck) is reused
-    # as the FIRST child of the Tier-1 PipelineSequence: PipelineSequence
-    # re-ticks all prior children while a later one is RUNNING, so a FAILURE
-    # here aborts the running FollowPath and bubbles to the outer
-    # RecoveryNode(3) -- the missing complement to "planner keeps nominally
-    # succeeding." Small/transient blockages still pass through untouched via
-    # allow_geometric_detour_first.
+def test_tier1_gate_checks_fresh_path_before_following():
+    """The blockage gate must inspect ComputePathToPose's current output."""
+
     for path in (BLLM_BT, GEO_BT):
-        block = _tier1_block(path)
-        gate = re.search(r"<PathClearCondition\b.*?/>", block, re.S)
-        assert gate, f"PersistentBlockageGate missing from Tier-1 in {path}"
-        no_comments = re.sub(r"<!--.*?-->", "", block, flags=re.S)
-        first_child = re.search(r"<PipelineSequence[^>]*>\s*<(\w+)", no_comments)
-        assert first_child.group(1) == "PathClearCondition", (
-            f"PathClearCondition must be the FIRST child of the Tier-1 "
-            f"PipelineSequence in {path} so it is reticked every cycle")
+        root = ET.parse(path).getroot()
+        pipeline = root.find(
+            ".//PipelineSequence[@name='NavigateWithValidation']"
+        )
+
+        assert pipeline is not None, (
+            f"NavigateWithValidation PipelineSequence missing in {path}"
+        )
+
+        children = list(pipeline)
+
+        validate_idx = next(
+            i for i, child in enumerate(children)
+            if child.tag == "ValidateSemantic"
+        )
+
+        planner_idx = next(
+            i for i, child in enumerate(children)
+            if child.find(".//ComputePathToPose") is not None
+        )
+
+        gate_idx = next(
+            i for i, child in enumerate(children)
+            if child.tag == "PathClearCondition"
+        )
+
+        follow_idx = next(
+            i for i, child in enumerate(children)
+            if child.find(".//FollowPath") is not None
+        )
+
+        assert validate_idx < planner_idx < gate_idx < follow_idx, (
+            f"{path}: required Tier-1 ordering is "
+            "ValidateSemantic -> ComputePathToPose -> "
+            "PathClearCondition -> FollowPath"
+        )
+
+        planner = children[planner_idx].find(".//ComputePathToPose")
+        gate = children[gate_idx]
+        follow = children[follow_idx].find(".//FollowPath")
+
+        assert planner is not None
+        assert follow is not None
+
+        assert planner.get("path") == "{path}"
+        assert gate.get("path") == "{path}"
+        assert follow.get("path") == "{path}"
 
 
 def _semantic_recovery_branch_no_comments():
