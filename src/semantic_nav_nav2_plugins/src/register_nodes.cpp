@@ -12,6 +12,7 @@
 #include "semantic_nav_nav2_plugins/operator_prompt.hpp"
 #include "semantic_nav_nav2_plugins/compute_standoff_pose.hpp"
 #include "semantic_nav_nav2_plugins/has_responsible_object_candidate.hpp"
+#include "semantic_nav_nav2_plugins/wait_for_barrier_clear.hpp"
 
 BT_REGISTER_NODES(factory)
 {
@@ -33,4 +34,6 @@ BT_REGISTER_NODES(factory)
     "ComputeStandoffPose");
   factory.registerNodeType<semantic_nav_nav2_plugins::HasResponsibleObjectCandidate>(
     "HasResponsibleObjectCandidate");
+  factory.registerNodeType<semantic_nav_nav2_plugins::WaitForBarrierClear>(
+    "WaitForBarrierClear");
 }
