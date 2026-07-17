@@ -103,12 +103,13 @@
             responsible_safety_class="{responsible_safety_class}" 
             responsible_openable="{responsible_openable}" 
             responsible_clearable="{responsible_clearable}" 
-            responsible_match_type="{responsible_match_type}" 
-            responsible_state_detail="{responsible_state_detail}" 
-            responsible_traversability="{responsible_traversability}" 
-            responsible_bbox_center="{responsible_bbox_center}" 
-            responsible_bbox_extent="{responsible_bbox_extent}" 
-            local_db_version="{local_db_version}" 
+            responsible_match_type="{responsible_match_type}"
+            responsible_state_detail="{responsible_state_detail}"
+            responsible_traversability="{responsible_traversability}"
+            responsible_object_source="{responsible_object_source}"
+            responsible_bbox_center="{responsible_bbox_center}"
+            responsible_bbox_extent="{responsible_bbox_extent}"
+            local_db_version="{local_db_version}"
             local_db_source="{local_db_source}" />
 
           <Fallback name="ApproachBlockage">
@@ -171,12 +172,13 @@
             responsible_safety_class="{responsible_safety_class}" 
             responsible_openable="{responsible_openable}" 
             responsible_clearable="{responsible_clearable}" 
-            responsible_match_type="{responsible_match_type}" 
-            responsible_state_detail="{responsible_state_detail}" 
-            responsible_traversability="{responsible_traversability}" 
-            responsible_bbox_center="{responsible_bbox_center}" 
-            responsible_bbox_extent="{responsible_bbox_extent}" 
-            local_db_version="{local_db_version}" 
+            responsible_match_type="{responsible_match_type}"
+            responsible_state_detail="{responsible_state_detail}"
+            responsible_traversability="{responsible_traversability}"
+            responsible_object_source="{responsible_object_source}"
+            responsible_bbox_center="{responsible_bbox_center}"
+            responsible_bbox_extent="{responsible_bbox_extent}"
+            local_db_version="{local_db_version}"
             local_db_source="{local_db_source}" />
 
           <ForceSuccess>
@@ -274,6 +276,15 @@
                   <WaitForBarrierClear name="WaitForAnimateObstacleClearance" clearance_mode="track_confirmed_departure" local_region_mode="center_and_observed" local_lethal_threshold="100" observed_max_radius_m="0.30" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="2.0" second_dwell_s="2.0" poll_interval_s="1.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
                 </Sequence>
                 <Sequence name="NonDynamicWaitPath">
+                  <!-- Inverse source guard: a dynamic_overlay object that
+                       failed its tracked departure must NOT fall through to
+                       this geometric recheck. Only a non-dynamic (or unknown)
+                       source reaches the conservative PathClearCondition. -->
+                  <Inverter>
+                    <BlackboardCheckString value_A="{responsible_object_source}" value_B="dynamic_overlay">
+                      <AlwaysSuccess />
+                    </BlackboardCheckString>
+                  </Inverter>
                   <PathClearCondition name="ConservativePostWaitRecheck" path="{path}" lookahead_m="1.5" lethal_threshold="90" debounce_ticks="1" sample_radius_m="0.05" allow_geometric_detour_first="false" plan_topic="/plan" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" />
                 </Sequence>
               </Fallback>

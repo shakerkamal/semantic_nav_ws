@@ -220,6 +220,44 @@ def test_query_semantic_context_passes_carry_bbox_ports():
         assert 'responsible_bbox_extent="{responsible_bbox_extent}"' in element
 
 
+def test_query_semantic_context_passes_publish_object_source():
+    # Both QuerySemanticContext passes declare responsible_object_source as an
+    # output port and write it, but BT.CPP v3 discards a setOutput to a port
+    # the XML never remaps. Omitting the remap leaves the
+    # {responsible_object_source} blackboard key empty, so the dynamic_overlay
+    # source gate below can never match and the entire tracked-departure
+    # (Mode B) branch is unreachable.
+    branch = _semantic_recovery_branch_no_comments()
+    query_elements = re.findall(r"<QuerySemanticContext\b[^>]*/>", branch)
+    assert len(query_elements) == 2
+    for element in query_elements:
+        assert (
+            'responsible_object_source="{responsible_object_source}"' in element
+        ), "QuerySemanticContext must remap responsible_object_source"
+
+
+def test_non_dynamic_wait_path_excludes_dynamic_sources():
+    # DepartureConfirmationPolicy is a Fallback: a dynamic_overlay object whose
+    # WaitForDynamicObstacleDeparture (or track-mode WaitForBarrierClear) FAILS
+    # must fail the policy, never fall through to the less-conservative
+    # NonDynamicWaitPath (a geometric PathClearCondition). The non-dynamic path
+    # therefore carries an inverse source guard so it is unreachable for a
+    # dynamic source.
+    root = ET.parse(BLLM_BT).getroot()
+    branch = root.find(".//Sequence[@name='WaitThenReplanBranch']")
+    assert branch is not None
+    non_dynamic = branch.find(".//Sequence[@name='NonDynamicWaitPath']")
+    assert non_dynamic is not None
+
+    inverter = non_dynamic.find("./Inverter")
+    assert inverter is not None, "NonDynamicWaitPath needs an inverse source guard"
+    guard = inverter.find(".//BlackboardCheckString")
+    assert guard is not None
+    assert guard.get("value_A") == "{responsible_object_source}"
+    assert guard.get("value_B") == "dynamic_overlay"
+    assert non_dynamic.find(".//PathClearCondition") is not None
+
+
 def test_geometric_bt_has_no_semantic_branch():
     tree = ET.parse(GEO_BT)
     tags = {el.tag for el in tree.iter()}
