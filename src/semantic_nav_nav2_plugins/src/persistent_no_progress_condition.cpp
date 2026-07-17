@@ -276,9 +276,11 @@ BT::NodeStatus PersistentNoProgressCondition::tick()
       node_->get_logger(),
       "[PersistentNoProgressCondition] execution stalled: moved=%.3fm "
       "during %.2fs, obstacle persisted %.2fs, source=%s lethal_cells=%d "
+      "lethal100=%d inscribed99=%d "
       "centroid=(%.3f,%.3f) extent=%.3fm; interrupting FollowPath",
       displacement, no_progress_elapsed_s, obstacle_elapsed_s,
       evidence.source.c_str(), evidence.lethal_cells,
+      evidence.true_lethal_cells, evidence.inscribed_cells,
       evidence.centroid.x, evidence.centroid.y, evidence.extent_m);
 
     // A failed tick is consumed by the outer RecoveryNode. Start the next main
@@ -324,32 +326,18 @@ PersistentNoProgressCondition::detectObstacleEvidence(
   const std::size_t nearest_index = nearestPathIndex(path, robot_x, robot_y);
   const nav_msgs::msg::Path forward_path = pathFromIndex(path, nearest_index);
 
-  // First test: use a wider-than-centerline corridor around the fresh Smac
-  // path. This represents the controller/footprint clearance that may be
-  // missing from a mathematically valid centerline path.
-  const BlockageMetrics path_metrics = PathClearCondition::isCorridorBlocked(
-    forward_path, costmap, lethal_threshold,
-    obstacle_lookahead_m, path_sample_radius_m);
-  if (path_metrics.any_blocked) {
-    evidence.blocked = true;
-    evidence.lethal_cells = std::max(1, path_metrics.blocked_poses);
-    evidence.centroid = path_metrics.centroid;
-    evidence.extent_m = path_metrics.extent_m;
-    evidence.source = "expanded_path_corridor";
-    return evidence;
-  }
-
-  // Second test: inspect a short rectangular corridor directly ahead along the
-  // immediate path direction. Smac may bend its centerline around a person,
-  // while the controller still cannot enter that bend from the current pose.
+  // The forward-corridor scan runs FIRST so its 99/100 diagnostic split is
+  // available on every return path, whichever test decides "blocked".
   double ux = 0.0;
   double uy = 0.0;
   const double direction_target_m = std::min(0.5, obstacle_lookahead_m);
-  if (!immediatePathDirection(
-      path, nearest_index, robot_x, robot_y,
-      direction_target_m, ux, uy))
-  {
-    return evidence;
+  const bool have_direction = immediatePathDirection(
+    path, nearest_index, robot_x, robot_y,
+    direction_target_m, ux, uy);
+  if (!have_direction) {
+    // No corridor scan possible; the path-corridor test below still runs.
+    ux = 0.0;
+    uy = 0.0;
   }
 
   const double resolution = static_cast<double>(info.resolution);
@@ -371,53 +359,87 @@ PersistentNoProgressCondition::detectObstacleEvidence(
   double max_x = std::numeric_limits<double>::lowest();
   double max_y = std::numeric_limits<double>::lowest();
   int lethal_cells = 0;
+  int true_lethal_cells = 0;
+  int inscribed_cells = 0;
 
-  for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
-    for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
-      const int mx = robot_mx + dx;
-      const int my = robot_my + dy;
-      if (mx < 0 || my < 0 ||
-        mx >= static_cast<int>(info.width) ||
-        my >= static_cast<int>(info.height))
-      {
-        continue;
+  if (have_direction) {
+    for (int dy = -radius_cells; dy <= radius_cells; ++dy) {
+      for (int dx = -radius_cells; dx <= radius_cells; ++dx) {
+        const int mx = robot_mx + dx;
+        const int my = robot_my + dy;
+        if (mx < 0 || my < 0 ||
+          mx >= static_cast<int>(info.width) ||
+          my >= static_cast<int>(info.height))
+        {
+          continue;
+        }
+
+        const double wx = origin_x +
+          (static_cast<double>(mx) + 0.5) * resolution;
+        const double wy = origin_y +
+          (static_cast<double>(my) + 0.5) * resolution;
+        const double rel_x = wx - robot_x;
+        const double rel_y = wy - robot_y;
+        const double longitudinal = (rel_x * ux) + (rel_y * uy);
+        const double lateral = std::abs((-rel_x * uy) + (rel_y * ux));
+
+        if (longitudinal < min_forward_distance_m ||
+          longitudinal > obstacle_lookahead_m ||
+          lateral > forward_lateral_tolerance_m)
+        {
+          continue;
+        }
+
+        const std::size_t index =
+          static_cast<std::size_t>(my) *
+          static_cast<std::size_t>(info.width) +
+          static_cast<std::size_t>(mx);
+        const int value = static_cast<int>(costmap.data[index]);
+
+        // Diagnostics are value-exact and threshold-independent.
+        if (value == 100) {
+          ++true_lethal_cells;
+        } else if (value == 99) {
+          ++inscribed_cells;
+        }
+
+        if (value < lethal_threshold) {
+          continue;
+        }
+
+        sum_x += wx;
+        sum_y += wy;
+        min_x = std::min(min_x, wx);
+        min_y = std::min(min_y, wy);
+        max_x = std::max(max_x, wx);
+        max_y = std::max(max_y, wy);
+        ++lethal_cells;
       }
-
-      const double wx = origin_x +
-        (static_cast<double>(mx) + 0.5) * resolution;
-      const double wy = origin_y +
-        (static_cast<double>(my) + 0.5) * resolution;
-      const double rel_x = wx - robot_x;
-      const double rel_y = wy - robot_y;
-      const double longitudinal = (rel_x * ux) + (rel_y * uy);
-      const double lateral = std::abs((-rel_x * uy) + (rel_y * ux));
-
-      if (longitudinal < min_forward_distance_m ||
-        longitudinal > obstacle_lookahead_m ||
-        lateral > forward_lateral_tolerance_m)
-      {
-        continue;
-      }
-
-      const std::size_t index =
-        static_cast<std::size_t>(my) *
-        static_cast<std::size_t>(info.width) +
-        static_cast<std::size_t>(mx);
-      if (static_cast<int>(costmap.data[index]) < lethal_threshold) {
-        continue;
-      }
-
-      sum_x += wx;
-      sum_y += wy;
-      min_x = std::min(min_x, wx);
-      min_y = std::min(min_y, wy);
-      max_x = std::max(max_x, wx);
-      max_y = std::max(max_y, wy);
-      ++lethal_cells;
     }
   }
 
-  if (lethal_cells < std::max(1, min_lethal_cells)) {
+  evidence.true_lethal_cells = true_lethal_cells;
+  evidence.inscribed_cells = inscribed_cells;
+
+  // First test: use a wider-than-centerline corridor around the fresh Smac
+  // path. This represents the controller/footprint clearance that may be
+  // missing from a mathematically valid centerline path.
+  const BlockageMetrics path_metrics = PathClearCondition::isCorridorBlocked(
+    forward_path, costmap, lethal_threshold,
+    obstacle_lookahead_m, path_sample_radius_m);
+  if (path_metrics.any_blocked) {
+    evidence.blocked = true;
+    evidence.lethal_cells = std::max(1, path_metrics.blocked_poses);
+    evidence.centroid = path_metrics.centroid;
+    evidence.extent_m = path_metrics.extent_m;
+    evidence.source = "expanded_path_corridor";
+    return evidence;
+  }
+
+  // Second test: the short rectangular corridor directly ahead along the
+  // immediate path direction. Smac may bend its centerline around a person,
+  // while the controller still cannot enter that bend from the current pose.
+  if (!have_direction || lethal_cells < std::max(1, min_lethal_cells)) {
     return evidence;
   }
 

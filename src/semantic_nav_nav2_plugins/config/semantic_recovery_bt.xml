@@ -49,7 +49,7 @@
             forward_lateral_tolerance_m="0.40" 
             min_forward_distance_m="0.15" 
             min_lethal_cells="3" 
-            lethal_threshold="90" 
+            lethal_threshold="100" 
             local_costmap_topic="/local_costmap/costmap" 
             global_frame="map" 
             robot_base_frame="base_footprint" 

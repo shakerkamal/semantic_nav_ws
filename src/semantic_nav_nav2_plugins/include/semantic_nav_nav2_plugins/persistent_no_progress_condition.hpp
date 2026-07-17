@@ -26,6 +26,15 @@ struct ExecutionObstacleEvidence
   geometry_msgs::msg::Point centroid{};
   float extent_m{0.0F};
   std::string source{"none"};
+
+  // Diagnostic split of the forward-corridor cells: cost==100 is physical
+  // obstacle evidence, cost==99 is the walls' inscribed-inflation band --
+  // a planning artifact that must never count as an obstacle by itself
+  // (S3 2026-07-17 false stall). Always populated, independent of the
+  // threshold used for the blocking decision, so runtime logs show what
+  // the counted cells actually were.
+  int true_lethal_cells{0};
+  int inscribed_cells{0};
 };
 
 /**
