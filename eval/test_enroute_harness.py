@@ -200,10 +200,38 @@ def test_tier3_queries_wide_before_deciding_how_to_approach():
     # requested distance returns SUCCESS -- the branch must continue
     # regardless of which outcome stopped it).
     m = re.search(
-        r"<ForceSuccess>\s*<DriveOnHeading\b([^/]*)/>\s*</ForceSuccess>",
+        r"<ForceSuccess>(.*?<DriveOnHeading\b[^/]*/>.*?)</ForceSuccess>",
         branch, re.S)
     assert m, "DriveOnHeading must stay ForceSuccess-wrapped"
     assert 'server_name="drive_on_heading"' in m.group(1)
+
+
+def test_blind_forward_drive_is_skipped_when_a_candidate_is_known():
+    # S3 2026-07-17: with a candidate already matched (chair:901 verified) but
+    # its standoff unreachable because the robot wedged itself in lethal space,
+    # the ApproachBlockage fallback dropped to a blind forward DriveOnHeading
+    # that rammed the known obstacle and destroyed the match on re-query. The
+    # blind forward nudge exists ONLY to bring an UNKNOWN blocker into the FOV,
+    # so it must be gated to fire only when no candidate is known.
+    branch = _semantic_recovery_branch_no_comments()
+    fallback = re.search(
+        r"<Fallback name=\"ApproachBlockage\">(.*?)</Fallback>", branch, re.S)
+    assert fallback, "ApproachBlockage fallback not found"
+
+    drive = re.search(
+        r"<ForceSuccess>(.*?<DriveOnHeading\b.*?)</ForceSuccess>",
+        fallback.group(1), re.S)
+    assert drive, "blind DriveOnHeading must stay ForceSuccess-wrapped"
+    guarded = drive.group(1)
+
+    inverter_pos = guarded.find("<Inverter>")
+    has_candidate_pos = guarded.find("<HasResponsibleObjectCandidate")
+    drive_pos = guarded.find("<DriveOnHeading")
+    assert inverter_pos != -1, "blind drive must be gated on an Inverter"
+    assert has_candidate_pos != -1
+    assert inverter_pos < has_candidate_pos < drive_pos, (
+        "blind drive must be gated on Inverter(HasResponsibleObjectCandidate)"
+    )
 
 
 def test_query_semantic_context_passes_carry_bbox_ports():

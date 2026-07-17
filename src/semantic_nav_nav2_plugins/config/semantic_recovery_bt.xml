@@ -140,12 +140,22 @@
               </RecoveryNode>
             </Sequence>
             <ForceSuccess>
-              <DriveOnHeading 
-                dist_to_travel="2.5" 
-                speed="0.15" 
-                time_allowance="20.0" 
-                server_name="drive_on_heading" 
-                server_timeout="10000" />
+              <!-- Blind forward nudge ONLY when nothing is known: it exists to
+                   bring an unseen blocker into the 59-deg FOV. When a candidate
+                   is already matched, driving forward rams the known obstacle
+                   and destroys the match on re-query (S3 2026-07-17). Skip it
+                   and escalate with the retained match instead. -->
+              <Sequence name="BlindApproachUnknownOnly">
+                <Inverter>
+                  <HasResponsibleObjectCandidate match_type="{responsible_match_type}" />
+                </Inverter>
+                <DriveOnHeading
+                  dist_to_travel="2.5"
+                  speed="0.15"
+                  time_allowance="20.0"
+                  server_name="drive_on_heading"
+                  server_timeout="10000" />
+              </Sequence>
             </ForceSuccess>
           </Fallback>
 
