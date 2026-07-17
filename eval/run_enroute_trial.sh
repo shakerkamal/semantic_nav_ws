@@ -95,7 +95,14 @@ import yaml
 sc = yaml.safe_load(open('$EVAL_DIR/enroute_scenarios.yaml'))['scenarios']['$SCEN']
 print(sc['intent_hint'])")
 
+# A trial run on uncommitted code must never masquerade as a clean revision:
+# the header is the only link from a results row back to the implementation.
+# Untracked files (logs, plots, csvs) do not affect the built code, so only
+# tracked modifications mark the tree dirty.
 COMMIT=$(git -C "$EVAL_DIR/.." rev-parse --short HEAD)
+if [ -n "$(git -C "$EVAL_DIR/.." status --porcelain --untracked-files=no)" ]; then
+  COMMIT="${COMMIT}-dirty"
+fi
 CHILD_LOG=$(mktemp)
 
 # World-changer and (S2/S3/S4 only) perception stand-in, in the background.
