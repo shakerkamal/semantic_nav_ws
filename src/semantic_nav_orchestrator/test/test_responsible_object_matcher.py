@@ -392,3 +392,24 @@ def test_multiple_qualifying_live_objects_is_ambiguous():
     assert result.success is False
     assert result.match_type == "unknown"
     assert "ambiguous" in result.message
+
+
+def test_match_result_carries_candidate_source():
+    # Phase 3 provenance routing: the BT must route departure tracking by
+    # SOURCE (dynamic_overlay vs persistent_map), not by state/safety/tag
+    # heuristics -- so the matcher has to surface the winning candidate's
+    # provenance for the service response to carry.
+    result = match_responsible_object(
+        blockage_centroid=(-2.507, -1.350, 0.0),
+        blockage_extent_m=0.6,
+        candidates=[_s3_chair()],
+    )
+    assert result.responsible_object_key == "chair:901"
+    assert result.source == "dynamic_overlay"
+
+    static_only = match_responsible_object(
+        blockage_centroid=(-2.507, -1.350, 0.0),
+        blockage_extent_m=0.6,
+        candidates=[_s3_partition()],
+    )
+    assert static_only.source == "persistent_map"

@@ -4305,6 +4305,7 @@ class NavigationOrchestrator(Node):
 
         response.state_detail = result.state_detail
         response.traversability = result.traversability
+        response.responsible_object_source = result.source
         response.message = result.message
 
         self._log_stage_info(

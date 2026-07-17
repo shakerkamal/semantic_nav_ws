@@ -301,6 +301,12 @@ bool WaitForDynamicObstacleDeparture::footprintOverlapsCircle(
   return std::hypot(dx, dy) <= circle_radius_m;
 }
 
+bool WaitForDynamicObstacleDeparture::sourceAllowsDepartureTracking(
+  const ObjectInstance & object)
+{
+  return object.source == "dynamic_overlay";
+}
+
 bool WaitForDynamicObstacleDeparture::objectStillBlocks(
   const ObjectInstance & object,
   const AxisAlignedFootprint & original_object_region,
@@ -373,6 +379,19 @@ BT::NodeStatus WaitForDynamicObstacleDeparture::evaluateRefreshResponse()
       matched = &object;
       break;
     }
+  }
+
+  if (matched != nullptr && !sourceAllowsDepartureTracking(*matched)) {
+    departure_status_ = "not_dynamic_source";
+    publishOutputs(departure_status_);
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "[WaitForDynamicObstacleDeparture] key='%s' has source='%s' -- "
+      "departure tracking applies only to dynamic_overlay objects; a static "
+      "record can never 'depart'. Returning FAILURE (never a fake departure "
+      "SUCCESS).",
+      responsible_object_key_.c_str(), matched->source.c_str());
+    return BT::NodeStatus::FAILURE;
   }
 
   bool blocking = false;

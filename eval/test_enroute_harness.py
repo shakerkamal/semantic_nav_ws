@@ -274,6 +274,40 @@ def test_every_package_bt_node_used_by_the_xmls_is_registered_and_compiled():
         )
 
 
+def test_departure_tracking_is_gated_on_dynamic_overlay_source():
+    # S3 2026-07-17: the misattributed static 'room partition:121' entered
+    # WaitForDynamicObstacleDeparture and burned its full 30s timeout -- a
+    # static object trivially overlaps the blocked region forever. The
+    # tracked-departure path must be gated on source PROVENANCE
+    # (responsible_object_source == dynamic_overlay); the non-dynamic path
+    # must contain no departure node.
+    root = ET.parse(BLLM_BT).getroot()
+    branch = root.find(".//Sequence[@name='WaitThenReplanBranch']")
+    assert branch is not None
+
+    departures = branch.findall(".//WaitForDynamicObstacleDeparture")
+    assert len(departures) == 1
+
+    gates = [
+        el for el in branch.iter("BlackboardCheckString")
+        if el.get("value_A") == "{responsible_object_source}"
+        and el.get("value_B") == "dynamic_overlay"
+    ]
+    assert gates, "no dynamic_overlay source gate in the wait branch"
+
+    # The departure node must live inside a gated tracked path: the sequence
+    # holding the gate must also hold the departure node.
+    for seq in branch.iter("Sequence"):
+        if any(
+            el.get("value_A") == "{responsible_object_source}"
+            for el in seq.iter("BlackboardCheckString")
+        ):
+            assert seq.find(".//WaitForDynamicObstacleDeparture") is not None
+            break
+    else:
+        raise AssertionError("gate and departure node are not in one path")
+
+
 def test_scenarios_yaml_complete():
     with open(SCENARIOS_PATH) as f:
         data = yaml.safe_load(f)

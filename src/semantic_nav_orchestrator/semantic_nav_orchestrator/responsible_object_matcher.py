@@ -57,6 +57,7 @@ class MatchResult:
     message: str
     state_detail: str = ""
     traversability: str = ""
+    source: str = ""              # winning candidate's provenance
 
     @classmethod
     def unknown(cls, message: str = "no candidate matched") -> "MatchResult":
@@ -177,6 +178,7 @@ def _result_from_candidate(
         message=message,
         state_detail=candidate.state_detail,
         traversability=candidate.traversability,
+        source=candidate.source,
     )
 
 

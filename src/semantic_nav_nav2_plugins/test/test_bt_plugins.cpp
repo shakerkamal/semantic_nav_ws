@@ -660,6 +660,15 @@ TEST(HasResponsibleObjectCandidateTest, registersWithoutError)
       "HasResponsibleObjectCandidate"));
 }
 
+TEST(QuerySemanticContextTest, hasResponsibleObjectSourceOutputPort)
+{
+  auto ports = semantic_nav_nav2_plugins::QuerySemanticContext::providedPorts();
+  ASSERT_GT(ports.count("responsible_object_source"), 0u);
+  EXPECT_EQ(
+    ports.at("responsible_object_source").direction(),
+    BT::PortDirection::OUTPUT);
+}
+
 int main(int argc, char ** argv)
 {
   testing::InitGoogleTest(&argc, argv);

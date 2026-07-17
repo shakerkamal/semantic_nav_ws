@@ -74,3 +74,27 @@ TEST(WaitForDynamicObstacleDepartureTest, separatedLegLikeDetectionStillBlocks)
   EXPECT_TRUE(Node::objectStillBlocks(
     object, original, point(-2.250, -1.700), 0.20, 0.02));
 }
+
+TEST(WaitForDynamicObstacleDepartureTest, onlyDynamicOverlaySourceAllowsTracking)
+{
+  // Departure tracking is meaningful only for live-perceived objects: a
+  // static catalog record trivially "overlaps the blocked region" forever
+  // (S3 2026-07-17: 'room partition:121' burned the full 30s timeout).
+  // Routing is by source PROVENANCE, never by state/safety/tag heuristics.
+  semantic_nav_interfaces::msg::ObjectInstance object;
+
+  object.source = "dynamic_overlay";
+  EXPECT_TRUE(
+    semantic_nav_nav2_plugins::WaitForDynamicObstacleDeparture::
+    sourceAllowsDepartureTracking(object));
+
+  object.source = "persistent_map";
+  EXPECT_FALSE(
+    semantic_nav_nav2_plugins::WaitForDynamicObstacleDeparture::
+    sourceAllowsDepartureTracking(object));
+
+  object.source = "";
+  EXPECT_FALSE(
+    semantic_nav_nav2_plugins::WaitForDynamicObstacleDeparture::
+    sourceAllowsDepartureTracking(object));
+}

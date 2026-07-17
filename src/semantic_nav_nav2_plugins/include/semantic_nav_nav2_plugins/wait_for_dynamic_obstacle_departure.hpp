@@ -74,6 +74,16 @@ public:
     double original_blockage_radius_m,
     double current_object_padding_m);
 
+  /**
+   * @brief Departure tracking applies only to live-perceived objects.
+   *
+   * A static catalog record trivially overlaps its own blocked region
+   * forever, so "waiting for it to depart" can only burn the timeout
+   * (S3 2026-07-17: 'room partition:121', full 30s). Routing is by source
+   * PROVENANCE -- never inferred from state/safety_class/tag/key naming.
+   */
+  static bool sourceAllowsDepartureTracking(const ObjectInstance & object);
+
 private:
   enum class Phase
   {

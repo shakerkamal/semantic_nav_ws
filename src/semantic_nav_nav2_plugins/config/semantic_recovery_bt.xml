@@ -255,11 +255,28 @@
                   <DynamicWait name="WaitForRecoveryDirectiveDuration" wait_duration="{directive_wait_seconds}" default_wait_duration="5" max_wait_duration="60" selected_wait_seconds="{selected_wait_seconds}" />
                 </Sequence>
               </Fallback>
-              <WaitForDynamicObstacleDeparture 
-                name="WaitForAnimateObstacleDeparture" 
-                responsible_object_key="{responsible_object_key}" original_blockage_center="{blockage_centroid}" original_blockage_extent_m="{blockage_extent_m}" original_bbox_center="{responsible_bbox_center}" original_bbox_extent="{responsible_bbox_extent}" fallback_dynamic_radius_m="0.30" footprint_padding_m="0.05" current_object_padding_m="0.02" refresh_service="/refresh_local_objects" global_frame="map" robot_base_frame="base_footprint" query_radius_m="4.0" poll_interval_s="0.5" required_nonblocking_samples="3" timeout_s="30.0" service_ready_timeout_ms="2000" response_timeout_ms="3000" departure_clear_samples="{departure_clear_samples}" departure_status="{departure_status}" />
-              <WaitForBarrierClear name="WaitForAnimateObstacleClearance" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" use_bbox_footprint="true" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="12.0" second_dwell_s="12.0" poll_interval_s="2.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
-              <!-- Authoritative post-departure map convergence and persistence gate. -->
+              <!-- Departure confirmation is routed by SOURCE PROVENANCE:
+                   only a live-perceived (dynamic_overlay) object can
+                   meaningfully depart. A static catalog record trivially
+                   overlaps its own blocked region forever, so tracking it
+                   can only burn the timeout (S3 2026-07-17, partition:121,
+                   full 30s). Non-dynamic sources take a conservative
+                   corridor recheck instead: still blocked means FAILURE and
+                   the outer recovery continues. -->
+              <Fallback name="DepartureConfirmationPolicy">
+                <Sequence name="TrackedDeparturePath">
+                  <BlackboardCheckString value_A="{responsible_object_source}" value_B="dynamic_overlay">
+                    <AlwaysSuccess />
+                  </BlackboardCheckString>
+                  <WaitForDynamicObstacleDeparture
+                    name="WaitForAnimateObstacleDeparture"
+                    responsible_object_key="{responsible_object_key}" original_blockage_center="{blockage_centroid}" original_blockage_extent_m="{blockage_extent_m}" original_bbox_center="{responsible_bbox_center}" original_bbox_extent="{responsible_bbox_extent}" fallback_dynamic_radius_m="0.30" footprint_padding_m="0.05" current_object_padding_m="0.02" refresh_service="/refresh_local_objects" global_frame="map" robot_base_frame="base_footprint" query_radius_m="4.0" poll_interval_s="0.5" required_nonblocking_samples="3" timeout_s="30.0" service_ready_timeout_ms="2000" response_timeout_ms="3000" departure_clear_samples="{departure_clear_samples}" departure_status="{departure_status}" />
+                  <WaitForBarrierClear name="WaitForAnimateObstacleClearance" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" use_bbox_footprint="true" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="12.0" second_dwell_s="12.0" poll_interval_s="2.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
+                </Sequence>
+                <Sequence name="NonDynamicWaitPath">
+                  <PathClearCondition name="ConservativePostWaitRecheck" path="{path}" lookahead_m="1.5" lethal_threshold="90" debounce_ticks="1" sample_radius_m="0.05" allow_geometric_detour_first="false" plan_topic="/plan" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" />
+                </Sequence>
+              </Fallback>
               <!-- Final clear immediately before returning to fresh global planning. -->
               <ClearEntireCostmap name="ClearGlobalWaitThenReplan" service_name="global_costmap/clear_entirely_global_costmap" />
               <ClearEntireCostmap name="ClearLocalWaitThenReplan" service_name="local_costmap/clear_entirely_local_costmap" />

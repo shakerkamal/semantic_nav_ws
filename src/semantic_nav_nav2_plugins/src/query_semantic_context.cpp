@@ -194,6 +194,7 @@ BT::NodeStatus QuerySemanticContext::onRunning()
         setOutput("responsible_match_type", response->match_type);
         setOutput("responsible_state_detail", response->state_detail);
         setOutput("responsible_traversability", response->traversability);
+        setOutput("responsible_object_source", response->responsible_object_source);
         setOutput("responsible_bbox_center", response->bbox_center);
         setOutput("responsible_bbox_extent", response->bbox_extent);
 
@@ -320,6 +321,7 @@ void QuerySemanticContext::writeDefaultObjectOutputs()
   setOutput("responsible_match_type", std::string(""));
   setOutput("responsible_state_detail", std::string(""));
   setOutput("responsible_traversability", std::string(""));
+  setOutput("responsible_object_source", std::string(""));
   setOutput("responsible_bbox_center", geometry_msgs::msg::Point());
   setOutput("responsible_bbox_extent", geometry_msgs::msg::Vector3());
 }
@@ -414,6 +416,9 @@ BT::PortsList QuerySemanticContext::providedPorts()
     BT::OutputPort<std::string>("responsible_match_type", ""),
     BT::OutputPort<std::string>("responsible_state_detail", ""),
     BT::OutputPort<std::string>("responsible_traversability", ""),
+    BT::OutputPort<std::string>(
+      "responsible_object_source",
+      "Winning candidate's provenance: dynamic_overlay | persistent_map | ''"),
     BT::OutputPort<geometry_msgs::msg::Point>(
       "responsible_bbox_center",
       "Matched object's bbox center -- feeds ComputeStandoffPose (Part A)"),
