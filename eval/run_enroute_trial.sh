@@ -98,11 +98,12 @@ print(sc['intent_hint'])")
 # A trial run on uncommitted code must never masquerade as a clean revision:
 # the header is the only link from a results row back to the implementation.
 # Untracked files (logs, plots, csvs) do not affect the built code, so only
-# tracked modifications mark the tree dirty.
-COMMIT=$(git -C "$EVAL_DIR/.." rev-parse --short HEAD)
-if [ -n "$(git -C "$EVAL_DIR/.." status --porcelain --untracked-files=no)" ]; then
-  COMMIT="${COMMIT}-dirty"
-fi
+# tracked modifications mark the tree dirty. head/dirty_files/diff_sha256 pin
+# the exact working-tree state a dirty run was produced from.
+COMMIT=$(git -C "$EVAL_DIR/.." describe --always --dirty)
+HEAD_COMMIT=$(git -C "$EVAL_DIR/.." rev-parse HEAD)
+DIRTY_FILES=$(git -C "$EVAL_DIR/.." status --porcelain --untracked-files=no | wc -l)
+DIFF_SHA256=$(git -C "$EVAL_DIR/.." diff --binary HEAD | sha256sum | awk '{print $1}')
 CHILD_LOG=$(mktemp)
 
 # World-changer and (S2/S3/S4 only) perception stand-in, in the background.
@@ -117,7 +118,7 @@ if [ "$SCEN" = "S2" ] || [ "$SCEN" = "S3" ] || [ "$SCEN" = "S4" ]; then
   DET_PID=$!
 fi
 
-echo "[TRIAL] scenario=$SCEN variant=$VARIANT rep=$REP commit=$COMMIT start=$(date +%s)" \
+echo "[TRIAL] scenario=$SCEN variant=$VARIANT rep=$REP commit=$COMMIT head=$HEAD_COMMIT dirty_files=$DIRTY_FILES diff_sha256=$DIFF_SHA256 start=$(date +%s)" \
   | tee "$OUT"
 
 # Wall-clock markers bracket the service call so time_to_resolution survives the
