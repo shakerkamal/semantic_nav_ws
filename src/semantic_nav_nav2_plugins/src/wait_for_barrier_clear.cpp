@@ -356,6 +356,14 @@ BT::NodeStatus WaitForBarrierClear::onRunning()
         return BT::NodeStatus::RUNNING;
       }
       if (now >= phase_deadline_) {
+        if (cleanupMapWaitIsAdvisory(clearance_mode_)) {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "[WaitForBarrierClear] no fresh /map after advisory cleanup in "
+            "track mode; continuing with local hard-gate verification");
+          beginPostVerification();
+          return BT::NodeStatus::RUNNING;
+        }
         clearance_status_ = "cleanup_no_fresh_map";
         publishOutputs(clearance_status_);
         return BT::NodeStatus::FAILURE;
@@ -737,6 +745,23 @@ bool WaitForBarrierClear::verifiedSourcesClear(
     return local_clear;
   }
   return map_clear && global_clear && local_clear;
+}
+
+bool WaitForBarrierClear::freshnessSatisfiedAfterClear(
+  const std::string & clearance_mode,
+  bool local_fresh,
+  bool global_fresh)
+{
+  if (clearance_mode == "track_confirmed_departure") {
+    return local_fresh;
+  }
+  return local_fresh && global_fresh;
+}
+
+bool WaitForBarrierClear::cleanupMapWaitIsAdvisory(
+  const std::string & clearance_mode)
+{
+  return clearance_mode == "track_confirmed_departure";
 }
 
 bool WaitForBarrierClear::shouldUseObservedRegion(
@@ -1130,8 +1155,10 @@ bool WaitForBarrierClear::clearRequestsFinished()
 
 bool WaitForBarrierClear::costmapsFreshAfterClear() const
 {
-  return global_generation_ > global_generation_before_clear_ &&
-         local_generation_ > local_generation_before_clear_;
+  const bool local_fresh = local_generation_ > local_generation_before_clear_;
+  const bool global_fresh =
+    global_generation_ > global_generation_before_clear_;
+  return freshnessSatisfiedAfterClear(clearance_mode_, local_fresh, global_fresh);
 }
 
 void WaitForBarrierClear::abandonPendingRequests()

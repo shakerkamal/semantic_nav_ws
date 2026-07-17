@@ -150,6 +150,37 @@ TEST(WaitForBarrierClearTest, verifiedSourcesFollowClearanceMode)
   EXPECT_FALSE(Node::verifiedSourcesClear("track_confirmed_departure", true, true, false));
 }
 
+TEST(WaitForBarrierClearTest, freshnessGateFollowsClearanceMode)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // Mode A requires BOTH the local and global costmaps to refresh after the
+  // clear before verification proceeds.
+  EXPECT_TRUE(Node::freshnessSatisfiedAfterClear("map_confirmed_change", true, true));
+  EXPECT_FALSE(Node::freshnessSatisfiedAfterClear("map_confirmed_change", true, false));
+  EXPECT_FALSE(Node::freshnessSatisfiedAfterClear("map_confirmed_change", false, true));
+
+  // Mode B: global occupancy is advisory, so global freshness is advisory too
+  // -- only the local costmap (the hard gate) must refresh. A late global
+  // publication must not fail a confirmed tracked departure.
+  EXPECT_TRUE(Node::freshnessSatisfiedAfterClear("track_confirmed_departure", true, false));
+  EXPECT_FALSE(Node::freshnessSatisfiedAfterClear("track_confirmed_departure", false, true));
+}
+
+TEST(WaitForBarrierClearTest, freshMapAfterCleanupIsAdvisoryOnlyInTrackMode)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // Mode A: a modified-grid cleanup that yields no fresh /map is a hard
+  // failure -- the physical change was never confirmed on the map.
+  EXPECT_FALSE(Node::cleanupMapWaitIsAdvisory("map_confirmed_change"));
+
+  // Mode B: /map is advisory; a missing fresh /map after the advisory cleanup
+  // continues with the local hard-gate verification instead of failing (the
+  // rover's /map can be frozen while parked during the stationary dwell).
+  EXPECT_TRUE(Node::cleanupMapWaitIsAdvisory("track_confirmed_departure"));
+}
+
 TEST(WaitForBarrierClearTest, observedRadiusIsCappedByMaximum)
 {
   using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;

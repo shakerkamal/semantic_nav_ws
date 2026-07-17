@@ -138,6 +138,25 @@ public:
     bool global_clear,
     bool local_clear);
 
+  /**
+   * @brief Freshness prerequisite after a costmap clear, per evidence mode.
+   * Mode A requires both the local and global costmaps to refresh; Mode B
+   * treats global freshness as advisory (global occupancy is advisory there)
+   * and hard-gates on the local costmap only, so a late global publication
+   * cannot fail a confirmed tracked departure.
+   */
+  static bool freshnessSatisfiedAfterClear(
+    const std::string & clearance_mode,
+    bool local_fresh,
+    bool global_fresh);
+
+  /**
+   * @brief Whether a missing fresh /map after a modified-grid cleanup is
+   * advisory (Mode B: /map advisory, continue with the local hard gate) or a
+   * hard failure (Mode A: the physical change must be confirmed on /map).
+   */
+  static bool cleanupMapWaitIsAdvisory(const std::string & clearance_mode);
+
   static bool shouldUseObservedRegion(
     const AxisAlignedFootprint & semantic_footprint,
     const geometry_msgs::msg::Point & observed_center,
