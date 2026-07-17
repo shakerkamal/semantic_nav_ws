@@ -12,18 +12,13 @@ namespace semantic_nav_nav2_plugins
 {
 
 /**
- * @brief BT sync-action node that publishes one obstacle-signal message.
+ * @brief Publish one polite obstacle-clear signal for animate blockers.
  *
  * Modes:
- *  - emit_enabled=false:
- *      returns FAILURE so the enclosing Sequence fails and the outer Fallback
- *      can take the passive-wait branch.
- *
- *  - emit_enabled=true, publish_signal=false:
- *      gate-only mode; returns SUCCESS without publishing.
- *
- *  - emit_enabled=true, publish_signal=true:
- *      publishes "polite_clear:<signal_class>" on signal_topic and returns SUCCESS.
+ * - emit_enabled=false: returns FAILURE so the enclosing Fallback selects
+ *   passive waiting;
+ * - publish_signal=false: gate-only SUCCESS without publication;
+ * - both true: publishes "polite_clear:<safety_class>" and logs at INFO.
  */
 class EmitObstacleSignal : public BT::SyncActionNode
 {
@@ -33,12 +28,12 @@ public:
     const BT::NodeConfiguration & conf);
 
   BT::NodeStatus tick() override;
-
   static BT::PortsList providedPorts();
 
 private:
   rclcpp::Node::SharedPtr node_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_;
+  std::string signal_topic_{"/robot_obstacle_signal"};
 };
 
 }  // namespace semantic_nav_nav2_plugins

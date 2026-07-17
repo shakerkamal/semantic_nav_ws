@@ -32,7 +32,10 @@ add_library(${library_name} SHARED
   src/operator_prompt.cpp
   src/compute_standoff_pose.cpp
   src/has_responsible_object_candidate.cpp
+  src/dynamic_wait.cpp
   src/wait_for_barrier_clear.cpp
+  src/wait_for_dynamic_obstacle_departure.cpp
+  src/persistent_no_progress_condition.cpp
 )
 
 target_include_directories(${library_name} PUBLIC
@@ -134,6 +137,43 @@ if(BUILD_TESTING)
   if(rtabmap_msgs_FOUND)
     ament_target_dependencies(test_wait_for_barrier_clear rtabmap_msgs)
   endif()
+  ament_add_gtest(test_dynamic_wait test/test_dynamic_wait.cpp)
+  target_include_directories(test_dynamic_wait PRIVATE include)
+  target_link_libraries(test_dynamic_wait ${library_name})
+  ament_target_dependencies(test_dynamic_wait
+    behaviortree_cpp_v3
+  )
+
+  ament_add_gtest(
+    test_persistent_no_progress_condition
+    test/test_persistent_no_progress_condition.cpp
+  )
+  target_include_directories(test_persistent_no_progress_condition PRIVATE include)
+  target_link_libraries(test_persistent_no_progress_condition ${library_name})
+  ament_target_dependencies(test_persistent_no_progress_condition
+    behaviortree_cpp_v3
+  )
+
+
+  ament_add_gtest(
+    test_wait_for_dynamic_obstacle_departure
+    test/test_wait_for_dynamic_obstacle_departure.cpp
+  )
+  target_include_directories(
+    test_wait_for_dynamic_obstacle_departure PRIVATE include)
+  target_link_libraries(
+    test_wait_for_dynamic_obstacle_departure ${library_name})
+  ament_target_dependencies(test_wait_for_dynamic_obstacle_departure
+    rclcpp
+    nav2_behavior_tree
+    behaviortree_cpp_v3
+    semantic_nav_interfaces
+    geometry_msgs
+    nav_msgs
+    nav2_util
+    tf2_ros
+  )
+
 endif()
 
 ament_package()
