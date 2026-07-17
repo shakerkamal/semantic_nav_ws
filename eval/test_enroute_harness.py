@@ -308,6 +308,49 @@ def test_departure_tracking_is_gated_on_dynamic_overlay_source():
         raise AssertionError("gate and departure node are not in one path")
 
 
+def test_barrier_clearance_modes_route_by_evidence_type():
+    # Two generic evidence policies, not scenario modes: an explicit physical
+    # intervention (door opened, object carried away) is verified via
+    # map_confirmed_change (/map center is the mandatory raw gate); a
+    # confirmed tracked departure is verified via track_confirmed_departure
+    # (fresh local costmap is the hard gate, /map and global advisory).
+    root = ET.parse(BLLM_BT).getroot()
+
+    gates = {
+        el.get("name"): el for el in root.iter("WaitForBarrierClear")
+    }
+    assert set(gates) == {
+        "WaitForOpenDoorClearance",
+        "WaitForClearedObjectClearance",
+        "WaitForAnimateObstacleClearance",
+    }
+
+    assert gates["WaitForOpenDoorClearance"].get(
+        "clearance_mode") == "map_confirmed_change"
+    assert gates["WaitForClearedObjectClearance"].get(
+        "clearance_mode") == "map_confirmed_change"
+    assert gates["WaitForAnimateObstacleClearance"].get(
+        "clearance_mode") == "track_confirmed_departure"
+
+    # The narrow-gap branches must sample center+observed regions locally
+    # and never hard-gate on the full bbox against occupancy sources.
+    for name in ("WaitForClearedObjectClearance", "WaitForAnimateObstacleClearance"):
+        gate = gates[name]
+        assert gate.get("local_region_mode") == "center_and_observed"
+        assert gate.get("local_lethal_threshold") == "100"
+        assert gate.get("observed_max_radius_m") == "0.30"
+        assert gate.get("initial_dwell_s") == "2.0"
+        assert gate.get("poll_interval_s") == "1.0"
+
+    # S2's door branch keeps the conservative regression-baseline timing.
+    door = gates["WaitForOpenDoorClearance"]
+    assert door.get("local_region_mode") == "center"
+    assert door.get("initial_dwell_s") == "12.0"
+
+    for gate in gates.values():
+        assert gate.get("cleanup_filter_scans") == "false"
+
+
 def test_scenarios_yaml_complete():
     with open(SCENARIOS_PATH) as f:
         data = yaml.safe_load(f)

@@ -151,6 +151,25 @@ BT::NodeStatus WaitForBarrierClear::onStart()
     getInput("barrier_extent_m", observed_blockage_extent_m_);
   }
 
+  clearance_mode_ = "map_confirmed_change";
+  local_region_mode_ = "center";
+  local_lethal_threshold_ = 100;
+  observed_max_radius_m_ = 0.30;
+  getInput("clearance_mode", clearance_mode_);
+  getInput("local_region_mode", local_region_mode_);
+  getInput("local_lethal_threshold", local_lethal_threshold_);
+  getInput("observed_max_radius_m", observed_max_radius_m_);
+  if (clearance_mode_ != "map_confirmed_change" &&
+    clearance_mode_ != "track_confirmed_departure")
+  {
+    RCLCPP_WARN(
+      node_->get_logger(),
+      "[WaitForBarrierClear] unknown clearance_mode='%s'; using the "
+      "conservative map_confirmed_change",
+      clearance_mode_.c_str());
+    clearance_mode_ = "map_confirmed_change";
+  }
+
   getInput("clear_radius_m", clear_radius_m_);
   getInput("bbox_padding_m", bbox_padding_m_);
   getInput("use_bbox_footprint", use_bbox_footprint_);
@@ -206,10 +225,21 @@ BT::NodeStatus WaitForBarrierClear::onStart()
   semantic_footprint_ = computeSemanticFootprint(
     barrier_center_, barrier_bbox_extent_, clear_radius_m_, bbox_padding_m_,
     use_bbox_footprint_);
+  // Occupancy gating never uses the full bbox: in a narrow corridor the bbox
+  // overlaps the walls' inflation band and can never verify clear. The bbox
+  // footprint above is kept ONLY for observed-region association; every
+  // occupancy check samples this center circle (plus, for local when
+  // configured, the observed region).
+  center_footprint_ = computeSemanticFootprint(
+    barrier_center_, barrier_bbox_extent_, clear_radius_m_, 0.0,
+    /*use_bbox_footprint=*/false);
+  observed_max_radius_m_ = std::max(0.05, observed_max_radius_m_);
   observed_radius_m_ = computeObservedRadius(
-    observed_min_radius_m_, observed_blockage_extent_m_, observed_padding_m_);
+    observed_min_radius_m_, observed_blockage_extent_m_, observed_padding_m_,
+    observed_max_radius_m_);
   use_observed_region_ = shouldUseObservedRegion(
     semantic_footprint_, observed_blockage_center_, observed_center_max_gap_m_);
+  local_lethal_threshold_ = std::clamp(local_lethal_threshold_, 0, 100);
 
   pre_poll_index_ = 0;
   post_poll_index_ = 0;
@@ -224,19 +254,20 @@ BT::NodeStatus WaitForBarrierClear::onStart()
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "[WaitForBarrierClear] started center=(%.3f,%.3f) "
-    "half_extents=(%.3f,%.3f) bbox_used=%s observed_used=%s "
+    "[WaitForBarrierClear] started mode=%s local_regions=%s "
+    "center=(%.3f,%.3f) center_radius=%.2fm observed_used=%s "
     "observed_center=(%.3f,%.3f) observed_radius=%.3fm "
-    "raw_before_clear=true initial_dwell=%.1fs second_dwell=%.1fs",
-    semantic_footprint_.center.x,
-    semantic_footprint_.center.y,
-    semantic_footprint_.half_x,
-    semantic_footprint_.half_y,
-    boolText(semantic_footprint_.uses_bbox),
+    "local_threshold=%d initial_dwell=%.1fs second_dwell=%.1fs",
+    clearance_mode_.c_str(),
+    local_region_mode_.c_str(),
+    center_footprint_.center.x,
+    center_footprint_.center.y,
+    clear_radius_m_,
     boolText(use_observed_region_),
     observed_blockage_center_.x,
     observed_blockage_center_.y,
     observed_radius_m_,
+    local_lethal_threshold_,
     initial_dwell_s_,
     second_dwell_s_);
 
@@ -397,9 +428,26 @@ BT::PortsList WaitForBarrierClear::providedPorts()
     BT::InputPort<float>(
       "barrier_extent_m", 0.0F,
       "Backward-compatible alias for observed_blockage_extent_m"),
+    BT::InputPort<std::string>(
+      "clearance_mode", "map_confirmed_change",
+      "Evidence policy: map_confirmed_change (explicit physical intervention;"
+      " /map center is the mandatory raw gate) or track_confirmed_departure"
+      " (dynamic departure already proven; fresh local costmap is the hard"
+      " gate, /map and global advisory)"),
+    BT::InputPort<std::string>(
+      "local_region_mode", "center",
+      "Local-costmap regions to verify: center | center_and_observed"),
+    BT::InputPort<int>(
+      "local_lethal_threshold", 100,
+      "Local post-clear verification counts only cells at/above this cost;"
+      " 100 excludes the walls' inscribed inflation band (99)"),
+    BT::InputPort<double>(
+      "observed_max_radius_m", 0.30,
+      "Cap on the observed-blockage sampling radius so a wide measured"
+      " extent cannot grow the region onto corridor walls"),
     BT::InputPort<double>(
       "clear_radius_m", 0.30,
-      "Class-agnostic circular fallback when bbox geometry is unavailable"),
+      "Center-circle radius used for every occupancy verification region"),
     BT::InputPort<double>(
       "bbox_padding_m", 0.05, "Padding around valid semantic bbox geometry"),
     BT::InputPort<bool>(
@@ -656,12 +704,39 @@ WaitForBarrierClear::RegionMetrics WaitForBarrierClear::sampleCircularRegion(
 double WaitForBarrierClear::computeObservedRadius(
   double minimum_radius_m,
   float observed_extent_m,
-  double observed_padding_m)
+  double observed_padding_m,
+  double maximum_radius_m)
 {
-  return std::max(
-    std::max(0.05, minimum_radius_m),
-    0.5 * std::max(0.0, static_cast<double>(observed_extent_m)) +
-    std::max(0.0, observed_padding_m));
+  // The cap keeps a wide measured blockage (e.g. a whole-gap extent) from
+  // growing the sampled region onto corridor walls that can never clear.
+  return std::min(
+    std::max(0.05, maximum_radius_m),
+    std::max(
+      std::max(0.05, minimum_radius_m),
+      0.5 * std::max(0.0, static_cast<double>(observed_extent_m)) +
+      std::max(0.0, observed_padding_m)));
+}
+
+bool WaitForBarrierClear::rawGateSatisfied(
+  const std::string & clearance_mode,
+  bool map_clear)
+{
+  if (clearance_mode == "track_confirmed_departure") {
+    return true;
+  }
+  return map_clear;
+}
+
+bool WaitForBarrierClear::verifiedSourcesClear(
+  const std::string & clearance_mode,
+  bool map_clear,
+  bool global_clear,
+  bool local_clear)
+{
+  if (clearance_mode == "track_confirmed_departure") {
+    return local_clear;
+  }
+  return map_clear && global_clear && local_clear;
 }
 
 bool WaitForBarrierClear::shouldUseObservedRegion(
@@ -709,7 +784,10 @@ BT::NodeStatus WaitForBarrierClear::evaluateRawPrePoll()
   const auto map = mapMetrics();
   const auto global = globalMetrics(false);
   const auto local = localMetrics(false);
-  const bool clear = map.clear && global.clear && local.clear;
+  // Mode A gates on /map only (raw Nav2 costmaps may hold exactly the stale
+  // data their clear services exist to remove); Mode B records this sample
+  // as a diagnostic and proceeds -- departure was already proven.
+  const bool clear = rawGateSatisfied(clearance_mode_, map.clear);
 
   RCLCPP_INFO(
     node_->get_logger(),
@@ -777,18 +855,29 @@ BT::NodeStatus WaitForBarrierClear::evaluatePreVerification()
   const auto map = mapMetrics();
   const auto global = globalMetrics(require_fresh_costmaps_);
   const auto local = localMetrics(require_fresh_costmaps_);
-  const bool clear = map.clear && global.clear && local.clear;
+  const bool clear = verifiedSourcesClear(
+    clearance_mode_, map.clear, global.clear, local.clear);
 
   RCLCPP_INFO(
     node_->get_logger(),
-    "[WaitForBarrierClear] fresh pre verification "
+    "[WaitForBarrierClear] fresh pre verification mode=%s "
     "map(clear=%s) global(clear=%s fresh=%s) local(clear=%s fresh=%s)",
+    clearance_mode_.c_str(),
     boolText(map.clear), boolText(global.clear), boolText(global.fresh),
     boolText(local.clear), boolText(local.fresh));
 
   if (clear) {
     clearance_status_ = "raw_and_fresh_sources_clear";
     publishOutputs(clearance_status_);
+    if (clearance_mode_ == "track_confirmed_departure" &&
+      map.clear && global.clear)
+    {
+      // No residual stale occupancy anywhere -- cached-grid cleanup has
+      // nothing to fix; go straight to the stabilization polls.
+      cleanup_modified_ = 0;
+      beginPostVerification();
+      return BT::NodeStatus::RUNNING;
+    }
     beginCleanup();
     return BT::NodeStatus::RUNNING;
   }
@@ -836,6 +925,11 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupServiceWait()
     }
     clearance_status_ = "cleanup_service_unavailable";
     publishOutputs(clearance_status_);
+    if (clearance_mode_ == "track_confirmed_departure") {
+      // Advisory in track mode: local clearance already carried the gate.
+      beginPostVerification();
+      return BT::NodeStatus::RUNNING;
+    }
     return BT::NodeStatus::FAILURE;
   }
 
@@ -867,6 +961,8 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupResponse()
   }
 
   const auto now = std::chrono::steady_clock::now();
+  const bool cleanup_is_advisory =
+    clearance_mode_ == "track_confirmed_departure";
   if (!futureReady(*cleanup_future_)) {
     if (now < phase_deadline_) {
       return BT::NodeStatus::RUNNING;
@@ -875,6 +971,10 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupResponse()
     cleanup_future_.reset();
     clearance_status_ = "cleanup_response_timeout";
     publishOutputs(clearance_status_);
+    if (cleanup_is_advisory) {
+      beginPostVerification();
+      return BT::NodeStatus::RUNNING;
+    }
     return BT::NodeStatus::FAILURE;
   }
 
@@ -883,6 +983,10 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupResponse()
   if (!response) {
     clearance_status_ = "cleanup_null_response";
     publishOutputs(clearance_status_);
+    if (cleanup_is_advisory) {
+      beginPostVerification();
+      return BT::NodeStatus::RUNNING;
+    }
     return BT::NodeStatus::FAILURE;
   }
 
@@ -890,6 +994,10 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupResponse()
   if (cleanup_modified_ < 0) {
     clearance_status_ = "cleanup_error";
     publishOutputs(clearance_status_);
+    if (cleanup_is_advisory) {
+      beginPostVerification();
+      return BT::NodeStatus::RUNNING;
+    }
     return BT::NodeStatus::FAILURE;
   }
 
@@ -926,7 +1034,8 @@ BT::NodeStatus WaitForBarrierClear::evaluatePostPoll()
   const auto map = mapMetrics();
   const auto global = globalMetrics(require_fresh_costmaps_);
   const auto local = localMetrics(require_fresh_costmaps_);
-  const bool clear = map.clear && global.clear && local.clear;
+  const bool clear = verifiedSourcesClear(
+    clearance_mode_, map.clear, global.clear, local.clear);
 
   ++post_poll_index_;
   if (clear) {
@@ -1058,7 +1167,7 @@ WaitForBarrierClear::SourceMetrics WaitForBarrierClear::sourceMetrics(
 
   metrics.semantic_region = sampleFootprintRegion(
     *grid,
-    semantic_footprint_,
+    center_footprint_,
     lethal_threshold,
     max_lethal_fraction_,
     max_lethal_cells_,
@@ -1100,8 +1209,10 @@ WaitForBarrierClear::SourceMetrics WaitForBarrierClear::localMetrics(
 {
   const bool fresh = !require_fresh ||
     local_generation_ > local_generation_before_clear_;
+  const bool include_observed =
+    local_region_mode_ == "center_and_observed";
   return sourceMetrics(
-    latest_local_costmap_, fresh, true, costmap_lethal_threshold_);
+    latest_local_costmap_, fresh, include_observed, local_lethal_threshold_);
 }
 
 bool WaitForBarrierClear::allSourcesClear(bool require_fresh_costmaps) const

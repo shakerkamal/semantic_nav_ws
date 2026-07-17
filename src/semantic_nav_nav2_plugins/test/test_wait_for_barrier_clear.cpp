@@ -116,6 +116,51 @@ TEST(WaitForBarrierClearTest, distantWallClusterIsRejected)
       footprint, point(4.822, -1.355), 0.15));
 }
 
+
+TEST(WaitForBarrierClearTest, rawGateRequiresOnlyMapForMapConfirmedChange)
+{
+  // Mode A's mandatory raw prerequisite is "/map confirms the physical
+  // change" -- NOT "raw map AND raw global AND raw local all clear". Raw
+  // Nav2 costmaps may contain exactly the stale data their clear services
+  // exist to remove (S3/S4 2026-07-17 deadlock).
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  EXPECT_TRUE(Node::rawGateSatisfied("map_confirmed_change", true));
+  EXPECT_FALSE(Node::rawGateSatisfied("map_confirmed_change", false));
+
+  // Mode B records raw occupancy as a diagnostic only: departure was already
+  // independently proven by WaitForDynamicObstacleDeparture.
+  EXPECT_TRUE(Node::rawGateSatisfied("track_confirmed_departure", true));
+  EXPECT_TRUE(Node::rawGateSatisfied("track_confirmed_departure", false));
+}
+
+TEST(WaitForBarrierClearTest, verifiedSourcesFollowClearanceMode)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // Mode A: all three representations must verify after the clears.
+  EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, true, true));
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", true, false, true));
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", false, true, true));
+
+  // Mode B: the fresh LOCAL costmap is the hard gate; /map and global
+  // residuals are advisory (rays through the vacated region may never
+  // terminate, so they can stay stale indefinitely).
+  EXPECT_TRUE(Node::verifiedSourcesClear("track_confirmed_departure", false, false, true));
+  EXPECT_FALSE(Node::verifiedSourcesClear("track_confirmed_departure", true, true, false));
+}
+
+TEST(WaitForBarrierClearTest, observedRadiusIsCappedByMaximum)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // radius = min(max(min_r, extent/2 + padding), max_r): a wide measured
+  // blockage must not grow the sampled region onto corridor walls.
+  EXPECT_NEAR(Node::computeObservedRadius(0.15, 0.20F, 0.05, 0.30), 0.15, 1e-6);
+  EXPECT_NEAR(Node::computeObservedRadius(0.15, 0.40F, 0.05, 0.30), 0.25, 1e-6);
+  EXPECT_NEAR(Node::computeObservedRadius(0.15, 1.45F, 0.05, 0.30), 0.30, 1e-6);
+}
+
 TEST(WaitForBarrierClearTest, negativeOriginUsesFloorIndexing)
 {
   auto grid = makeGrid(20, 20, 0.1f, 0);

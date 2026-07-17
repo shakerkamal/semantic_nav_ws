@@ -112,7 +112,31 @@ public:
   static double computeObservedRadius(
     double minimum_radius_m,
     float observed_extent_m,
-    double observed_padding_m);
+    double observed_padding_m,
+    double maximum_radius_m = 0.30);
+
+  /**
+   * @brief Mode A (map_confirmed_change): the mandatory raw prerequisite is
+   * "/map confirms the physical change" -- never raw Nav2 costmaps, which
+   * may hold exactly the stale data their clear services exist to remove.
+   * Mode B (track_confirmed_departure): raw occupancy is diagnostic only;
+   * departure was already proven independently.
+   */
+  static bool rawGateSatisfied(
+    const std::string & clearance_mode,
+    bool map_clear);
+
+  /**
+   * @brief Post-clear verification per evidence mode: Mode A requires all
+   * three representations; Mode B hard-gates on the fresh LOCAL costmap only
+   * (/map and global residuals are advisory -- rays through the vacated
+   * region may never terminate, so they can stay stale indefinitely).
+   */
+  static bool verifiedSourcesClear(
+    const std::string & clearance_mode,
+    bool map_clear,
+    bool global_clear,
+    bool local_clear);
 
   static bool shouldUseObservedRegion(
     const AxisAlignedFootprint & semantic_footprint,
@@ -210,6 +234,12 @@ private:
   geometry_msgs::msg::Point barrier_center_{};
   geometry_msgs::msg::Vector3 barrier_bbox_extent_{};
   AxisAlignedFootprint semantic_footprint_{};
+  AxisAlignedFootprint center_footprint_{};
+
+  std::string clearance_mode_{"map_confirmed_change"};
+  std::string local_region_mode_{"center"};
+  int local_lethal_threshold_{100};
+  double observed_max_radius_m_{0.30};
   geometry_msgs::msg::Point observed_blockage_center_{};
   float observed_blockage_extent_m_{0.0F};
   double observed_radius_m_{0.20};

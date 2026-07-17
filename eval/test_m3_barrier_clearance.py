@@ -39,9 +39,18 @@ def test_operator_branches_wait_for_map_clearance_before_final_clear():
         assert gate.get("barrier_bbox_extent") == "{responsible_bbox_extent}"
         assert gate.get("observed_blockage_center") == "{blockage_centroid}"
         assert gate.get("observed_blockage_extent_m") == "{blockage_extent_m}"
-        assert gate.get("initial_dwell_s") == "12.0"
-        assert gate.get("second_dwell_s") == "12.0"
-        assert gate.get("poll_interval_s") == "2.0"
+        # Both operator branches verify an explicit physical intervention.
+        assert gate.get("clearance_mode") == "map_confirmed_change"
+        if name == "OpenDoorThenReplanBranch":
+            # S2 regression baseline keeps the conservative timing.
+            assert gate.get("initial_dwell_s") == "12.0"
+            assert gate.get("second_dwell_s") == "12.0"
+            assert gate.get("poll_interval_s") == "2.0"
+        else:
+            # A carried-away object needs no long mapping dwell.
+            assert gate.get("initial_dwell_s") == "2.0"
+            assert gate.get("second_dwell_s") == "2.0"
+            assert gate.get("poll_interval_s") == "1.0"
         assert gate.get("cleanup_local_grids") == "true"
         assert gate.get("cleanup_filter_scans") == "false"
         assert gate.get("cleanup_service") == "/rtabmap/cleanup_local_grids"
