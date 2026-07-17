@@ -82,6 +82,20 @@ class BlockageTrigger(Node):
         self._delete_after = float(
             scenario.get("delete_after_sec") or 0.0
         )
+        self._delete_on_obstacle_signal = bool(
+            scenario.get("delete_on_obstacle_signal", False)
+        )
+        self._obstacle_signal_topic = str(
+            scenario.get("obstacle_signal_topic")
+            or "/robot_obstacle_signal"
+        )
+        self._obstacle_signal_value = str(
+            scenario.get("obstacle_signal_value") or ""
+        )
+        self._signal_reaction_delay_sec = max(
+            0.0,
+            float(scenario.get("signal_reaction_delay_sec") or 0.0),
+        )
         self._action_settle_sec = max(
             0.0,
             float(common.get("operator_action_settle_sec", 0.0)),
@@ -93,6 +107,9 @@ class BlockageTrigger(Node):
         self._spawn_time = None
         self._pending_action_token: Optional[str] = None
         self._completion_timer = None
+        self._signal_delete_timer = None
+        self._signal_received = False
+        self._obstacle_signal_sub = None
 
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -129,6 +146,19 @@ class BlockageTrigger(Node):
                 latched,
             )
 
+        if self._delete_on_obstacle_signal:
+            self._obstacle_signal_sub = self.create_subscription(
+                String,
+                self._obstacle_signal_topic,
+                self._on_obstacle_signal,
+                10,
+            )
+            self.get_logger().info(
+                "[TRIGGER] signal-driven dynamic departure armed: "
+                f"topic='{self._obstacle_signal_topic}' "
+                f"value='{self._obstacle_signal_value}' "
+                f"reaction_delay={self._signal_reaction_delay_sec:.2f}s"
+            )
         self.create_timer(0.1, self._tick)
         self.get_logger().info(
             f"[TRIGGER] armed for {scenario_name}: "
@@ -179,6 +209,46 @@ class BlockageTrigger(Node):
             "[TRIGGER] operator action requested "
             f"event_id='{event_id}' object='{object_key}' "
             f"action='{directive_action}' -- deleting blocker"
+        )
+        self._delete()
+
+    def _on_obstacle_signal(self, msg: String) -> None:
+        if not self._delete_on_obstacle_signal:
+            return
+        if not self._fired or self._deleted or self._delete_in_flight:
+            return
+        if self._signal_received:
+            return
+        if self._obstacle_signal_value and msg.data != self._obstacle_signal_value:
+            self.get_logger().warning(
+                "[TRIGGER] ignoring unrelated obstacle signal "
+                f"'{msg.data}' (expected '{self._obstacle_signal_value}')"
+            )
+            return
+
+        self._signal_received = True
+        self.get_logger().info(
+            "[TRIGGER] received obstacle signal "
+            f"payload='{msg.data}'; dynamic-obstacle reaction delay "
+            f"{self._signal_reaction_delay_sec:.2f}s started"
+        )
+        if self._signal_reaction_delay_sec <= 0.0:
+            self._delete()
+            return
+        self._signal_delete_timer = self.create_timer(
+            self._signal_reaction_delay_sec,
+            self._delete_after_signal_delay,
+        )
+
+    def _delete_after_signal_delay(self) -> None:
+        timer = self._signal_delete_timer
+        self._signal_delete_timer = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+        self.get_logger().info(
+            "[TRIGGER] dynamic-obstacle reaction delay completed; "
+            "deleting blocker"
         )
         self._delete()
 

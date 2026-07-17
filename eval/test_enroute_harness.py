@@ -242,6 +242,38 @@ def test_geometric_bt_has_no_semantic_branch():
     assert len(recoveries) == 3
 
 
+def test_every_package_bt_node_used_by_the_xmls_is_registered_and_compiled():
+    # A new BT node needs FOUR places: source file, CMake library source,
+    # register_nodes.cpp, and the XML. Caught live 2026-07-17 (S4):
+    # PersistentNoProgressCondition existed as source + XML usage but was in
+    # neither CMakeLists nor register_nodes.cpp -- bt_navigator then fails the
+    # ENTIRE tree with "Node not recognized" (misleadingly followed by "BT
+    # file not found"). For every element tag in either BT XML that has a
+    # matching header in this package, require registration and compilation.
+    pkg = os.path.join(WS_ROOT, "src", "semantic_nav_nav2_plugins")
+    headers_dir = os.path.join(pkg, "include", "semantic_nav_nav2_plugins")
+    register_src = open(os.path.join(pkg, "src", "register_nodes.cpp")).read()
+    cmake_src = open(os.path.join(pkg, "CMakeLists.txt")).read()
+
+    def snake(tag):
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", tag).lower()
+
+    package_tags = set()
+    for path in (BLLM_BT, GEO_BT):
+        for el in ET.parse(path).getroot().iter():
+            if os.path.exists(os.path.join(headers_dir, snake(el.tag) + ".hpp")):
+                package_tags.add(el.tag)
+    assert package_tags, "sanity: the XMLs use at least one package node"
+
+    for tag in sorted(package_tags):
+        assert f'"{tag}"' in register_src, (
+            f"{tag} is used in a BT XML but not registered in register_nodes.cpp"
+        )
+        assert f"src/{snake(tag)}.cpp" in cmake_src, (
+            f"{tag} is used in a BT XML but src/{snake(tag)}.cpp is not in CMakeLists"
+        )
+
+
 def test_scenarios_yaml_complete():
     with open(SCENARIOS_PATH) as f:
         data = yaml.safe_load(f)
@@ -283,7 +315,10 @@ def test_load_scenarios_merges_common():
     # common block is exposed alongside scenarios
     assert data["common"]["perception_range_m"] == 3.0
     assert s4["detector"]["tag"] == "person"
-    assert s4["delete_after_sec"] == 40.0
+    # 120.0 = emergency fallback ONLY: the person's departure is signal-driven
+    # (the trigger deletes on the robot's polite_clear signal), so this timer
+    # exists purely to unstick a trial where the signal chain broke.
+    assert s4["delete_after_sec"] == 120.0
 
 
 def test_trigger_line_crossing():

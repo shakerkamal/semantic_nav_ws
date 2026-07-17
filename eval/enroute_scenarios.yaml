@@ -78,7 +78,7 @@ scenarios:
       extent: [0.5, 0.5, 0.9]
     expected_directive: clear_object_then_replan
 
-  S4:  # person in the gap — safety scenario, leaves after a fixed delay
+  S4:  # animate obstacle in the gap; departs after matching robot signal
     goal_query: "bed:120"
     nl_command: "I want to rest"
     intent_hint: "sleeping or resting"
@@ -88,13 +88,17 @@ scenarios:
       kind: sdf_file
       model: person_scenario.sdf
       pose: [-2.507, -1.350, 0.0]
-    delete_after_sec: 40.0
+    delete_after_sec: 120.0  # emergency timeout only
+    delete_on_obstacle_signal: true
+    obstacle_signal_topic: /robot_obstacle_signal
+    obstacle_signal_value: "polite_clear:human"
+    signal_reaction_delay_sec: 2.5
     detector:
       object_key: "person:902"
       tag: person
       caption: "A person standing in the narrow passage, facing the robot."
       state: movable
-      extent: [0.9, 0.9, 1.7]
+      extent: [0.7, 0.7, 1.7]
     expected_directive: wait_then_replan
 
   S5:  # sealed target region, deliberately unattributed blocker
