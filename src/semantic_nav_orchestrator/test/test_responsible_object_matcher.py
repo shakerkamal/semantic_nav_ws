@@ -264,3 +264,131 @@ def test_colocated_static_only_still_chooses_nearest():
 
     assert result.success is True
     assert result.responsible_object_key == "partition:121"
+
+def _s3_partition() -> ObjectCandidate:
+    return ObjectCandidate(
+        object_key="room partition:121",
+        object_tag="room partition",
+        object_state="semi-static",
+        safety_class="none",
+        openable=False,
+        clearable=False,
+        bbox_center=(-2.507, -1.350, 0.0),
+        bbox_extent=(0.200, 0.900, 2.0),
+        source="persistent_map",
+    )
+
+
+def _s3_chair(center=(-2.507, -1.350, 0.0)) -> ObjectCandidate:
+    return ObjectCandidate(
+        object_key="chair:901",
+        object_tag="chair",
+        object_state="movable",
+        safety_class="none",
+        openable=False,
+        clearable=True,
+        bbox_center=center,
+        bbox_extent=(0.500, 0.500, 0.9),
+        source="dynamic_overlay",
+    )
+
+
+def test_s3_geometry_live_chair_overrides_static_only_containment():
+    # EXACT S3 r1 attempt-1 numbers (2026-07-17): the measured centroid is
+    # the chair's NEAR FACE (depth marks are surface marks), which misses the
+    # chair's small bbox but lands inside the co-located partition's long
+    # thin bbox. The partition then verified ALONE and the dynamic-preference
+    # tie-break never engaged. A fresh live observation that intersects the
+    # static winner's bbox, sits within the fallback radius, and is at least
+    # as close to the blockage must take precedence: the detector asserted
+    # identity directly, the static record only reflects the map.
+    result = match_responsible_object(
+        blockage_centroid=(-2.425, -0.925, 0.0),
+        blockage_extent_m=0.150,
+        candidates=[_s3_partition(), _s3_chair()],
+    )
+
+    assert result.success is True
+    assert result.responsible_object_key == "chair:901"
+    assert result.match_type == "inferred"
+    assert "live_static_colocation_precedence" in result.message
+
+
+def test_unrelated_live_object_does_not_override_verified_static():
+    # A sealed door verified at ~0.2m with a person detected 0.7m to the
+    # side and NO bbox intersection: the static match must be retained.
+    door = ObjectCandidate(
+        object_key="door:119",
+        object_tag="door",
+        object_state="semi-static",
+        safety_class="none",
+        openable=True,
+        clearable=False,
+        bbox_center=(0.2, 0.0, 0.0),
+        bbox_extent=(0.2, 0.9, 2.0),
+        source="persistent_map",
+    )
+    person = ObjectCandidate(
+        object_key="person:902",
+        object_tag="person",
+        object_state="movable",
+        safety_class="human",
+        openable=False,
+        clearable=False,
+        bbox_center=(0.7, 0.7, 0.0),
+        bbox_extent=(0.5, 0.5, 1.7),
+        source="dynamic_overlay",
+    )
+
+    result = match_responsible_object(
+        blockage_centroid=(0.0, 0.0, 0.0),
+        blockage_extent_m=0.6,
+        candidates=[door, person],
+    )
+
+    assert result.responsible_object_key == "door:119"
+    assert result.match_type == "verified"
+
+
+def test_farther_live_object_does_not_override_nearer_static():
+    # Distance dominance: the live candidate must be at least as close to
+    # the blockage as the static winner's center, else static is retained
+    # even when the bboxes overlap.
+    result = match_responsible_object(
+        blockage_centroid=(-2.507, -1.350, 0.0),
+        blockage_extent_m=0.2,
+        candidates=[_s3_partition(), _s3_chair(center=(-2.507, -2.2, 0.0))],
+    )
+
+    assert result.responsible_object_key == "room partition:121"
+    assert result.match_type == "verified"
+
+
+def test_multiple_qualifying_live_objects_is_ambiguous():
+    # Two live objects both plausibly explaining the same blockage: refuse
+    # to pick arbitrarily.
+    chair_a = _s3_chair()
+    chair_b = ObjectCandidate(
+        object_key="chair:905",
+        object_tag="chair",
+        object_state="movable",
+        safety_class="none",
+        openable=False,
+        clearable=True,
+        # Slightly NEARER the centroid than the static winner's center, so
+        # it passes the dominance filter like chair_a and forces a genuine
+        # two-way ambiguity.
+        bbox_center=(-2.500, -1.340, 0.0),
+        bbox_extent=(0.500, 0.500, 0.9),
+        source="dynamic_overlay",
+    )
+
+    result = match_responsible_object(
+        blockage_centroid=(-2.425, -0.925, 0.0),
+        blockage_extent_m=0.150,
+        candidates=[_s3_partition(), chair_a, chair_b],
+    )
+
+    assert result.success is False
+    assert result.match_type == "unknown"
+    assert "ambiguous" in result.message

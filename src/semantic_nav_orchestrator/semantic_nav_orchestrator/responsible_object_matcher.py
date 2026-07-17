@@ -92,6 +92,59 @@ def _inflated_contains(
     return abs(cx - bx) <= half_x and abs(cy - by) <= half_y
 
 
+_COLOCATION_EPSILON_M = 1e-6
+
+
+def _aabb_intersects_2d(a: ObjectCandidate, b: ObjectCandidate) -> bool:
+    ax, ay, _ = a.bbox_center
+    bx, by, _ = b.bbox_center
+    aex, aey, _ = a.bbox_extent
+    bex, bey, _ = b.bbox_extent
+
+    return (
+        abs(ax - bx) <= (max(0.0, aex) + max(0.0, bex)) / 2.0 and
+        abs(ay - by) <= (max(0.0, aey) + max(0.0, bey)) / 2.0
+    )
+
+
+def _qualifying_live_overrides(
+    centroid: Tuple[float, float, float],
+    candidates: Sequence[ObjectCandidate],
+    static_winner: ObjectCandidate,
+    fallback_radius_m: float,
+) -> "list[Tuple[float, ObjectCandidate]]":
+    """Live-perceived candidates that plausibly explain a static-only match.
+
+    Depth sensing marks an object's NEAR FACE, so a measured centroid is
+    systematically displaced from the object center toward the robot -- a
+    small live object can miss its own inflated-bbox containment while a
+    co-located static record's long bbox still contains the centroid
+    (S3 2026-07-17: chair vs room partition). A live observation qualifies
+    to take precedence over the static-only verified winner when it is
+    within the fallback radius, its bbox intersects the static winner's
+    (same physical spot, not an unrelated bystander), and it is at least
+    as close to the blockage as the static winner's own center.
+
+    Freshness is owned by the semantics layer: DynamicObjectCache.snapshot()
+    purges expired entries before /refresh_local_objects responds, so every
+    dynamic_overlay candidate seen here is a live observation by contract.
+    """
+    static_distance = _planar_distance_to_bbox_center(centroid, static_winner)
+
+    qualifying = []
+    for candidate in candidates:
+        if candidate.source != "dynamic_overlay":
+            continue
+        distance = _planar_distance_to_bbox_center(centroid, candidate)
+        if (
+            distance <= float(fallback_radius_m) and
+            _aabb_intersects_2d(candidate, static_winner) and
+            distance <= static_distance + _COLOCATION_EPSILON_M
+        ):
+            qualifying.append((distance, candidate))
+    return qualifying
+
+
 def _planar_distance_to_bbox_center(
     centroid: Tuple[float, float, float],
     candidate: ObjectCandidate,
@@ -176,6 +229,31 @@ def match_responsible_object(
                 candidate,
             ),
         )
+
+        if not dynamic_verified:
+            qualifying = _qualifying_live_overrides(
+                blockage_centroid,
+                candidates,
+                nearest_verified,
+                inferred_fallback_radius_m,
+            )
+            if len(qualifying) == 1:
+                distance, live = qualifying[0]
+                return _result_from_candidate(
+                    live,
+                    match_type="inferred",
+                    message=(
+                        "live_static_colocation_precedence "
+                        f"distance={distance:.3f} m over static "
+                        f"'{nearest_verified.object_key}'"
+                    ),
+                )
+            if len(qualifying) > 1:
+                return MatchResult.unknown(
+                    "ambiguous_live_static_overlap: "
+                    f"{len(qualifying)} live-perceived candidates plausibly "
+                    "explain the blockage; refusing to pick arbitrarily"
+                )
 
         if len(verified) == 1:
             message = "verified inflated-bbox containment"
