@@ -64,8 +64,11 @@ scenarios:
     trigger: {axis: x, threshold: -1.0, direction: decreasing}
     blocker:
       entity: scenario_chair
-      kind: database
-      model: aws_robomaker_residential_ChairA_01
+      kind: sdf_file
+      # Sealing primitive, not the AWS ChairA_01 mesh: the mesh's DAE unit tag
+      # scales its physical footprint away from the reported bbox so it does
+      # not seal the gap and the robot wedges/slips past (S3 2026-07-17/18).
+      model: chair_scenario.sdf
       pose: [-2.507, -1.350, 1.5708]
     delete_after_sec: 0.0
     detector:
@@ -75,7 +78,9 @@ scenarios:
         A wooden chair standing in the middle of the narrow passage between
         the folding screens; it can be picked up and moved aside.
       state: movable
-      extent: [0.5, 0.5, 0.9]
+      # Matches the physical sealing cylinder (0.9m dia); reported slightly
+      # under so the computed standoff still lands outside it, mirroring S4.
+      extent: [0.7, 0.7, 0.85]
     expected_directive: clear_object_then_replan
 
   S4:  # animate obstacle in the gap; departs after matching robot signal

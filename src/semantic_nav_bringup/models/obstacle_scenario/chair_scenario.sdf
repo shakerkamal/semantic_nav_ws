@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- Static stand-in for a clearable chair blocking the narrow partition gap.
+     Collision AND visual are a 0.45m-radius cylinder: the SAME provably-sealing
+     footprint as person_scenario. The measured costmap corridor at the gap is
+     0.75-0.80m free width; a smaller object leaves a lethal-free channel that
+     SmacPlanner2D (a real A*) can thread, letting the robot wedge or slip past
+     without ever escalating to recovery (S3 2026-07-17/18). The AWS ChairA_01
+     MESH cannot be trusted here: its DAE unit tag scales the physical footprint
+     away from the reported bbox, so it does not seal and its size is
+     nondeterministic. The depth camera marks what it RENDERS (the visual), so
+     the visual must be the sealing size too, hence both are the cylinder.
+     0.85m tall so it stays inside the depth FOV at approach range and reads as
+     a chair with a backrest. The SEMANTIC identity ("chair", movable,
+     clearable) comes from the mock ConceptGraph detector, not this model.
+     Spawned/deleted at runtime by the blockage trigger. -->
+<sdf version="1.6">
+  <model name="chair_scenario">
+    <static>true</static>
+    <link name="body">
+      <collision name="seal">
+        <pose>0 0 0.425 0 0 0</pose>
+        <geometry><cylinder><radius>0.45</radius><length>0.85</length></cylinder></geometry>
+      </collision>
+      <visual name="seal">
+        <pose>0 0 0.425 0 0 0</pose>
+        <geometry><cylinder><radius>0.45</radius><length>0.85</length></cylinder></geometry>
+        <material><ambient>0.45 0.30 0.15 1</ambient><diffuse>0.45 0.30 0.15 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

@@ -513,6 +513,28 @@ def test_database_blocker_entities_do_not_shadow_their_model_name():
             )
 
 
+def test_sdf_file_blockers_resolve_to_an_installed_model():
+    # A kind:sdf_file blocker must name a model file the trigger can actually
+    # find: enroute_blockage_trigger searches semantic_nav_bringup/models/
+    # {door_scenario,person_scenario,obstacle_scenario}. A typo or missing
+    # model surfaces here instead of as a runtime FileNotFoundError mid-trial.
+    model_dirs = ("door_scenario", "person_scenario", "obstacle_scenario")
+    models_root = os.path.join(
+        WS_ROOT, "src", "semantic_nav_bringup", "models")
+    with open(SCENARIOS_PATH) as f:
+        scenarios = yaml.safe_load(f)["scenarios"]
+    for name, scenario in scenarios.items():
+        blocker = scenario.get("blocker", {})
+        if blocker.get("kind") != "sdf_file":
+            continue
+        model = blocker["model"]
+        found = any(
+            os.path.exists(os.path.join(models_root, d, model))
+            for d in model_dirs
+        )
+        assert found, f"{name}: sdf_file blocker '{model}' not found under models/"
+
+
 FIXTURE_TRIAL = """\
 [TRIAL] scenario=S5 variant=bllm_retry rep=1 commit=abc1234 start=1783880000
 [navigation_orchestrator-25] [INFO] [1783880010.100000000] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='bed:120', db_version=1193208084, db_stamp=1.0): frame='map', x=-4.8, y=2.2
