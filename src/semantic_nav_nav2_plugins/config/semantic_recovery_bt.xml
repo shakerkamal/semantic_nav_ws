@@ -1,301 +1,290 @@
-<?xml version="1.0"?>
 <root main_tree_to_execute="SemanticNavigateWithRecovery">
   <BehaviorTree ID="SemanticNavigateWithRecovery">
     <RecoveryNode number_of_retries="3" name="SemanticRecovery">
       <PipelineSequence name="NavigateWithValidation">
-        <ValidateSemantic
-            service_name="/validate_pose_goal"
-            server_timeout="10000"
-            goal_pose="{goal}"
-            validation_reason="{validation_reason}"/>
+        <ValidateSemantic 
+          service_name="/validate_pose_goal" 
+          server_timeout="10000" 
+          goal_pose="{goal}" 
+          validation_reason="{validation_reason}" />
 
         <RateController hz="1.0">
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-            <ComputePathToPose
-                goal="{goal}"
-                path="{path}"
-                planner_id="GridBased"/>
+            <ComputePathToPose 
+              goal="{goal}" 
+              path="{path}" 
+              planner_id="GridBased" />
 
-            <ClearEntireCostmap
-                name="ClearGlobalCostmap-Context"
-                service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap 
+              name="ClearGlobalCostmap-Context" 
+              service_name="global_costmap/clear_entirely_global_costmap" />
           </RecoveryNode>
         </RateController>
 
-        <PathClearCondition
-            name="PersistentBlockageGate"
-            path="{path}"
-            lookahead_m="1.5"
-            lethal_threshold="90"
-            debounce_ticks="2"
-            sample_radius_m="0.05"
-            min_blocked_length_m="0.45"
-            min_blocked_samples="4"
-            blocked_fraction_threshold="0.30"
-            allow_geometric_detour_first="true"
-            plan_topic="/plan"
-            local_costmap_topic="/local_costmap/costmap"
-            blockage_centroid="{blockage_centroid}"
-            blockage_extent_m="{blockage_extent_m}"/>
+        <PathClearCondition 
+          name="PersistentBlockageGate" path="{path}" 
+          lookahead_m="1.5" 
+          lethal_threshold="90" 
+          debounce_ticks="2" 
+          sample_radius_m="0.05" 
+          min_blocked_length_m="0.45" 
+          min_blocked_samples="4" 
+          blocked_fraction_threshold="0.30" 
+          allow_geometric_detour_first="true" 
+          plan_topic="/plan" 
+          local_costmap_topic="/local_costmap/costmap" 
+          blockage_centroid="{blockage_centroid}" 
+          blockage_extent_m="{blockage_extent_m}" />
 
-        <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath
-              path="{path}"
-              controller_id="FollowPath"/>
+        <ReactiveSequence name="MonitorAndFollowPath">
+          <PersistentNoProgressCondition 
+            name="DetectPersistentExecutionStall" 
+            path="{path}" 
+            goal="{goal}" 
+            observation_window_s="8.0" 
+            minimum_progress_m="0.10" 
+            obstacle_persistence_s="2.0" 
+            obstacle_lookahead_m="1.5" 
+            path_sample_radius_m="0.20" 
+            forward_lateral_tolerance_m="0.40" 
+            min_forward_distance_m="0.15" 
+            min_lethal_cells="3" 
+            lethal_threshold="90" 
+            local_costmap_topic="/local_costmap/costmap" 
+            global_frame="map" 
+            robot_base_frame="base_footprint" 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" 
+            no_progress_elapsed_s="{no_progress_elapsed_s}" 
+            monitor_status="{execution_monitor_status}" />
+          <RecoveryNode number_of_retries="1" name="FollowPath">
+            <FollowPath 
+              path="{path}" 
+              controller_id="FollowPath" />
+            <ClearEntireCostmap 
+              name="ClearLocalCostmap-Context" 
+              service_name="local_costmap/clear_entirely_local_costmap" />
+          </RecoveryNode>
+        </ReactiveSequence>
 
-          <ClearEntireCostmap
-              name="ClearLocalCostmap-Context"
-              service_name="local_costmap/clear_entirely_local_costmap"/>
-        </RecoveryNode>
       </PipelineSequence>
 
       <RoundRobin name="RecoveryActions">
         <Sequence name="GeometricSafeRecovery">
-          <ClearEntireCostmap name="ClearLocalGeometric" service_name="local_costmap/clear_entirely_local_costmap"/>
-          <ClearEntireCostmap name="ClearGlobalGeometric" service_name="global_costmap/clear_entirely_global_costmap"/>
-          <BackUp name="BackUpToSafePose" backup_dist="0.20" backup_speed="0.05" time_allowance="10.0" server_name="backup" server_timeout="10000"/>
+          <ClearEntireCostmap 
+            name="ClearLocalGeometric" 
+            service_name="local_costmap/clear_entirely_local_costmap" />
+          <ClearEntireCostmap 
+            name="ClearGlobalGeometric" 
+            service_name="global_costmap/clear_entirely_global_costmap" />
+          <BackUp name="BackUpToSafePose" backup_dist="0.20" backup_speed="0.05" time_allowance="10.0" server_name="backup" server_timeout="10000" />
         </Sequence>
-
+        
         <Sequence name="SemanticRecoveryBranch">
-          <CaptureBlockageContext path="{path}" lookahead_m="3.0" lethal_threshold="90" sample_radius_m="0.05" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
-          <QuerySemanticContext blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" radius_m="4.0" service_ready_timeout_ms="2000" response_timeout_ms="30000" refresh_service="/refresh_local_objects" match_service="/match_responsible_object" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" local_db_version="{local_db_version}" local_db_source="{local_db_source}"/>
+          <CaptureBlockageContext 
+            path="{path}" 
+            lookahead_m="3.0" 
+            lethal_threshold="90" 
+            sample_radius_m="0.05" 
+            local_costmap_topic="/local_costmap/costmap" 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" />
+          <QuerySemanticContext 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" 
+            radius_m="4.0" 
+            service_ready_timeout_ms="2000" 
+            response_timeout_ms="30000" 
+            refresh_service="/refresh_local_objects" 
+            match_service="/match_responsible_object" 
+            responsible_object_key="{responsible_object_key}" 
+            responsible_object_tag="{responsible_object_tag}" 
+            responsible_object_state="{responsible_object_state}" 
+            responsible_safety_class="{responsible_safety_class}" 
+            responsible_openable="{responsible_openable}" 
+            responsible_clearable="{responsible_clearable}" 
+            responsible_match_type="{responsible_match_type}" 
+            responsible_state_detail="{responsible_state_detail}" 
+            responsible_traversability="{responsible_traversability}" 
+            responsible_bbox_center="{responsible_bbox_center}" 
+            responsible_bbox_extent="{responsible_bbox_extent}" 
+            local_db_version="{local_db_version}" 
+            local_db_source="{local_db_source}" />
 
           <Fallback name="ApproachBlockage">
             <Sequence name="ApproachKnownCandidate">
-              <HasResponsibleObjectCandidate match_type="{responsible_match_type}"/>
-              <ComputeStandoffPose responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" robot_footprint_radius="0.1" clearance_margin="0.20" global_frame="map" robot_base_frame="base_footprint" standoff_goal="{standoff_goal}"/>
-
+              <HasResponsibleObjectCandidate match_type="{responsible_match_type}" />
+              <ComputeStandoffPose 
+                responsible_bbox_center="{responsible_bbox_center}" 
+                responsible_bbox_extent="{responsible_bbox_extent}" 
+                robot_footprint_radius="0.1" 
+                clearance_margin="0.20" 
+                global_frame="map" 
+                robot_base_frame="base_footprint" 
+                standoff_goal="{standoff_goal}" />
               <RecoveryNode number_of_retries="1" name="ComputePathToStandoff">
-                <ComputePathToPose goal="{standoff_goal}" path="{standoff_path}" planner_id="GridBased"/>
-                <ClearEntireCostmap name="ClearGlobalStandoff" service_name="global_costmap/clear_entirely_global_costmap"/>
+                <ComputePathToPose 
+                  goal="{standoff_goal}" 
+                  path="{standoff_path}" 
+                  planner_id="GridBased" />
+                <ClearEntireCostmap 
+                  name="ClearGlobalStandoff" 
+                  service_name="global_costmap/clear_entirely_global_costmap" />
               </RecoveryNode>
-
               <RecoveryNode number_of_retries="1" name="FollowPathToStandoff">
-                <FollowPath path="{standoff_path}" controller_id="FollowPath"/>
-                <ClearEntireCostmap name="ClearLocalStandoff" service_name="local_costmap/clear_entirely_local_costmap"/>
+                <FollowPath path="{standoff_path}" controller_id="FollowPath" />
+                <ClearEntireCostmap 
+                  name="ClearLocalStandoff" 
+                  service_name="local_costmap/clear_entirely_local_costmap" />
               </RecoveryNode>
             </Sequence>
-
             <ForceSuccess>
-              <DriveOnHeading dist_to_travel="2.5" speed="0.15" time_allowance="20.0" server_name="drive_on_heading" server_timeout="10000"/>
+              <DriveOnHeading 
+                dist_to_travel="2.5" 
+                speed="0.15" 
+                time_allowance="20.0" 
+                server_name="drive_on_heading" 
+                server_timeout="10000" />
             </ForceSuccess>
           </Fallback>
 
-          <CaptureBlockageContext path="{path}" lookahead_m="3.0" lethal_threshold="90" sample_radius_m="0.05" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}"/>
-          <QuerySemanticContext blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" radius_m="4.0" service_ready_timeout_ms="2000" response_timeout_ms="30000" refresh_service="/refresh_local_objects" match_service="/match_responsible_object" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" local_db_version="{local_db_version}" local_db_source="{local_db_source}"/>
+          <CaptureBlockageContext 
+            path="{path}" 
+            lookahead_m="3.0" 
+            lethal_threshold="90" 
+            sample_radius_m="0.05" 
+            local_costmap_topic="/local_costmap/costmap" 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" />
+
+          <QuerySemanticContext 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" 
+            radius_m="4.0" 
+            service_ready_timeout_ms="2000" 
+            response_timeout_ms="30000" 
+            refresh_service="/refresh_local_objects" 
+            match_service="/match_responsible_object" 
+            responsible_object_key="{responsible_object_key}" 
+            responsible_object_tag="{responsible_object_tag}" 
+            responsible_object_state="{responsible_object_state}" 
+            responsible_safety_class="{responsible_safety_class}" 
+            responsible_openable="{responsible_openable}" 
+            responsible_clearable="{responsible_clearable}" 
+            responsible_match_type="{responsible_match_type}" 
+            responsible_state_detail="{responsible_state_detail}" 
+            responsible_traversability="{responsible_traversability}" 
+            responsible_bbox_center="{responsible_bbox_center}" 
+            responsible_bbox_extent="{responsible_bbox_extent}" 
+            local_db_version="{local_db_version}" 
+            local_db_source="{local_db_source}" />
 
           <ForceSuccess>
             <Sequence name="RetreatToPerceivedStandoff">
-              <HasResponsibleObjectCandidate match_type="{responsible_match_type}"/>
-              <ComputeStandoffPose responsible_bbox_center="{responsible_bbox_center}" responsible_bbox_extent="{responsible_bbox_extent}" robot_footprint_radius="0.1" clearance_margin="0.20" global_frame="map" robot_base_frame="base_footprint" standoff_goal="{standoff_goal}"/>
-              <ComputePathToPose goal="{standoff_goal}" path="{standoff_path}" planner_id="GridBased"/>
-              <FollowPath path="{standoff_path}" controller_id="FollowPath"/>
+              <HasResponsibleObjectCandidate match_type="{responsible_match_type}" />
+              <ComputeStandoffPose 
+                responsible_bbox_center="{responsible_bbox_center}" 
+                responsible_bbox_extent="{responsible_bbox_extent}" 
+                robot_footprint_radius="0.1" 
+                clearance_margin="0.20" 
+                global_frame="map" 
+                robot_base_frame="base_footprint" 
+                standoff_goal="{standoff_goal}" />
+              <ComputePathToPose 
+                goal="{standoff_goal}" 
+                path="{standoff_path}" 
+                planner_id="GridBased" />
+              <FollowPath path="{standoff_path}" controller_id="FollowPath" />
             </Sequence>
           </ForceSuccess>
-
-          <EscalateToLLMRecovery service_name="/request_recovery" server_timeout="300000" failure_stage="execution" nav2_message="path blocked or navigation aborted" original_object_tag="{original_object_tag}" original_intent_hint="{original_intent_hint}" current_target_object_key="{current_target_object_key}" responsible_object_key="{responsible_object_key}" responsible_object_tag="{responsible_object_tag}" responsible_object_state="{responsible_object_state}" responsible_safety_class="{responsible_safety_class}" responsible_openable="{responsible_openable}" responsible_clearable="{responsible_clearable}" responsible_match_type="{responsible_match_type}" responsible_state_detail="{responsible_state_detail}" responsible_traversability="{responsible_traversability}" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" local_db_version="{local_db_version}" local_db_source="{local_db_source}" directive_action="{directive_action}" directive_target_pose="{directive_target_pose}" directive_target_object_key="{directive_target_object_key}" directive_target_object_tag="{directive_target_object_tag}" directive_target_intent_hint="{directive_target_intent_hint}" directive_wait_seconds="{directive_wait_seconds}" directive_emit_signal_during_wait="{directive_emit_signal_during_wait}" directive_signal_attempts="{directive_signal_attempts}" directive_operator_message="{directive_operator_message}" directive_rationale="{directive_rationale}" directive_confidence_percent="{directive_confidence_percent}" directive_escalate_to_operator="{directive_escalate_to_operator}" recovery_event_id="{recovery_event_id}"/>
+          <EscalateToLLMRecovery 
+            service_name="/request_recovery" 
+            server_timeout="300000" 
+            failure_stage="execution" 
+            nav2_message="path blocked or navigation aborted" 
+            original_object_tag="{original_object_tag}" 
+            original_intent_hint="{original_intent_hint}" 
+            current_target_object_key="{current_target_object_key}" 
+            responsible_object_key="{responsible_object_key}" 
+            responsible_object_tag="{responsible_object_tag}" 
+            responsible_object_state="{responsible_object_state}" 
+            responsible_safety_class="{responsible_safety_class}" 
+            responsible_openable="{responsible_openable}" 
+            responsible_clearable="{responsible_clearable}" 
+            responsible_match_type="{responsible_match_type}" 
+            responsible_state_detail="{responsible_state_detail}" 
+            responsible_traversability="{responsible_traversability}" 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" 
+            local_db_version="{local_db_version}" 
+            local_db_source="{local_db_source}" 
+            directive_action="{directive_action}" 
+            directive_target_pose="{directive_target_pose}" 
+            directive_target_object_key="{directive_target_object_key}" 
+            directive_target_object_tag="{directive_target_object_tag}" 
+            directive_target_intent_hint="{directive_target_intent_hint}" 
+            directive_wait_seconds="{directive_wait_seconds}" 
+            directive_emit_signal_during_wait="{directive_emit_signal_during_wait}" 
+            directive_signal_attempts="{directive_signal_attempts}" 
+            directive_operator_message="{directive_operator_message}" 
+            directive_rationale="{directive_rationale}" 
+            directive_confidence_percent="{directive_confidence_percent}" 
+            directive_escalate_to_operator="{directive_escalate_to_operator}" 
+            recovery_event_id="{recovery_event_id}" />
 
           <Switch3 variable="{directive_action}" case_1="retry_target" case_2="wait_then_replan" case_3="give_up">
             <Sequence name="RetryTargetBranch">
-              <ClearEntireCostmap name="ClearGlobalRetry" service_name="global_costmap/clear_entirely_global_costmap"/>
-              <ClearEntireCostmap name="ClearLocalRetry" service_name="local_costmap/clear_entirely_local_costmap"/>
+              <ClearEntireCostmap name="ClearGlobalRetry" service_name="global_costmap/clear_entirely_global_costmap" />
+              <ClearEntireCostmap name="ClearLocalRetry" service_name="local_costmap/clear_entirely_local_costmap" />
             </Sequence>
-
             <Sequence name="WaitThenReplanBranch">
-
-                <!-- Human-interaction policy: signal or passively wait. -->
-                <Fallback name="WaitPolicyChoice">
-
-                    <Sequence name="SignalWaitRecheck">
-                    <EmitObstacleSignal
-                        emit_enabled="{directive_emit_signal_during_wait}"
-                        publish_signal="false"
-                        signal_class="{responsible_safety_class}"
-                        signal_topic="/robot_obstacle_signal"/>
-
-                    <RetryUntilSuccessful
-                        num_attempts="{directive_signal_attempts}">
-                        <Sequence name="SignalCycle">
-                        <EmitObstacleSignal
-                            emit_enabled="true"
-                            publish_signal="true"
-                            signal_class="{responsible_safety_class}"
-                            signal_topic="/robot_obstacle_signal"/>
-
-                        <Wait wait_duration="2"/>
-
-                        <!-- Fast local indication only. Not final clearance proof. -->
-                        <PathClearCondition
-                            path="{path}"
-                            lookahead_m="1.5"
-                            lethal_threshold="90"
-                            debounce_ticks="1"
-                            sample_radius_m="0.05"
-                            allow_geometric_detour_first="false"
-                            plan_topic="/plan"
-                            local_costmap_topic="/local_costmap/costmap"
-                            blockage_centroid="{blockage_centroid}"
-                            blockage_extent_m="{blockage_extent_m}"/>
-                        </Sequence>
-                    </RetryUntilSuccessful>
+              <!-- Human-interaction policy: signal or passively wait. -->
+              <Fallback name="AnimateObstacleWaitPolicy">
+                <Sequence name="SignalWaitRecheck">
+                  <EmitObstacleSignal emit_enabled="{directive_emit_signal_during_wait}" publish_signal="false" signal_class="{responsible_safety_class}" signal_topic="/robot_obstacle_signal" />
+                  <RetryUntilSuccessful num_attempts="{directive_signal_attempts}">
+                    <Sequence name="SignalCycle">
+                      <EmitObstacleSignal emit_enabled="true" publish_signal="true" signal_class="{responsible_safety_class}" signal_topic="/robot_obstacle_signal" />
+                      <Wait wait_duration="2" />
+                      <!-- Fast local indication only. Not final clearance proof. -->
+                      <PathClearCondition path="{path}" lookahead_m="1.5" lethal_threshold="90" debounce_ticks="1" sample_radius_m="0.05" allow_geometric_detour_first="false" plan_topic="/plan" local_costmap_topic="/local_costmap/costmap" blockage_centroid="{blockage_centroid}" blockage_extent_m="{blockage_extent_m}" />
                     </Sequence>
-
-                    <Sequence name="PassiveWait">
-                    <Wait wait_duration="{directive_wait_seconds}"/>
-                    </Sequence>
-
-                </Fallback>
-
-                <!-- Authoritative post-departure map convergence and persistence gate. -->
-                <WaitForBarrierClear
-                    name="WaitForDynamicObstacleClearance"
-                    barrier_center="{responsible_bbox_center}"
-                    barrier_extent_m="0.0"
-
-                    map_topic="/map"
-                    global_costmap_topic="/global_costmap/costmap"
-
-                    local_clear_service="/local_costmap/clear_entirely_local_costmap"
-                    global_clear_service="/global_costmap/clear_entirely_global_costmap"
-                    cleanup_service="/rtabmap/cleanup_local_grids"
-
-                    initial_dwell_s="12.0"
-                    second_dwell_s="12.0"
-                    poll_interval_s="2.0"
-
-                    max_pre_cleanup_polls="6"
-                    max_post_cleanup_polls="6"
-
-                    clear_radius_m="0.30"
-                    lethal_threshold="100"
-                    max_lethal_fraction="0.15"
-                    min_observed_cells="8"
-
-                    required_post_cleanup_clear_samples="2"
-
-                    cleanup_local_grids="true"
-                    cleanup_radius_cells="1"
-                    cleanup_filter_scans="false"
-
-                    service_ready_timeout_ms="2000"
-                    service_response_timeout_ms="30000"
-                    fresh_map_timeout_ms="10000"
-
-                    cleanup_modified="{wait_cleanup_modified}"
-                    clearance_status="{wait_clearance_status}"/>
-
-                <!-- Final clear immediately before returning to fresh global planning. -->
-                <ClearEntireCostmap
-                    name="ClearGlobalWaitThenReplan"
-                    service_name="global_costmap/clear_entirely_global_costmap"/>
-
-                <ClearEntireCostmap
-                    name="ClearLocalWaitThenReplan"
-                    service_name="local_costmap/clear_entirely_local_costmap"/>
-
+                  </RetryUntilSuccessful>
+                </Sequence>
+                <Sequence name="PassiveWait">
+                  <DynamicWait name="WaitForRecoveryDirectiveDuration" wait_duration="{directive_wait_seconds}" default_wait_duration="5" max_wait_duration="60" selected_wait_seconds="{selected_wait_seconds}" />
+                </Sequence>
+              </Fallback>
+              <WaitForDynamicObstacleDeparture 
+                name="WaitForAnimateObstacleDeparture" 
+                responsible_object_key="{responsible_object_key}" original_blockage_center="{blockage_centroid}" original_blockage_extent_m="{blockage_extent_m}" original_bbox_center="{responsible_bbox_center}" original_bbox_extent="{responsible_bbox_extent}" fallback_dynamic_radius_m="0.30" footprint_padding_m="0.05" current_object_padding_m="0.02" refresh_service="/refresh_local_objects" global_frame="map" robot_base_frame="base_footprint" query_radius_m="4.0" poll_interval_s="0.5" required_nonblocking_samples="3" timeout_s="30.0" service_ready_timeout_ms="2000" response_timeout_ms="3000" departure_clear_samples="{departure_clear_samples}" departure_status="{departure_status}" />
+              <WaitForBarrierClear name="WaitForAnimateObstacleClearance" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" use_bbox_footprint="true" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="12.0" second_dwell_s="12.0" poll_interval_s="2.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
+              <!-- Authoritative post-departure map convergence and persistence gate. -->
+              <!-- Final clear immediately before returning to fresh global planning. -->
+              <ClearEntireCostmap name="ClearGlobalWaitThenReplan" service_name="global_costmap/clear_entirely_global_costmap" />
+              <ClearEntireCostmap name="ClearLocalWaitThenReplan" service_name="local_costmap/clear_entirely_local_costmap" />
             </Sequence>
-
             <ForceFailure name="GiveUpTerminal">
-              <AlwaysSuccess/>
+              <AlwaysSuccess />
             </ForceFailure>
-
             <Switch3 name="OperatorDirectiveSwitch" variable="{directive_action}" case_1="open_door_then_replan" case_2="clear_object_then_replan" case_3="__unused_operator_case__">
               <Sequence name="OpenDoorThenReplanBranch">
-                <OperatorPrompt
-                    service_name="/operator_decision"
-                    prompt_text="{directive_operator_message}"
-                    responsible_object_key="{responsible_object_key}"
-                    failure_stage="execution"
-                    directive_action="{directive_action}"
-                    recovery_event_id="{recovery_event_id}"
-                    service_ready_timeout_ms="2000"
-                    response_timeout_ms="120000"
-                    wait_for_action_completion="true"
-                    action_completion_timeout_ms="30000"
-                    action_request_topic="/operator_action_request"
-                    action_completion_topic="/operator_action_completion"/>
-                <WaitForBarrierClear
-                    name="WaitForOpenDoorClearance"
-                    barrier_center="{responsible_bbox_center}"
-                    barrier_extent_m="0.0"
-                    map_topic="/map"
-                    global_costmap_topic="/global_costmap/costmap"
-                    local_clear_service="/local_costmap/clear_entirely_local_costmap"
-                    global_clear_service="/global_costmap/clear_entirely_global_costmap"
-                    cleanup_service="/rtabmap/cleanup_local_grids"
-                    initial_dwell_s="12.0"
-                    second_dwell_s="12.0"
-                    poll_interval_s="2.0"
-                    max_pre_cleanup_polls="6"
-                    max_post_cleanup_polls="6"
-                    clear_radius_m="0.30"
-                    lethal_threshold="100"
-                    max_lethal_fraction="0.15"
-                    min_observed_cells="8"
-                    required_post_cleanup_clear_samples="2"
-                    cleanup_local_grids="true"
-                    cleanup_radius_cells="1"
-                    cleanup_filter_scans="false"
-                    service_ready_timeout_ms="2000"
-                    service_response_timeout_ms="30000"
-                    fresh_map_timeout_ms="10000"
-                    cleanup_modified="{cleanup_modified}"
-                    clearance_status="{clearance_status}"/>
-                <ClearEntireCostmap name="ClearGlobalOpenDoor" service_name="global_costmap/clear_entirely_global_costmap"/>
-                <ClearEntireCostmap name="ClearLocalOpenDoor" service_name="local_costmap/clear_entirely_local_costmap"/>
+                <OperatorPrompt service_name="/operator_decision" prompt_text="{directive_operator_message}" responsible_object_key="{responsible_object_key}" failure_stage="execution" directive_action="{directive_action}" recovery_event_id="{recovery_event_id}" service_ready_timeout_ms="2000" response_timeout_ms="120000" wait_for_action_completion="true" action_completion_timeout_ms="30000" action_request_topic="/operator_action_request" action_completion_topic="/operator_action_completion" />
+                <WaitForBarrierClear name="WaitForOpenDoorClearance" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" use_bbox_footprint="false" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="12.0" second_dwell_s="12.0" poll_interval_s="2.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
+                <ClearEntireCostmap name="ClearGlobalOpenDoor" service_name="global_costmap/clear_entirely_global_costmap" />
+                <ClearEntireCostmap name="ClearLocalOpenDoor" service_name="local_costmap/clear_entirely_local_costmap" />
               </Sequence>
-
               <Sequence name="ClearObjectThenReplanBranch">
-                <OperatorPrompt
-                    service_name="/operator_decision"
-                    prompt_text="{directive_operator_message}"
-                    responsible_object_key="{responsible_object_key}"
-                    failure_stage="execution"
-                    directive_action="{directive_action}"
-                    recovery_event_id="{recovery_event_id}"
-                    service_ready_timeout_ms="2000"
-                    response_timeout_ms="120000"
-                    wait_for_action_completion="true"
-                    action_completion_timeout_ms="30000"
-                    action_request_topic="/operator_action_request"
-                    action_completion_topic="/operator_action_completion"/>
-                <WaitForBarrierClear
-                    name="WaitForClearedObjectClearance"
-                    barrier_center="{responsible_bbox_center}"
-                    barrier_extent_m="0.0"
-                    map_topic="/map"
-                    global_costmap_topic="/global_costmap/costmap"
-                    local_clear_service="/local_costmap/clear_entirely_local_costmap"
-                    global_clear_service="/global_costmap/clear_entirely_global_costmap"
-                    cleanup_service="/rtabmap/cleanup_local_grids"
-                    initial_dwell_s="12.0"
-                    second_dwell_s="12.0"
-                    poll_interval_s="2.0"
-                    max_pre_cleanup_polls="6"
-                    max_post_cleanup_polls="6"
-                    clear_radius_m="0.30"
-                    lethal_threshold="100"
-                    max_lethal_fraction="0.15"
-                    min_observed_cells="8"
-                    required_post_cleanup_clear_samples="2"
-                    cleanup_local_grids="true"
-                    cleanup_radius_cells="1"
-                    cleanup_filter_scans="false"
-                    service_ready_timeout_ms="2000"
-                    service_response_timeout_ms="30000"
-                    fresh_map_timeout_ms="10000"
-                    cleanup_modified="{cleanup_modified}"
-                    clearance_status="{clearance_status}"/>
-                <ClearEntireCostmap name="ClearGlobalClearObject" service_name="global_costmap/clear_entirely_global_costmap"/>
-                <ClearEntireCostmap name="ClearLocalClearObject" service_name="local_costmap/clear_entirely_local_costmap"/>
+                <OperatorPrompt service_name="/operator_decision" prompt_text="{directive_operator_message}" responsible_object_key="{responsible_object_key}" failure_stage="execution" directive_action="{directive_action}" recovery_event_id="{recovery_event_id}" service_ready_timeout_ms="2000" response_timeout_ms="120000" wait_for_action_completion="true" action_completion_timeout_ms="30000" action_request_topic="/operator_action_request" action_completion_topic="/operator_action_completion" />
+                <WaitForBarrierClear name="WaitForClearedObjectClearance" barrier_center="{responsible_bbox_center}" barrier_bbox_extent="{responsible_bbox_extent}" use_bbox_footprint="true" observed_blockage_center="{blockage_centroid}" observed_blockage_extent_m="{blockage_extent_m}" map_topic="/map" global_costmap_topic="/global_costmap/costmap" local_costmap_topic="/local_costmap/costmap" local_clear_service="/local_costmap/clear_entirely_local_costmap" global_clear_service="/global_costmap/clear_entirely_global_costmap" cleanup_service="/rtabmap/cleanup_local_grids" initial_dwell_s="12.0" second_dwell_s="12.0" poll_interval_s="2.0" max_pre_cleanup_polls="6" max_post_cleanup_polls="6" clear_radius_m="0.30" bbox_padding_m="0.05" observed_min_radius_m="0.15" observed_padding_m="0.05" observed_center_max_gap_m="0.15" map_lethal_threshold="100" costmap_lethal_threshold="90" max_lethal_fraction="0.15" max_lethal_cells="1" min_observed_cells="8" require_fresh_costmaps="true" required_post_cleanup_clear_samples="2" cleanup_local_grids="true" cleanup_radius_cells="1" cleanup_filter_scans="false" service_ready_timeout_ms="2000" service_response_timeout_ms="30000" fresh_costmap_timeout_ms="5000" fresh_map_timeout_ms="10000" cleanup_modified="{cleanup_modified}" clearance_status="{clearance_status}" />
+                <ClearEntireCostmap name="ClearGlobalClearObject" service_name="global_costmap/clear_entirely_global_costmap" />
+                <ClearEntireCostmap name="ClearLocalClearObject" service_name="local_costmap/clear_entirely_local_costmap" />
               </Sequence>
-
               <ForceFailure name="UnusedOperatorCase">
-                <AlwaysSuccess/>
+                <AlwaysSuccess />
               </ForceFailure>
-
               <ForceFailure name="UnexpectedDirective">
-                <AlwaysSuccess/>
+                <AlwaysSuccess />
               </ForceFailure>
             </Switch3>
           </Switch3>

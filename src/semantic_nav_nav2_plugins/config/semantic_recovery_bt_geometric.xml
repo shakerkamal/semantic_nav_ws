@@ -16,51 +16,70 @@
 
       <!-- ===== Primary child: validate, replan continuously, follow ===== -->
       <PipelineSequence name="NavigateWithValidation">
+        <ValidateSemantic 
+          service_name="/validate_pose_goal" 
+          server_timeout="10000" 
+          goal_pose="{goal}" 
+          validation_reason="{validation_reason}" />
 
-          <ValidateSemantic
-              service_name="/validate_pose_goal"
-              server_timeout="10000"
-              goal_pose="{goal}"
-              validation_reason="{validation_reason}"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <ComputePathToPose 
+              goal="{goal}" 
+              path="{path}" 
+              planner_id="GridBased" />
 
-          <RateController hz="1.0">
-              <RecoveryNode number_of_retries="1" name="ComputePathToPose">
-              <ComputePathToPose
-                  goal="{goal}"
-                  path="{path}"
-                  planner_id="GridBased"/>
-
-              <ClearEntireCostmap
-                  name="ClearGlobalCostmap-Context"
-                  service_name="global_costmap/clear_entirely_global_costmap"/>
-              </RecoveryNode>
-          </RateController>
-
-          <PathClearCondition
-              name="PersistentBlockageGate"
-              path="{path}"
-              lookahead_m="1.5"
-              lethal_threshold="90"
-              debounce_ticks="2"
-              sample_radius_m="0.05"
-              min_blocked_length_m="0.45"
-              min_blocked_samples="4"
-              blocked_fraction_threshold="0.30"
-              allow_geometric_detour_first="true"
-              plan_topic="/plan"
-              local_costmap_topic="/local_costmap/costmap"
-              blockage_centroid="{blockage_centroid}"
-              blockage_extent_m="{blockage_extent_m}"/>
-
-          <RecoveryNode number_of_retries="1" name="FollowPath">
-              <FollowPath
-                  path="{path}"
-                  controller_id="FollowPath"/>
-
-              <ClearEntireCostmap
-                  name="ClearLocalCostmap-Context"
-                  service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap 
+              name="ClearGlobalCostmap-Context" 
+              service_name="global_costmap/clear_entirely_global_costmap" />
           </RecoveryNode>
+        </RateController>
+
+        <PathClearCondition 
+          name="PersistentBlockageGate" path="{path}" 
+          lookahead_m="1.5" 
+          lethal_threshold="90" 
+          debounce_ticks="2" 
+          sample_radius_m="0.05" 
+          min_blocked_length_m="0.45" 
+          min_blocked_samples="4" 
+          blocked_fraction_threshold="0.30" 
+          allow_geometric_detour_first="true" 
+          plan_topic="/plan" 
+          local_costmap_topic="/local_costmap/costmap" 
+          blockage_centroid="{blockage_centroid}" 
+          blockage_extent_m="{blockage_extent_m}" />
+
+        <ReactiveSequence name="MonitorAndFollowPath">
+          <PersistentNoProgressCondition 
+            name="DetectPersistentExecutionStall" 
+            path="{path}" 
+            goal="{goal}" 
+            observation_window_s="8.0" 
+            minimum_progress_m="0.10" 
+            obstacle_persistence_s="2.0" 
+            obstacle_lookahead_m="1.5" 
+            path_sample_radius_m="0.20" 
+            forward_lateral_tolerance_m="0.40" 
+            min_forward_distance_m="0.15" 
+            min_lethal_cells="3" 
+            lethal_threshold="90" 
+            local_costmap_topic="/local_costmap/costmap" 
+            global_frame="map" 
+            robot_base_frame="base_footprint" 
+            blockage_centroid="{blockage_centroid}" 
+            blockage_extent_m="{blockage_extent_m}" 
+            no_progress_elapsed_s="{no_progress_elapsed_s}" 
+            monitor_status="{execution_monitor_status}" />
+          <RecoveryNode number_of_retries="1" name="FollowPath">
+            <FollowPath 
+              path="{path}" 
+              controller_id="FollowPath" />
+            <ClearEntireCostmap 
+              name="ClearLocalCostmap-Context" 
+              service_name="local_costmap/clear_entirely_local_costmap" />
+          </RecoveryNode>
+        </ReactiveSequence>
 
       </PipelineSequence>
 
