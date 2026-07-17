@@ -10,7 +10,7 @@ RequestRecovery.Response at the ROS boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, Collection, Optional, Tuple
 
 
 # Pure-test representation:
@@ -208,6 +208,7 @@ def build_give_up_directive(
     proposal: LLMProposal,
     context: ProposalContext,
     overrides: OverrideConfig,
+    eligible_actions: Collection[str],
 ) -> Directive:
     """Build terminal give_up or a bounded deterministic wait override.
 
@@ -217,6 +218,12 @@ def build_give_up_directive(
         responsible_safety_class in {"human", "animal"}
         OR responsible_object_state == "semi-static"
       )
+      AND "wait_then_replan" is in eligible_actions
+
+    The eligibility gate is mandatory (S3 2026-07-17): when the policy has
+    already reduced the eligible set to give_up only, the override must not
+    resurrect an action the policy ruled out -- it exists to catch a timid
+    LLM, not to overrule eligibility.
 
     No internal LLM re-prompt is performed.
     """
@@ -226,8 +233,11 @@ def build_give_up_directive(
     is_living_obstacle = safety_class in {"human", "animal"}
     is_semistatic = object_state == "semi-static"
     first_attempt = int(context.attempts_used) < 1
+    wait_is_eligible = "wait_then_replan" in {
+        str(action).strip() for action in eligible_actions
+    }
 
-    if first_attempt and (is_living_obstacle or is_semistatic):
+    if first_attempt and wait_is_eligible and (is_living_obstacle or is_semistatic):
         if is_living_obstacle:
             return Directive(
                 action="wait_then_replan",
@@ -267,6 +277,36 @@ def build_give_up_directive(
         confidence_percent=int(proposal.confidence_percent),
         escalate_to_operator=True,
         recovery_event_id=context.recovery_event_id,
+    )
+
+
+def enforce_directive_eligibility(
+    directive: Directive,
+    eligible_actions: Collection[str],
+) -> Directive:
+    """Final policy invariant before the directive leaves the orchestrator.
+
+    No layer between eligibility filtering and the BT response may issue an
+    action outside the eligible set (S3 2026-07-17: selected give_up became
+    a built wait_then_replan). An ineligible directive is converted into a
+    terminal give_up carrying an explicit policy-violation rationale; it is
+    never silently downgraded to some other action.
+    """
+    eligible = {str(action).strip() for action in eligible_actions}
+
+    if directive.action in eligible:
+        return directive
+
+    return Directive(
+        action="give_up",
+        rationale=(
+            "policy_violation=directive_not_eligible "
+            f"built_action={directive.action} "
+            f"eligible={sorted(eligible)}"
+        ),
+        confidence_percent=int(directive.confidence_percent),
+        escalate_to_operator=True,
+        recovery_event_id=directive.recovery_event_id,
     )
 
 

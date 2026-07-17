@@ -270,6 +270,7 @@ def test_give_up_terminal_when_attempts_already_used():
         proposal,
         _ctx(safety_class="human", attempts_used=2),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "give_up"
@@ -289,6 +290,7 @@ def test_give_up_terminal_when_no_safe_class_or_state():
         proposal,
         _ctx(safety_class="none", object_state="static", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "give_up"
@@ -307,6 +309,7 @@ def test_give_up_terminal_when_safety_class_has_whitespace_but_attempt_used():
         proposal,
         _ctx(safety_class=" Human ", attempts_used=1),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "give_up"
@@ -324,6 +327,7 @@ def test_give_up_converted_to_wait_for_human_on_first_attempt():
         proposal,
         _ctx(safety_class="human", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "wait_then_replan"
@@ -346,6 +350,7 @@ def test_give_up_converted_to_wait_for_animal_on_first_attempt():
         proposal,
         _ctx(safety_class=" Animal ", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "wait_then_replan"
@@ -366,6 +371,7 @@ def test_give_up_converted_to_passive_wait_for_semi_static():
         proposal,
         _ctx(safety_class="none", object_state="semi-static", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "wait_then_replan"
@@ -388,6 +394,7 @@ def test_give_up_converted_to_passive_wait_for_semistatic_with_whitespace():
         proposal,
         _ctx(safety_class="none", object_state=" Semi-Static ", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "wait_then_replan"
@@ -406,6 +413,7 @@ def test_give_up_uses_default_rationale_when_empty():
         proposal,
         _ctx(safety_class="none", object_state="static", attempts_used=0),
         overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
     )
 
     assert directive.action == "give_up"
@@ -487,3 +495,104 @@ def test_approach_directive_without_standoff_gives_up():
     )
     assert d.action == "give_up"
     assert d.escalate_to_operator is True
+
+
+def test_give_up_only_eligible_set_never_substitutes():
+    # S3 r1 (2026-07-17): eligible=['give_up'] (single_eligible), the LLM
+    # answered give_up @95 -- and the deterministic first-attempt semi-static
+    # override STILL issued wait_then_replan for an immovable partition,
+    # burning a full recovery round. When the policy already reduced the set
+    # to give_up only, the builder must not resurrect an ineligible action.
+    proposal = LLMProposal(
+        action="give_up",
+        rationale="Blocked by a room partition; no safe recovery.",
+        confidence_percent=95,
+    )
+
+    directive = build_give_up_directive(
+        proposal,
+        _ctx(safety_class="none", object_state="semi-static", attempts_used=0),
+        overrides=_overrides(),
+        eligible_actions=("give_up",),
+    )
+
+    assert directive.action == "give_up"
+    assert directive.escalate_to_operator is True
+
+
+def test_substitution_requires_wait_in_eligible_set():
+    proposal = LLMProposal(
+        action="give_up",
+        rationale="LLM gave up early.",
+        confidence_percent=70,
+    )
+
+    directive = build_give_up_directive(
+        proposal,
+        _ctx(safety_class="human", attempts_used=0),
+        overrides=_overrides(),
+        eligible_actions=("clear_object_then_replan", "give_up"),
+    )
+
+    assert directive.action == "give_up"
+
+
+def test_substitution_still_permitted_when_wait_is_eligible():
+    proposal = LLMProposal(
+        action="give_up",
+        rationale="LLM gave up early.",
+        confidence_percent=70,
+    )
+
+    directive = build_give_up_directive(
+        proposal,
+        _ctx(safety_class="human", attempts_used=0),
+        overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
+    )
+
+    assert directive.action == "wait_then_replan"
+    assert directive.emit_signal_during_wait is True
+
+
+def test_enforce_directive_eligibility_passes_eligible_directive():
+    from semantic_nav_orchestrator.recovery_directives import (
+        enforce_directive_eligibility,
+    )
+
+    proposal = LLMProposal(
+        action="give_up", rationale="x", confidence_percent=50
+    )
+    directive = build_give_up_directive(
+        proposal,
+        _ctx(safety_class="human", attempts_used=0),
+        overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
+    )
+
+    unchanged = enforce_directive_eligibility(
+        directive, ("wait_then_replan", "give_up")
+    )
+    assert unchanged is directive
+
+
+def test_enforce_directive_eligibility_converts_ineligible_to_terminal():
+    from semantic_nav_orchestrator.recovery_directives import (
+        enforce_directive_eligibility,
+    )
+
+    proposal = LLMProposal(
+        action="give_up", rationale="x", confidence_percent=50
+    )
+    directive = build_give_up_directive(
+        proposal,
+        _ctx(safety_class="human", attempts_used=0),
+        overrides=_overrides(),
+        eligible_actions=("wait_then_replan", "give_up"),
+    )
+    assert directive.action == "wait_then_replan"
+
+    fixed = enforce_directive_eligibility(directive, ("give_up",))
+    assert fixed.action == "give_up"
+    assert fixed.escalate_to_operator is True
+    assert "directive_not_eligible" in fixed.rationale

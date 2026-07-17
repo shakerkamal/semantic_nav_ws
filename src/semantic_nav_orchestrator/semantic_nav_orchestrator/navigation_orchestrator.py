@@ -76,6 +76,7 @@ from semantic_nav_orchestrator.recovery_directives import (
     OverrideConfig,
     ProposalContext,
     build_give_up_directive,
+    enforce_directive_eligibility,
     build_open_door_directive,
     build_clear_object_directive,
     build_retry_target_directive,
@@ -3633,16 +3634,21 @@ class NavigationOrchestrator(Node):
             trigger=trigger,
             recovery_event_id=recovery_event_id,
         )
+        eligible = self._eligible_for_trigger(trigger)
 
         if not proposal.success:
-            return build_give_up_directive(
-                directive_proposal,
-                context,
-                overrides=OverrideConfig(
-                    signal_attempts_default=self._signal_attempts_default,
-                    short_signal_wait_seconds=self._short_signal_wait_seconds,
-                    passive_wait_seconds_default=self._passive_wait_seconds_default,
+            return self._finalize_bt_directive(
+                build_give_up_directive(
+                    directive_proposal,
+                    context,
+                    overrides=OverrideConfig(
+                        signal_attempts_default=self._signal_attempts_default,
+                        short_signal_wait_seconds=self._short_signal_wait_seconds,
+                        passive_wait_seconds_default=self._passive_wait_seconds_default,
+                    ),
+                    eligible_actions=eligible,
                 ),
+                eligible,
             )
 
         # M4 filter-not-policy (spec 21.3): the LLM selects among the eligible
@@ -3650,7 +3656,6 @@ class NavigationOrchestrator(Node):
         # No forced open_door/clear_object overrides -- those are eligible
         # actions the LLM selects (or the priority default falls back to).
         aff = self._trigger_to_affordances(trigger)
-        eligible = self._eligible_for_trigger(trigger)
         selection = select_and_override_directive(
             eligible, proposal.action, aff, has_reachable_standoff=False
         )
@@ -3671,26 +3676,35 @@ class NavigationOrchestrator(Node):
 
         if selection.action == "retry_target":
             _, _, blocked_key = self._bt_request_object_context(request)
-            return build_retry_target_directive(
-                directive_proposal,
-                context,
-                resolver=lambda tag, hint: self._resolve_target_for_directive(
-                    tag, hint, exclude_object_key=blocked_key
+            return self._finalize_bt_directive(
+                build_retry_target_directive(
+                    directive_proposal,
+                    context,
+                    resolver=lambda tag, hint: self._resolve_target_for_directive(
+                        tag, hint, exclude_object_key=blocked_key
+                    ),
                 ),
+                eligible,
             )
 
         if selection.action == "open_door_then_replan":
-            return build_open_door_directive(
-                directive_proposal,
-                context,
-                responsible_object_key=trigger.responsible_object_key or "",
+            return self._finalize_bt_directive(
+                build_open_door_directive(
+                    directive_proposal,
+                    context,
+                    responsible_object_key=trigger.responsible_object_key or "",
+                ),
+                eligible,
             )
 
         if selection.action == "clear_object_then_replan":
-            return build_clear_object_directive(
-                directive_proposal,
-                context,
-                responsible_object_key=trigger.responsible_object_key or "",
+            return self._finalize_bt_directive(
+                build_clear_object_directive(
+                    directive_proposal,
+                    context,
+                    responsible_object_key=trigger.responsible_object_key or "",
+                ),
+                eligible,
             )
 
         if selection.action == "wait_then_replan":
@@ -3702,16 +3716,49 @@ class NavigationOrchestrator(Node):
                     directive_proposal,
                     wait_seconds=int(self._passive_wait_seconds_default),
                 )
-            return build_wait_then_replan_directive(
-                wait_proposal,
-                context,
-                signal_attempts_default=self._signal_attempts_default,
-                max_wait_seconds=self._max_wait_seconds,
+            return self._finalize_bt_directive(
+                build_wait_then_replan_directive(
+                    wait_proposal,
+                    context,
+                    signal_attempts_default=self._signal_attempts_default,
+                    max_wait_seconds=self._max_wait_seconds,
+                ),
+                eligible,
             )
 
         # give_up, plus any residual (e.g. approach_and_recheck, which is
         # up-front-only and never eligible on the en-route BT path).
-        return build_give_up_directive(directive_proposal, context, overrides=overrides)
+        return self._finalize_bt_directive(
+            build_give_up_directive(
+                directive_proposal,
+                context,
+                overrides=overrides,
+                eligible_actions=eligible,
+            ),
+            eligible,
+        )
+
+    def _finalize_bt_directive(self, directive, eligible):
+        """Final invariant: a BT directive must stay inside the eligible set.
+
+        give_up is additionally always a legal terminal (converting an
+        ineligible directive INTO give_up must itself be allowed). On a
+        violation, log all stages and return the terminal replacement --
+        never silently pass an ineligible action to the tree
+        (S3 2026-07-17: selected give_up was issued as wait_then_replan).
+        """
+        allowed = set(eligible) | {"give_up"}
+        final = enforce_directive_eligibility(directive, allowed)
+        if final is not directive:
+            self._log_stage_error(
+                "RECOVERY/BT",
+                (
+                    f"policy violation: built_directive_action="
+                    f"'{directive.action}' is outside eligible={eligible}; "
+                    "forcing terminal give_up"
+                ),
+            )
+        return final
 
     def _record_bt_directive_attempt(
         self,
@@ -4017,6 +4064,9 @@ class NavigationOrchestrator(Node):
                     short_signal_wait_seconds=self._short_signal_wait_seconds,
                     passive_wait_seconds_default=self._passive_wait_seconds_default,
                 ),
+                # Cap exhausted is terminal by definition: nothing but
+                # give_up is eligible, so the wait substitution cannot fire.
+                eligible_actions=("give_up",),
             )
 
             self._record_bt_directive_attempt(
@@ -4082,6 +4132,7 @@ class NavigationOrchestrator(Node):
                         short_signal_wait_seconds=self._short_signal_wait_seconds,
                         passive_wait_seconds_default=self._passive_wait_seconds_default,
                     ),
+                    eligible_actions=self._eligible_for_trigger(trigger),
                 )
 
                 self._record_bt_directive_attempt(
