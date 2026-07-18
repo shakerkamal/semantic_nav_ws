@@ -446,6 +446,37 @@ def test_scenarios_yaml_complete():
                 f"{name}: detector must publish perception only"
 
 
+def test_map_residual_lethal_count():
+    from map_residual_check import lethal_count
+    # 20x20 grid, 0.1 m/cell, origin (-1,-1). One lethal cell at world (0,0).
+    w = h = 20
+    res = 0.1
+    ox = oy = -1.0
+    data = [0] * (w * h)
+    cx_cell = int((0.0 - ox) / res)  # 10
+    cy_cell = int((0.0 - oy) / res)  # 10
+    data[cy_cell * w + cx_cell] = 100
+
+    # A window over (0,0) sees the lethal cell; unknown (-1) cells are counted
+    # separately and never as lethal.
+    data[cy_cell * w + cx_cell + 1] = -1
+    lethal, observed, unknown = lethal_count(
+        data, w, h, res, ox, oy, 0.0, 0.0, 0.25, 90)
+    assert lethal == 1
+    assert unknown == 1
+    assert observed >= 1
+
+    # A window far from the lethal cell reads clear.
+    lethal, _, _ = lethal_count(data, w, h, res, ox, oy, 0.7, 0.7, 0.15, 90)
+    assert lethal == 0
+
+    # Threshold gating: a 50-cost cell is not lethal at threshold 90.
+    data2 = [0] * (w * h)
+    data2[cy_cell * w + cx_cell] = 50
+    lethal, _, _ = lethal_count(data2, w, h, res, ox, oy, 0.0, 0.0, 0.25, 90)
+    assert lethal == 0
+
+
 def test_planar_dist():
     from enroute_common import planar_dist
     assert abs(planar_dist((0.0, 0.0), (3.0, 4.0)) - 5.0) < 1e-9

@@ -65,6 +65,24 @@ if [ "$SCEN" = "S2" ] || [ "$SCEN" = "S3" ]; then
   fi
 fi
 
+# Reappearing-obstacle / cross-rep accumulation gate: a residual blocker still
+# baked into /map at this scenario's spawn coordinate silently wedges the robot
+# in lethal space AFTER recovery has confirmed the barrier clear (S4 2026-07-18:
+# failed on S3's leftover chair at the shared -2.507,-1.350 gap, passed on a
+# fresh map). Refuse to start until /map reads free there -- forcing a fresh
+# map (relaunch + remap) before the rep.
+set +e
+python3 "$EVAL_DIR/map_residual_check.py" --scenario "$SCEN"
+RESIDUAL_RC=$?
+set -e
+if [ "$RESIDUAL_RC" = "2" ]; then
+  echo "ABORT: residual obstacle in /map at $SCEN's blocker coordinate."
+  echo "Relaunch and remap so the corridor reads free before this rep."
+  exit 1
+elif [ "$RESIDUAL_RC" = "3" ]; then
+  echo "WARN: could not read /map to verify the corridor is clear; proceeding."
+fi
+
 RUN_LOG=$(ls -t "$EVAL_DIR"/logs/*key.log | head -1)
 [ -n "$RUN_LOG" ] || {
   echo "no *key.log found — is the stack logging?"
