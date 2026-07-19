@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!-- Static stand-in for a clearable ball blocking the narrow partition gap.
+     Same sealing rationale as chair_scenario/person_scenario: the measured
+     costmap corridor is 0.75-0.80m free, so a smaller object leaves a
+     lethal-free channel SmacPlanner2D threads (robot wedges or slips past
+     without recovery). The stock aws_robomaker_residential_Ball_01 CANNOT be
+     used raw: it is NOT static and only 0.12kg, so the rover shoves/rolls it
+     aside on contact (S3 2026-07-19), and its 0.62m diameter is the size that
+     already failed to seal. This is a static 0.50m-radius sphere (1.0m across
+     the equator, ~0.87m at the rover camera height), visual AND collision so
+     the depth camera marks the full width, coloured like Ball_01. Semantic
+     identity ("ball", movable, clearable) comes from the mock ConceptGraph
+     detector, not this model. Spawned/deleted at runtime by the trigger. -->
+<sdf version="1.6">
+  <model name="ball_scenario">
+    <static>true</static>
+    <link name="body">
+      <collision name="seal">
+        <pose>0 0 0.50 0 0 0</pose>
+        <geometry><sphere><radius>0.50</radius></sphere></geometry>
+      </collision>
+      <visual name="seal">
+        <pose>0 0 0.50 0 0 0</pose>
+        <geometry><sphere><radius>0.50</radius></sphere></geometry>
+        <material><ambient>0.03 0.21 0.27 1</ambient><diffuse>0.12 0.76 0.97 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

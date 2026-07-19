@@ -57,30 +57,36 @@ scenarios:
       extent: [0.2, 0.9, 2.0]
     expected_directive: open_door_then_replan
 
-  S3:  # clearable chair seals the narrow gap — detected at encounter
-    goal_query: "bed:120"
-    nl_command: "I want to rest"
-    intent_hint: "sleeping or resting"
-    trigger: {axis: x, threshold: -1.0, direction: decreasing}
+  S3:  # clearable ball blocks the KITCHEN DOORWAY (S2's route) — detected at encounter
+    # Uses S2's validated doorway/route (goal refrigerator:6, trigger x>2.0
+    # east-bound, spawn at door:119 = 4.862,-0.677). Unlike the folding-partition
+    # gap, /map genuinely CLEARS at this doorway when the object is removed
+    # (S2 log: map(clear=true sem=1/169)), so map_confirmed_change can confirm and
+    # S3 becomes a true semantic-recovery success, not a fallback rescue. Only the
+    # blocker (clearable ball) and directive (clear_object) differ from S2.
+    goal_query: "refrigerator:6"
+    nl_command: "I am thirsty"
+    intent_hint: "getting a drink from the kitchen"
+    trigger: {axis: x, threshold: 2.0, direction: increasing}
     blocker:
-      entity: scenario_chair
+      entity: scenario_ball
       kind: sdf_file
-      # Sealing primitive, not the AWS ChairA_01 mesh: the mesh's DAE unit tag
-      # scales its physical footprint away from the reported bbox so it does
-      # not seal the gap and the robot wedges/slips past (S3 2026-07-17/18).
-      model: chair_scenario.sdf
-      pose: [-2.507, -1.350, 1.5708]
+      # Sealing primitive, NOT the raw AWS Ball_01: that model is non-static
+      # and 0.12kg (the rover rolls it aside) and only 0.62m (does not seal).
+      # ball_scenario.sdf is a static 1.0m sphere that seals the 0.9m doorway.
+      model: ball_scenario.sdf
+      pose: [4.8622, -0.6772, 0.0]
     delete_after_sec: 0.0
     detector:
-      object_key: "chair:901"
-      tag: chair
+      object_key: "ball:901"
+      tag: ball
       caption: >-
-        A wooden chair standing in the middle of the narrow passage between
-        the folding screens; it can be picked up and moved aside.
+        A large ball resting in the kitchen doorway near the refrigerator; it
+        can be picked up and moved aside.
       state: movable
-      # Matches the physical sealing cylinder (0.9m dia); reported slightly
-      # under so the computed standoff still lands outside it, mirroring S4.
-      extent: [0.7, 0.7, 0.85]
+      # Matches the physical sealing sphere (1.0m dia); reported slightly under
+      # so the computed standoff still lands outside it, mirroring S4.
+      extent: [0.7, 0.7, 0.7]
     expected_directive: clear_object_then_replan
 
   S4:  # animate obstacle in the gap; departs after matching robot signal

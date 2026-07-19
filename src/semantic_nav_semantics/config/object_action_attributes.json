@@ -14,6 +14,7 @@
     "window":       { "openable": false, "safety_class": "none",     "clearable": false },
 
     "chair":        { "openable": false, "safety_class": "none",     "clearable": true  },
+    "ball":         { "openable": false, "safety_class": "none",     "clearable": true  },
     "sofa chair":   { "openable": false, "safety_class": "none",     "clearable": true  },
     "stool":        { "openable": false, "safety_class": "none",     "clearable": true  },
     "bench":        { "openable": false, "safety_class": "none",     "clearable": true  },
