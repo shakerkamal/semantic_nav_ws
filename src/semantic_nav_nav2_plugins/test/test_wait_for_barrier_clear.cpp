@@ -134,6 +134,31 @@ TEST(WaitForBarrierClearTest, rawGateRequiresOnlyMapForMapConfirmedChange)
   EXPECT_TRUE(Node::rawGateSatisfied("track_confirmed_departure", false));
 }
 
+TEST(WaitForBarrierClearTest, preCleanupEligibilityDoesNotRequireGlobalClearance)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // Explicit intervention: /map and the fresh local costmap are sufficient
+  // to invoke cached-grid cleanup. The global costmap may contain the stale
+  // evidence that cleanup is intended to remove.
+  EXPECT_TRUE(Node::preCleanupSourcesReady(
+    "map_confirmed_change", true, true));
+
+  EXPECT_FALSE(Node::preCleanupSourcesReady(
+    "map_confirmed_change", false, true));
+
+  EXPECT_FALSE(Node::preCleanupSourcesReady(
+    "map_confirmed_change", true, false));
+
+  // Tracked departure was confirmed independently. The local costmap is the
+  // hard pre-cleanup occupancy gate.
+  EXPECT_TRUE(Node::preCleanupSourcesReady(
+    "track_confirmed_departure", false, true));
+
+  EXPECT_FALSE(Node::preCleanupSourcesReady(
+    "track_confirmed_departure", true, false));
+}
+
 TEST(WaitForBarrierClearTest, verifiedSourcesFollowClearanceMode)
 {
   using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;

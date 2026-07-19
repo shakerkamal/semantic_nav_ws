@@ -735,6 +735,22 @@ bool WaitForBarrierClear::rawGateSatisfied(
   return map_clear;
 }
 
+bool WaitForBarrierClear::preCleanupSourcesReady(
+  const std::string & clearance_mode,
+  bool map_clear,
+  bool local_clear)
+{
+  if (clearance_mode == "track_confirmed_departure") {
+    return local_clear;
+  }
+
+  // For explicit intervention, /map confirms that the physical object was
+  // removed and the fresh local costmap confirms immediate traversability.
+  // The global costmap may still contain the stale RTAB-Map evidence that
+  // cleanup_local_grids is intended to remove.
+  return map_clear && local_clear;
+}
+
 bool WaitForBarrierClear::verifiedSourcesClear(
   const std::string & clearance_mode,
   bool map_clear,
@@ -880,8 +896,8 @@ BT::NodeStatus WaitForBarrierClear::evaluatePreVerification()
   const auto map = mapMetrics();
   const auto global = globalMetrics(require_fresh_costmaps_);
   const auto local = localMetrics(require_fresh_costmaps_);
-  const bool clear = verifiedSourcesClear(
-    clearance_mode_, map.clear, global.clear, local.clear);
+  const bool clear = preCleanupSourcesReady(
+    clearance_mode_, map.clear, local.clear);
 
   RCLCPP_INFO(
     node_->get_logger(),
@@ -892,7 +908,7 @@ BT::NodeStatus WaitForBarrierClear::evaluatePreVerification()
     boolText(local.clear), boolText(local.fresh));
 
   if (clear) {
-    clearance_status_ = "raw_and_fresh_sources_clear";
+    clearance_status_ = "pre_cleanup_evidence_ready";
     publishOutputs(clearance_status_);
     if (clearance_mode_ == "track_confirmed_departure" &&
       map.clear && global.clear)
@@ -972,7 +988,8 @@ BT::NodeStatus WaitForBarrierClear::handleCleanupServiceWait()
   RCLCPP_INFO(
     node_->get_logger(),
     "[WaitForBarrierClear] cleanup_local_grids requested radius=%d "
-    "filter_scans=%s after raw and fresh map/global/local confirmation",
+    "filter_scans=%s after pre-cleanup evidence confirmation "
+    "(global occupancy may still be stale)",
     cleanup_radius_cells_, boolText(cleanup_filter_scans_));
   return BT::NodeStatus::RUNNING;
 }

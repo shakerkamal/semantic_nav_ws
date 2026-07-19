@@ -127,6 +127,23 @@ public:
     bool map_clear);
 
   /**
+   * @brief Evidence required before cached-grid cleanup may run.
+   *
+   * map_confirmed_change:
+   *   /map and the fresh local costmap must confirm clearance.
+   *   The global costmap is not required here because it may contain the
+   *   stale evidence that cleanup_local_grids is intended to remove.
+   *
+   * track_confirmed_departure:
+   *   departure was confirmed independently, so the fresh local costmap is
+   *   the hard pre-cleanup occupancy gate.
+   */
+  static bool preCleanupSourcesReady(
+    const std::string & clearance_mode,
+    bool map_clear,
+    bool local_clear);
+
+  /**
    * @brief Post-clear verification per evidence mode: Mode A requires all
    * three representations; Mode B hard-gates on the fresh LOCAL costmap only
    * (/map and global residuals are advisory -- rays through the vacated
