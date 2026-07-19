@@ -350,18 +350,86 @@ def test_unrelated_live_object_does_not_override_verified_static():
     assert result.match_type == "verified"
 
 
-def test_farther_live_object_does_not_override_nearer_static():
-    # Distance dominance: the live candidate must be at least as close to
-    # the blockage as the static winner's center, else static is retained
-    # even when the bboxes overlap.
+def _s3_doorway_door() -> ObjectCandidate:
+    # door:119 as logged in map_v002; center ~0.04mm off the spawned ball.
+    return ObjectCandidate(
+        object_key="door:119",
+        object_tag="door",
+        object_state="semi-static",
+        safety_class="none",
+        openable=True,
+        clearable=False,
+        bbox_center=(4.86223, -0.677227, 1.0),
+        bbox_extent=(0.2, 0.9, 2.0),
+        source="persistent_map",
+    )
+
+
+def _s3_doorway_ball(center=(4.8622, -0.6772, 0.0)) -> ObjectCandidate:
+    return ObjectCandidate(
+        object_key="ball:901",
+        object_tag="ball",
+        object_state="movable",
+        safety_class="none",
+        openable=False,
+        clearable=True,
+        bbox_center=center,
+        bbox_extent=(0.7, 0.7, 0.7),
+        source="dynamic_overlay",
+    )
+
+
+def test_s3_doorway_live_ball_overrides_colocated_static_door():
+    # S3 2026-07-19 doorway (the exact live numbers): the ball spawns on the
+    # static door:119. The near-face centroid (~0.73m south of center) misses
+    # the ball's 0.7 bbox but lands inside the door's long inflated bbox, so
+    # door:119 verified alone. The OLD 1e-6 "at least as close" epsilon
+    # rejected the ball because its center is ~0.04mm off the door's, making it
+    # 21 microns farther -> open_door instead of clear_object. The live
+    # clearable ball must take precedence; grounded in its OWN geometry.
+    result = match_responsible_object(
+        blockage_centroid=(4.768, -1.407, 0.0),
+        blockage_extent_m=0.600,
+        candidates=[_s3_doorway_door(), _s3_doorway_ball()],
+    )
+
+    assert result.responsible_object_key == "ball:901"
+    assert result.clearable is True
+    assert "live_static_colocation_precedence" in result.message
+
+
+def test_intersecting_live_object_that_does_not_explain_is_not_preferred():
+    # A live object whose bbox merely CLIPS the static winner's but whose own
+    # bbox + near-face margin does NOT contain the blockage centroid is a
+    # bystander, not the blocker: the static match is retained. (Replaces the
+    # old distance-dominance guard; the decision is now grounded in whether the
+    # live object independently explains the blockage, not in a comparison to
+    # the drift-prone static record's pose.)
     result = match_responsible_object(
         blockage_centroid=(-2.507, -1.350, 0.0),
         blockage_extent_m=0.2,
-        candidates=[_s3_partition(), _s3_chair(center=(-2.507, -2.2, 0.0))],
+        candidates=[_s3_partition(), _s3_chair(center=(-2.507, -2.0, 0.0))],
     )
 
     assert result.responsible_object_key == "room partition:121"
     assert result.match_type == "verified"
+
+
+def test_live_override_applies_in_the_nearest_fallback_branch():
+    # When NOTHING is verified-contained (centroid outside every inflated
+    # bbox) but the nearest candidate is a static record and a co-located live
+    # object independently explains the blockage, the fallback branch must also
+    # prefer the live object -- not just the verified branch (S3 doorway pass-1
+    # fell here and tie-broke to door:119).
+    result = match_responsible_object(
+        blockage_centroid=(4.8622, -1.2772, 0.0),
+        blockage_extent_m=0.150,
+        candidates=[_s3_doorway_door(), _s3_doorway_ball()],
+    )
+
+    assert result.responsible_object_key == "ball:901"
+    assert result.match_type == "inferred"
+    assert "live_static_colocation_precedence" in result.message
 
 
 def test_multiple_qualifying_live_objects_is_ambiguous():

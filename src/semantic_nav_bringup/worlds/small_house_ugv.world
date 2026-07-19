@@ -275,7 +275,7 @@
         <include>
             <uri>model://aws_robomaker_residential_FoldingDoor_01</uri>
         </include>
-        <pose frame=''>-2.461096 -3.114640 0.041881 0 -0 0</pose>
+        <pose frame=''>-2.461096 -3.069318 0.041881 0 -0 0</pose>
 	</model>
 	<model name='Handle_01_001'>
         <static>true</static>    
