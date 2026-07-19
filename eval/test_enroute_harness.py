@@ -676,3 +676,82 @@ def test_parse_trial_needs_operator():
     assert row["db_version"] == "3498918824"
     assert abs(row["time_to_resolution_s"] - 21.042) < 0.1
     assert row["code_commit"] == "625d2e2"
+    # S1 (expected 'none') tests that NO semantic recovery was needed.
+    assert row["semantic_recovery_success"] == ""
+    assert row["outer_fallback_after_semantic_failure"] is False
+
+
+# THE BURNING ISSUE: a correct LLM directive + completed operator action, but
+# WaitForBarrierClear FAILED and the outer backup/replan reached the goal. A
+# final REACHED must NOT be reported as a semantic-recovery success.
+FIXTURE_SEMANTIC_FAILED_FALLBACK_REACHED = """\
+[TRIAL] scenario=S3 variant=bllm rep=1 commit=deadbee start=1784400000
+[navigation_orchestrator-25] [INFO] [1784400010.0] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='bed:120', db_version=42, db_stamp=1.0): frame='map', x=-4.8, y=2.0
+[navigation_orchestrator-25] [INFO] [1784400020.0] [navigation_orchestrator]: [RECOVERY/OBJECT] /match_responsible_object: candidates=6, success=True, match_type='verified', responsible_object_key='chair:901', tag='chair', state='movable', safety_class='none', openable=False, clearable=True, message='verified dynamic-preferred nearest of 1 live-perceived match(es) (of 2 total)'
+[navigator_node-24] [WARN] [1784400021.0] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='bed:120', failure_stage='execution', trigger_source='bt_recovery_plugin', match_type='verified', responsible_object_key='chair:901', remaining_retry_budget=3
+[navigation_orchestrator-25] [INFO] [1784400022.0] [navigation_orchestrator]: [RECOVERY/BT] BT proposal response: success=True, action='clear_object_then_replan', target_object_tag='', confidence=90, message='ok'
+[bt_navigator-14] [INFO] [1784400023.0] [bt_navigator]: OperatorPrompt] action_completed token='tok|chair:901|clear_object_then_replan'
+[bt_navigator-14] [WARN] [1784400035.0] [bt_navigator]: [WaitForBarrierClear] raw live occupancy remained blocked or unconfirmed after 6 poll(s); cleanup was not called
+[behavior_server-13] [INFO] [1784400040.0] [behavior_server]: Running backup
+[navigation_orchestrator-25] [INFO] [1784400055.0] [navigation_orchestrator]: [EXECUTION] Executor finished with status=SUCCEEDED(4), success=True, object_key='bed:120', db_version=42, db_stamp=1.0, message='ok'
+response:
+semantic_nav_interfaces.srv.NavigateToQuery_Response(success=True, outcome='REACHED', failure_reason='', reached_target='bed:120')
+[TRIAL] end=1784400056
+"""
+
+
+def test_parse_trial_semantic_failure_rescued_by_fallback():
+    from enroute_ablation import parse_trial
+    row = parse_trial(
+        FIXTURE_SEMANTIC_FAILED_FALLBACK_REACHED,
+        expected_directive="clear_object_then_replan",
+        expected_object="chair:901")
+    # Navigation DID reach the target, and the directive/object were correct...
+    assert row["navigation_success"] is True
+    assert row["directive_correct"] is True
+    assert row["responsible_object_correct"] is True
+    assert row["operator_action_completed"] is True
+    # ...but the semantic branch's barrier gate never succeeded.
+    assert row["barrier_clear_succeeded"] is False
+    assert row["semantic_branch_completed"] is False
+    # So this is a fallback rescue, NOT a semantic-recovery success.
+    assert row["outer_fallback_after_semantic_failure"] is True
+    assert row["semantic_recovery_success"] is False
+
+
+# A genuine end-to-end semantic recovery (S4-style tracked departure): correct
+# object, correct directive, departure confirmed, cleanup ran, barrier gate
+# succeeded, target reached.
+FIXTURE_SEMANTIC_SUCCESS = """\
+[TRIAL] scenario=S4 variant=bllm rep=1 commit=cafef00 start=1784410000
+[navigation_orchestrator-25] [INFO] [1784410010.0] [navigation_orchestrator]: [EXECUTION] Sending goal to execute_pose action server (object_key='bed:120', db_version=7, db_stamp=1.0): frame='map', x=-4.8, y=2.0
+[navigation_orchestrator-25] [INFO] [1784410020.0] [navigation_orchestrator]: [RECOVERY/OBJECT] /match_responsible_object: candidates=6, success=True, match_type='verified', responsible_object_key='person:902', tag='person', state='movable', safety_class='human', openable=False, clearable=False, message='verified dynamic-preferred nearest of 1 live-perceived match(es) (of 2 total)'
+[navigator_node-24] [WARN] [1784410021.0] [navigator_node]: [RECOVERY] LLM recovery invoked. original_target='bed:120', failure_stage='execution', trigger_source='bt_recovery_plugin', match_type='verified', responsible_object_key='person:902', remaining_retry_budget=3
+[navigation_orchestrator-25] [INFO] [1784410022.0] [navigation_orchestrator]: [RECOVERY/BT] BT proposal response: success=True, action='wait_then_replan', target_object_tag='', confidence=70, message='ok'
+[bt_navigator-14] [INFO] [1784410030.0] [bt_navigator]: [WaitForDynamicObstacleDeparture] key='person:902' blocking=false evidence=object_absent clear_streak=3/3
+[bt_navigator-14] [INFO] [1784410035.0] [bt_navigator]: [WaitForBarrierClear] cleanup_local_grids completed modified=62
+[bt_navigator-14] [INFO] [1784410040.0] [bt_navigator]: [WaitForBarrierClear] barrier clear and stabilized; replanning allowed
+[navigation_orchestrator-25] [INFO] [1784410055.0] [navigation_orchestrator]: [EXECUTION] Executor finished with status=SUCCEEDED(4), success=True, object_key='bed:120', db_version=7, db_stamp=1.0, message='ok'
+response:
+semantic_nav_interfaces.srv.NavigateToQuery_Response(success=True, outcome='REACHED', failure_reason='', reached_target='bed:120')
+[TRIAL] end=1784410056
+"""
+
+
+def test_parse_trial_genuine_semantic_success():
+    from enroute_ablation import parse_trial
+    row = parse_trial(
+        FIXTURE_SEMANTIC_SUCCESS,
+        expected_directive="wait_then_replan",
+        expected_object="person:902")
+    assert row["responsible_object_key"] == "person:902"
+    assert row["responsible_match_type"] == "verified"
+    assert row["responsible_object_correct"] is True
+    assert row["departure_confirmed"] is True
+    assert row["cleanup_invoked"] is True
+    assert row["cleanup_modified_count"] == 62
+    assert row["barrier_clear_succeeded"] is True
+    assert row["semantic_branch_completed"] is True
+    assert row["outer_fallback_after_semantic_failure"] is False
+    assert row["navigation_success"] is True
+    assert row["semantic_recovery_success"] is True

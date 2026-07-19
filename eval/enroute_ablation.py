@@ -46,6 +46,28 @@ REDIRECT = re.compile(
 BACKUP = re.compile(r"Running backup")
 DETECT = re.compile(r"\[MOCK_DETECTOR\] dist=([0-9.]+)")
 
+# Semantic-branch evidence markers. A final REACHED response is NOT proof the
+# semantic recovery branch succeeded -- the outer Nav2 fallback (backup/replan)
+# can reach the goal after WaitForBarrierClear/departure failed. These let the
+# parser separate a genuine end-to-end semantic-recovery success from a
+# navigation success that a geometric fallback rescued.
+MATCH_OBJECT = re.compile(
+    r"/match_responsible_object: candidates=\d+, success=(True|False),"
+    r" match_type='([^']*)', responsible_object_key='([^']*)'")
+OPERATOR_DONE = re.compile(r"OperatorPrompt\] action_completed token='([^']*)'")
+DEPARTURE_OK = re.compile(
+    r"\[WaitForDynamicObstacleDeparture\].*?blocking=false"
+    r".*?clear_streak=(\d+)/(\d+)")
+CLEANUP_DONE = re.compile(
+    r"\[WaitForBarrierClear\] cleanup_local_grids completed modified=(-?\d+)")
+BARRIER_OK = re.compile(
+    r"\[WaitForBarrierClear\] barrier clear and stabilized")
+
+# Directives whose semantic branch funnels through an intervention + the
+# WaitForBarrierClear gate (so both must succeed for a real semantic recovery).
+BARRIER_DIRECTIVES = frozenset(
+    {"open_door_then_replan", "clear_object_then_replan", "wait_then_replan"})
+
 REAPPROACH_NEAR_M = 1.5
 
 
@@ -67,7 +89,8 @@ def _reapproach_count(dists, near=REAPPROACH_NEAR_M):
     return count
 
 
-def parse_trial(text: str, expected_directive: str) -> dict:
+def parse_trial(
+    text: str, expected_directive: str, expected_object: str = "") -> dict:
     lines = text.splitlines()
     meta = TRIAL.search(text)
     if not meta:
@@ -85,6 +108,15 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     llm_responses = []
     backups = 0
     dists = []
+    # Semantic-branch evidence (see marker regexes above).
+    saw_match = False
+    resp_key = ""
+    resp_match_type = ""
+    operator_done = False
+    departure_confirmed = False
+    barrier_succeeded = False
+    cleanup_invoked = False
+    cleanup_count = ""
 
     for ln in lines:
         s = _stamp(ln)
@@ -115,6 +147,23 @@ def parse_trial(text: str, expected_directive: str) -> dict:
         m = DETECT.search(ln)
         if m:
             dists.append(float(m.group(1)))
+        m = MATCH_OBJECT.search(ln)
+        if m:
+            saw_match = True
+            if m.group(1) == "True":
+                resp_match_type = m.group(2)
+                resp_key = m.group(3)
+        if OPERATOR_DONE.search(ln):
+            operator_done = True
+        m = DEPARTURE_OK.search(ln)
+        if m and m.group(1) == m.group(2):
+            departure_confirmed = True
+        m = CLEANUP_DONE.search(ln)
+        if m:
+            cleanup_invoked = True
+            cleanup_count = int(m.group(1))
+        if BARRIER_OK.search(ln):
+            barrier_succeeded = True
 
     directive = directives[0] if directives else "none"
     if directives:
@@ -166,16 +215,66 @@ def parse_trial(text: str, expected_directive: str) -> dict:
     elif t_dispatch is not None and t_last is not None:
         resolution = round(t_last - t_dispatch, 3)
 
+    directive_correct = ((directive == expected_directive)
+                         if directive != "none" or expected_directive == "none"
+                         else False)
+    nav_success = outcome in (
+        "original-target-reached", "intent-preserving-alternative")
+    directive_issued = bool(directives)
+    semantic_triggered = saw_match or directive_issued or bool(llm_invocations)
+
+    responsible_object_correct = (
+        (resp_key == expected_object) if expected_object else "")
+
+    requires_barrier = expected_directive in BARRIER_DIRECTIVES
+    intervention_ok = (
+        (operator_done or departure_confirmed) if requires_barrier else True)
+    if requires_barrier:
+        branch_completed = barrier_succeeded
+    elif expected_directive == "retry_target":
+        branch_completed = bool(redirected_tag) and nav_success
+    else:
+        branch_completed = ""  # not applicable (e.g. S1 transient control)
+
+    # The burning-issue flag: the semantic branch failed but navigation still
+    # reached the goal, i.e. the outer geometric fallback rescued it.
+    outer_fallback = bool(
+        directive_issued and nav_success and branch_completed is False)
+
+    # End-to-end semantic-recovery success requires EVERY link, not a final
+    # REACHED alone: correct object AND correct directive AND the required
+    # intervention/departure AND the barrier gate AND navigation reached target.
+    if expected_directive == "none":
+        semantic_recovery_success = ""  # S1 tests that NO recovery was needed
+    else:
+        object_ok = responsible_object_correct if expected_object else True
+        barrier_ok = barrier_succeeded if requires_barrier else True
+        semantic_recovery_success = bool(
+            nav_success and directive_correct and object_ok
+            and intervention_ok and barrier_ok)
+
     return {
         "scenario": scenario,
         "variant": variant,
         "rep": int(rep),
         "terminal_outcome": outcome,
         "resolving_tier": tier,
+        "semantic_recovery_triggered": semantic_triggered,
+        "responsible_object_key": resp_key,
+        "responsible_match_type": resp_match_type,
+        "responsible_object_correct": responsible_object_correct,
+        "directive_issued": directive_issued,
         "directive_chosen": directive,
-        "directive_correct": (directive == expected_directive)
-                             if directive != "none" or expected_directive == "none"
-                             else False,
+        "directive_correct": directive_correct,
+        "operator_action_completed": operator_done,
+        "departure_confirmed": departure_confirmed,
+        "cleanup_invoked": cleanup_invoked,
+        "cleanup_modified_count": cleanup_count,
+        "barrier_clear_succeeded": barrier_succeeded,
+        "semantic_branch_completed": branch_completed,
+        "outer_fallback_after_semantic_failure": outer_fallback,
+        "navigation_success": nav_success,
+        "semantic_recovery_success": semantic_recovery_success,
         "target_object_tag": redirected_tag or target_tag,
         "recovery_cycles": backups,
         "llm_calls": len(llm_invocations),
@@ -190,15 +289,17 @@ def parse_trial(text: str, expected_directive: str) -> dict:
 
 def main() -> None:
     with open(os.path.join(EVAL_DIR, "enroute_scenarios.yaml")) as f:
-        gt = {name: sc["expected_directive"]
-              for name, sc in yaml.safe_load(f)["scenarios"].items()}
+        scenarios = yaml.safe_load(f)["scenarios"]
+    gt = {name: sc["expected_directive"] for name, sc in scenarios.items()}
+    gt_obj = {name: (sc.get("detector") or {}).get("object_key", "") or ""
+              for name, sc in scenarios.items()}
     paths = sys.argv[1:] or sorted(
         glob.glob(os.path.join(EVAL_DIR, "logs", "enroute_*.log")))
     rows = []
     for path in paths:
         text = open(path).read()
         scenario = TRIAL.search(text).group(1)
-        rows.append(parse_trial(text, gt[scenario]))
+        rows.append(parse_trial(text, gt[scenario], gt_obj.get(scenario, "")))
     out = os.path.join(EVAL_DIR, "enroute_ablation_results.csv")
     with open(out, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
