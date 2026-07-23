@@ -298,7 +298,13 @@ def main() -> None:
     rows = []
     for path in paths:
         text = open(path).read()
-        scenario = TRIAL.search(text).group(1)
+        meta = TRIAL.search(text)
+        if not meta:
+            # Not a trial log -- session/*.key.log files also match the glob.
+            continue
+        scenario = meta.group(1)
+        if scenario not in gt:
+            continue
         rows.append(parse_trial(text, gt[scenario], gt_obj.get(scenario, "")))
     out = os.path.join(EVAL_DIR, "enroute_ablation_results.csv")
     with open(out, "w", newline="") as f:

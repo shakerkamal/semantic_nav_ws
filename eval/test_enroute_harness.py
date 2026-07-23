@@ -477,6 +477,43 @@ def test_map_residual_lethal_count():
     assert lethal == 0
 
 
+def test_ablation_summary_aggregates_by_cell():
+    from enroute_summary import AblationSummary
+
+    def row(scen, var, sem, nav, direc, fb, tier, out, t, commit):
+        return {
+            "scenario": scen, "variant": var, "semantic_recovery_success": sem,
+            "navigation_success": nav, "directive_correct": direc,
+            "outer_fallback_after_semantic_failure": fb, "resolving_tier": tier,
+            "terminal_outcome": out, "time_to_resolution_s": t,
+            "code_commit": commit,
+        }
+    rows = [
+        row("S3", "bllm", "True", "True", "True", "False", "T3",
+            "original-target-reached", "50", "x-g90d741e"),
+        row("S3", "bllm", "False", "True", "True", "True", "T3",
+            "original-target-reached", "60", "x-g90d741e"),
+        row("S3", "bgeo", "False", "False", "False", "False", "T2",
+            "needs-operator", "25", "x-g90d741e"),
+        row("S1", "bllm", "", "True", "True", "False", "none",
+            "original-target-reached", "20", "x-gef04f6e"),
+    ]
+    cells = {(c["scenario"], c["variant"]): c
+             for c in AblationSummary(rows).summary()}
+    assert cells[("S3", "bllm")]["N"] == 2
+    assert cells[("S3", "bllm")]["sem_success"] == "1/2"   # one True, one False
+    assert cells[("S3", "bllm")]["fallback"] == 1
+    assert cells[("S3", "bgeo")]["sem_success"] == "0/1"
+    assert cells[("S3", "bgeo")]["outcome"] == "needs-operator"
+    assert cells[("S1", "bllm")]["sem_success"] == "n/a"   # control: N/A
+    # A cell whose reps disagree must be flagged for a tiebreak.
+    warns = AblationSummary(rows).warnings()
+    assert any("S3/bllm" in w and "tiebreak" in w for w in warns)
+    # An n/a control cell must NOT be mistaken for a divergence (the '/' in
+    # 'n/a' once tripped the check).
+    assert not any("S1/bllm" in w and "diverges" in w for w in warns)
+
+
 def test_planar_dist():
     from enroute_common import planar_dist
     assert abs(planar_dist((0.0, 0.0), (3.0, 4.0)) - 5.0) < 1e-9
