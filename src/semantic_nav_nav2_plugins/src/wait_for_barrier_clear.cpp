@@ -754,13 +754,21 @@ bool WaitForBarrierClear::preCleanupSourcesReady(
 bool WaitForBarrierClear::verifiedSourcesClear(
   const std::string & clearance_mode,
   bool map_clear,
-  bool global_clear,
+  bool /*global_clear*/,
   bool local_clear)
 {
   if (clearance_mode == "track_confirmed_departure") {
     return local_clear;
   }
-  return map_clear && global_clear && local_clear;
+  // Explicit intervention: /map confirms the physical object is gone and the
+  // fresh local costmap confirms immediate traversability. The global costmap
+  // is deliberately excluded -- consistent with preCleanupSourcesReady -- because
+  // its inflation layer can amplify a single tolerated /map residual cell into a
+  // region-flooding stale occupancy that cleanup_local_grids cannot remove,
+  // making stabilization hinge on how deeply RTAB happened to bake the blocker
+  // (S2/S3 2026-07-26, cleanup_modified=12/17 -> global stuck ~60 while /map and
+  // local were clear). global_clear is still logged by the caller as diagnostic.
+  return map_clear && local_clear;
 }
 
 bool WaitForBarrierClear::freshnessSatisfiedAfterClear(

@@ -163,16 +163,44 @@ TEST(WaitForBarrierClearTest, verifiedSourcesFollowClearanceMode)
 {
   using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
 
-  // Mode A: all three representations must verify after the clears.
+  // Mode A post-gate: /map (physical-change proof) AND the fresh local costmap
+  // (immediate traversability) must verify. The global costmap is excluded --
+  // consistent with preCleanupSourcesReady -- because its inflation layer can
+  // amplify a single tolerated /map residual cell into a region-flooding stale
+  // occupancy that cleanup_local_grids cannot remove (S2/S3 2026-07-26).
   EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, true, true));
-  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", true, false, true));
+  EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, false, true));
   EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", false, true, true));
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", true, true, false));
 
   // Mode B: the fresh LOCAL costmap is the hard gate; /map and global
   // residuals are advisory (rays through the vacated region may never
   // terminate, so they can stay stale indefinitely).
   EXPECT_TRUE(Node::verifiedSourcesClear("track_confirmed_departure", false, false, true));
   EXPECT_FALSE(Node::verifiedSourcesClear("track_confirmed_departure", true, true, false));
+}
+
+TEST(WaitForBarrierClearTest, mapConfirmedPostGateIgnoresGlobalInflation)
+{
+  using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
+
+  // S2/S3 2026-07-26 Mechanism B: after the operator intervention, /map
+  // confirms the object is gone (sem <= max_lethal_cells) and the fresh local
+  // costmap confirms immediate traversability, but the GLOBAL costmap inflates
+  // the single tolerated /map residual into ~60 lethal-by-threshold cells that
+  // cleanup_local_grids cannot carve. Requiring global here makes success hinge
+  // on how deeply RTAB happened to bake the blocker that run -- so the post-gate
+  // must NOT require the global costmap.
+  EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, false, true));
+
+  // /map stays mandatory: if the physical change is not confirmed on /map, the
+  // post-gate fails regardless of the other sources.
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", false, false, true));
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", false, true, true));
+
+  // The fresh local costmap stays a hard gate: no immediate traversability ->
+  // fail, so a still-present blocker can never be waved through.
+  EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", true, true, false));
 }
 
 TEST(WaitForBarrierClearTest, freshnessGateFollowsClearanceMode)

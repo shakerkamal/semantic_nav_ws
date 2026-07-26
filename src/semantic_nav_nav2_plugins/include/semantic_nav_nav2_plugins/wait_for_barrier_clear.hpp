@@ -144,10 +144,14 @@ public:
     bool local_clear);
 
   /**
-   * @brief Post-clear verification per evidence mode: Mode A requires all
-   * three representations; Mode B hard-gates on the fresh LOCAL costmap only
-   * (/map and global residuals are advisory -- rays through the vacated
-   * region may never terminate, so they can stay stale indefinitely).
+   * @brief Post-clear verification per evidence mode. Mode A hard-gates on
+   * /map (physical-change proof) AND the fresh LOCAL costmap (immediate
+   * traversability); the global costmap is excluded -- as in the pre-cleanup
+   * gate -- because its inflation layer can hold a single tolerated /map
+   * residual as a region-flooding stale occupancy that cleanup cannot remove.
+   * Mode B hard-gates on the fresh LOCAL costmap only (/map and global
+   * residuals are advisory -- rays through the vacated region may never
+   * terminate, so they can stay stale indefinitely).
    */
   static bool verifiedSourcesClear(
     const std::string & clearance_mode,
