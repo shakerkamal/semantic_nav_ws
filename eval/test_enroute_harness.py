@@ -405,8 +405,12 @@ def test_barrier_clearance_modes_route_by_evidence_type():
         assert gate.get("local_region_mode") == "center_and_observed"
         assert gate.get("local_lethal_threshold") == "100"
         assert gate.get("observed_max_radius_m") == "0.30"
-        assert gate.get("initial_dwell_s") == "2.0"
         assert gate.get("poll_interval_s") == "1.0"
+
+    # Dwell was lengthened for depth-only /map re-observation (2026-07-26):
+    # S3 clears a map-baked static object, S4 confirms a tracked departure.
+    assert gates["WaitForClearedObjectClearance"].get("initial_dwell_s") == "8.0"
+    assert gates["WaitForAnimateObstacleClearance"].get("initial_dwell_s") == "6.0"
 
     # S2's door branch keeps the conservative regression-baseline timing.
     door = gates["WaitForOpenDoorClearance"]
@@ -638,7 +642,6 @@ def test_parse_trial_s5_redirected_run():
     assert row["min_standoff_m"] == 0.95
     assert row["reapproach_count"] == 2   # two descents below 1.5 after being above
     assert row["db_version"] == "1193208084"
-    assert row["code_commit"] == "abc1234"
 
 
 def test_parse_trial_geo_abort():
@@ -712,7 +715,6 @@ def test_parse_trial_needs_operator():
     # since there is no Executor-finished line to read them from.
     assert row["db_version"] == "3498918824"
     assert abs(row["time_to_resolution_s"] - 21.042) < 0.1
-    assert row["code_commit"] == "625d2e2"
     # S1 (expected 'none') tests that NO semantic recovery was needed.
     assert row["semantic_recovery_success"] == ""
     assert row["outer_fallback_after_semantic_failure"] is False

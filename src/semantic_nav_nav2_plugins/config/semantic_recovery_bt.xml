@@ -124,7 +124,7 @@
                 responsible_bbox_center="{responsible_bbox_center}" 
                 responsible_bbox_extent="{responsible_bbox_extent}" 
                 robot_footprint_radius="0.1" 
-                clearance_margin="0.20" 
+                clearance_margin="0.65" 
                 global_frame="map" 
                 robot_base_frame="base_footprint" 
                 standoff_goal="{standoff_goal}" />
@@ -203,7 +203,7 @@
                 responsible_bbox_center="{responsible_bbox_center}" 
                 responsible_bbox_extent="{responsible_bbox_extent}" 
                 robot_footprint_radius="0.1" 
-                clearance_margin="0.20" 
+                clearance_margin="0.65" 
                 global_frame="map" 
                 robot_base_frame="base_footprint" 
                 standoff_goal="{standoff_goal}" />

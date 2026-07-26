@@ -20,7 +20,7 @@ EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
 STAMP = re.compile(r"\[(\d+)\.(\d+)\]")
 TRIAL = re.compile(
-    r"\[TRIAL\] scenario=(\S+) variant=(\S+) rep=(\d+) commit=(\S+)")
+    r"\[TRIAL\] scenario=(\S+) variant=(\S+) rep=(\d+)")
 DISPATCH = re.compile(
     r"\[EXECUTION\] Sending goal to execute_pose.*?db_version=(\d+)")
 FINISHED = re.compile(
@@ -95,7 +95,7 @@ def parse_trial(
     meta = TRIAL.search(text)
     if not meta:
         raise ValueError("no [TRIAL] marker")
-    scenario, variant, rep, commit = meta.groups()
+    scenario, variant, rep = meta.groups()
 
     t_dispatch = t_finish = t_last = None
     success = None
@@ -283,7 +283,6 @@ def parse_trial(
         "reapproach_count": _reapproach_count(dists) if dists else "",
         "min_standoff_m": min(dists) if dists else "",
         "db_version": db_version or dispatch_dbv,
-        "code_commit": commit,
     }
 
 

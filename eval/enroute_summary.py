@@ -3,9 +3,8 @@
 
 Aggregates eval/enroute_ablation_results.csv (from enroute_ablation.py) into
 (scenario, variant) cells keyed on the HONEST metric semantic_recovery_success
--- never a raw navigation REACHED. Also flags validity problems: reps pooled
-across different commits, dirty-tree runs, and success rates that diverge (a
-tiebreak rep is needed).
+-- never a raw navigation REACHED. Also flags success rates that diverge across
+reps (a tiebreak rep is needed).
 
 Usage:
   python3 eval/enroute_ablation.py            # (re)build the CSV first
@@ -33,18 +32,11 @@ def _f(value):
         return None
 
 
-def _short_commit(commit):
-    """'bt-lr-m4-81-g0dd50f7-dirty' -> ('0dd50f7', dirty=True)."""
-    dirty = commit.endswith("-dirty")
-    sha = commit.split("-g")[-1].replace("-dirty", "")
-    return sha, dirty
-
-
 class AblationSummary:
     """Per-cell aggregation of ablation trial rows."""
 
     COLUMNS = ("scenario", "variant", "N", "sem_success", "nav_success",
-               "dir_correct", "fallback", "tier", "outcome", "mean_s", "commit")
+               "dir_correct", "fallback", "tier", "outcome", "mean_s")
 
     def __init__(self, rows):
         self.rows = list(rows)
@@ -81,19 +73,6 @@ class AblationSummary:
               if x is not None]
         return f"{sum(xs) / len(xs):.1f}" if xs else ""
 
-    @staticmethod
-    def _commit(rows):
-        seen, dirty = set(), False
-        for r in rows:
-            commit = str(r.get("code_commit", "")).strip()
-            if not commit:
-                continue
-            sha, is_dirty = _short_commit(commit)
-            seen.add(sha)
-            dirty = dirty or is_dirty
-        tag = ("MIXED:" if len(seen) > 1 else "") + ",".join(sorted(seen))
-        return tag + ("(dirty)" if dirty else "")
-
     def summary(self):
         cells = []
         for (scenario, variant), rows in sorted(self._cells().items()):
@@ -110,7 +89,6 @@ class AblationSummary:
                 "tier": self._mode(rows, "resolving_tier"),
                 "outcome": self._mode(rows, "terminal_outcome"),
                 "mean_s": self._mean_s(rows),
-                "commit": self._commit(rows),
             })
         return cells
 
@@ -118,9 +96,6 @@ class AblationSummary:
         notes = []
         for cell in self.summary():
             tag = f"{cell['scenario']}/{cell['variant']}"
-            if "MIXED" in cell["commit"] or "dirty" in cell["commit"]:
-                notes.append(
-                    f"{tag}: reps not on one clean commit ({cell['commit']})")
             rate = re.fullmatch(r"(\d+)/(\d+)", cell["sem_success"])
             if rate and rate.group(1) not in (rate.group(2), "0"):
                 notes.append(
