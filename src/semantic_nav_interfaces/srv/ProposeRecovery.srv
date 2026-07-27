@@ -16,7 +16,7 @@ uint32 nav2_recoveries_attempted
 uint32 remaining_retry_budget
 
 # --- BT-LLM trigger provenance ---
-# "plan_intersection_monitor" | "stall_watchdog" | "bt_recovery_plugin" | "action_backstop"
+# "stall_watchdog" | "bt_recovery_plugin" | "action_backstop"
 string trigger_source
 
 # --- Responsible-object summary ---

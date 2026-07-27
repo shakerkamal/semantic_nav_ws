@@ -10,7 +10,6 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SemanticDB.msg"
-  "msg/RecoveryTrigger.msg"
   "msg/ObjectInstance.msg"
   "msg/SemanticStoreUpdated.msg"
   "msg/DynamicObjectObservation.msg"
