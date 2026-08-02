@@ -1,0 +1,67 @@
+# Scenario + arm constants for the up-front recovery ablation (Ch7 s7.5,
+# eval/upfront_evaluation_plan.md). Platform: UGV rover, depth-only, fresh SLAM
+# session per rep. The natural-language command is issued (not a direct goal)
+# so the LLM intent parse and ranker are exercised as in the real system.
+#
+# ARM SELECTION IS AT LAUNCH TIME. up_front_recovery_enabled is cached at
+# orchestrator init (navigation_orchestrator.py), so run_upfront_trial.sh
+# VERIFIES the live value instead of setting it; open_set_inference_enabled is
+# read live and the runner sets it per arm. U0 additionally needs the GEOMETRIC
+# en-route tree: with up-front recovery off the goal dispatches straight into
+# the Nav2 BT, and the default (LLM) tree would semantically rescue the very
+# baseline U0 exists to isolate.
+
+common:
+  nl_command: "tired"
+  goal_object_key: "bed:120"
+  responsible_object_key: "room partition:121"
+  # Reference per-call LLM latency for time_to_resolution_norm_llm_s.
+  # PROVENANCE: median llm_latency_s over the 15 en-route grid rows
+  # (enroute_ablation_results.csv, Qwen3-14B on the uni server via Zenoh).
+  # The up-front campaign served the SAME model locally (server outage) at
+  # ~25-40s/call; measured columns stay measured, this constant only feeds
+  # the clearly-labelled normalized column. Disclose in the chapter.
+  llm_latency_ref_s: 1.3
+  # partition:121 coordinate (close_partition.sh). Blocker-state gate polarity
+  # differs per scenario: U-A requires this to read FREE in /map; U-B requires
+  # it OCCUPIED — the panel must be inserted AND OBSERVED before the trial
+  # (an unobserved panel is in neither /map nor the costmap, so pre-flight
+  # validation would succeed and the up-front lane would never trigger).
+  blocker_xy: [-2.5068, -1.3503]
+
+arms:
+  U0:  # geometric baseline: no up-front recovery, no semantic en-route rescue
+    up_front_recovery_enabled: false
+    open_set_inference_enabled: false
+    recovery_bt_xml: semantic_recovery_bt_geometric.xml
+  U1:  # deterministic affordance table ('room partition' unclassifiable)
+    up_front_recovery_enabled: true
+    open_set_inference_enabled: false
+    recovery_bt_xml: semantic_recovery_bt.xml
+  U2:  # LLM open-set affordance inference (the M4/21.4 contribution)
+    up_front_recovery_enabled: true
+    open_set_inference_enabled: true
+    recovery_bt_xml: semantic_recovery_bt.xml
+
+scenarios:
+  U-A:  # reachable control: no blocker; recovery must NOT trigger in any arm
+    blocker_present: false
+    expected_upfront_trigger:
+      U0: false
+      U1: false
+      U2: false
+    expected_final_directive:
+      U0: ""
+      U1: ""
+      U2: ""
+
+  U-B:  # open-set barrier: partition seals the bedroom doorway from the start
+    blocker_present: true
+    expected_upfront_trigger:
+      U0: false   # recovery disabled; dispatch fails into the geometric BT
+      U1: true
+      U2: true
+    expected_final_directive:
+      U0: ""
+      U1: ""      # escalates; open_door_then_replan is never ELIGIBLE
+      U2: "open_door_then_replan"
