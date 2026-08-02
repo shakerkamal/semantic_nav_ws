@@ -87,6 +87,7 @@ def generate_launch_description():
     # Recovery ablation switches (A1 = deterministic baseline, A2 = LLM).
     up_front_llm_enabled = LaunchConfiguration('up_front_llm_enabled')
     open_set_inference_enabled = LaunchConfiguration('open_set_inference_enabled')
+    up_front_recovery_enabled = LaunchConfiguration('up_front_recovery_enabled')
 
     # Rover-only: run the orchestrator as a daemon, or drive it one-shot from the CLI.
     start_orchestrator = LaunchConfiguration('start_orchestrator')
@@ -300,14 +301,22 @@ def generate_launch_description():
     up_front_llm_enabled_arg = DeclareLaunchArgument(
         'up_front_llm_enabled',
         default_value='true',
-        description='M4 ablation: true=LLM selects the up-front recovery directive '
-                    '(A2); false=deterministic default only (A1).',
+        description='LLM-selection ablation: true=LLM selects the up-front recovery '
+                    'directive (A2); false=deterministic default only (A1).',
     )
     open_set_inference_enabled_arg = DeclareLaunchArgument(
         'open_set_inference_enabled',
         default_value='true',
-        description='Open-set ablation (spec 21.4): true=LLM infers affordances for '
+        description='Open-set ablation: true=LLM infers affordances for '
                     'unclassifiable blocker tags (A2); false=table-only default (A1).',
+    )
+    up_front_recovery_enabled_arg = DeclareLaunchArgument(
+        'up_front_recovery_enabled',
+        default_value='true',
+        description='Up-front ablation (U0 arm): false disables pre-flight blockage '
+                    'recovery entirely (cached at orchestrator init — launch-time only; '
+                    'pair false with the geometric recovery_bt_xml or the en-route LLM '
+                    'tree rescues the baseline).',
     )
     start_orchestrator_arg = DeclareLaunchArgument(
         'start_orchestrator',
@@ -445,6 +454,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'up_front_llm_enabled': up_front_llm_enabled,
             'open_set_inference_enabled': open_set_inference_enabled,
+            'up_front_recovery_enabled': up_front_recovery_enabled,
             # En-route ablation: B-LLM default XML, or the geometric-only B-GEO
             # variant passed via recovery_bt_xml:=... at launch.
             'behavior_tree': recovery_bt_xml,
@@ -512,6 +522,7 @@ def generate_launch_description():
         operator_prompt_timeout_sec_arg,
         up_front_llm_enabled_arg,
         open_set_inference_enabled_arg,
+        up_front_recovery_enabled_arg,
         start_orchestrator_arg,
         recovery_bt_xml_arg,
 
