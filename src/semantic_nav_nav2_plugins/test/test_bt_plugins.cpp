@@ -356,7 +356,7 @@ TEST(QuerySemanticContextTest, hasResponsibleSafetyClassOutputPort)
 
 TEST(QuerySemanticContextTest, hasResponsibleBboxOutputPorts)
 {
-  // 2026-07-15 (Part A): the matched object's bbox was being discarded --
+  // Regression: the matched object's bbox was being discarded --
   // QuerySemanticContext read it from MatchResponsibleObject's response but
   // never surfaced it to the blackboard, so ComputeStandoffPose had nothing
   // to stand off from.
@@ -471,7 +471,7 @@ TEST(OperatorPromptTest, hasRecoveryEventIdInputPort)
 
 TEST(OperatorPromptTest, hasConfirmedObjectTopicInputPort)
 {
-  // 2026-07-15: OperatorDecision.srv has no way to signal a simulation
+  // OperatorDecision.srv has no way to signal a simulation
   // -specific follow-up (e.g. deleting a spawned Gazebo obstacle) -- the
   // door stayed put even after an operator confirmed opening it, since
   // nothing was watching for the confirmation. This port is the seam
@@ -523,12 +523,12 @@ TEST(CaptureBlockageContextTest, fallbackClampsToPathEndWhenShort)
 
 TEST(CaptureBlockageContextTest, nearestLethalCentroidFindsClusterNearRobot)
 {
-  // A fully-sealed corridor (S2 door): ComputePathToPose finds NO path at
+  // A fully-sealed corridor (a closed door): ComputePathToPose finds NO path at
   // all, so fallbackCentroidAlongPath has nothing to project along and would
   // otherwise return the robot's raw position -- which can be a couple of
-  // metres from the actual blocker after a Tier-2 backup (found 2026-07-15,
-  // S2: robot at (2.808,-0.116), true door at (4.862,-0.677), match found an
-  // unrelated "trash bin" instead). The costmap is the PERCEPTION-GROUNDED
+  // metres from the actual blocker after a Tier-2 backup, letting the match
+  // latch onto an unrelated nearby object instead of the true blocker. The
+  // costmap is the PERCEPTION-GROUNDED
   // source of truth: it already shows the door as lethal cells right in
   // front of the stopped robot, so search it directly instead of guessing.
   auto costmap = makeCostmap(40, 40, 0.1f, 0.0f, 0.0f, 0);
@@ -574,7 +574,7 @@ TEST(CaptureBlockageContextTest, nearestLethalCentroidMalformedCostmapReturnsFal
   EXPECT_FALSE(found);
 }
 
-// ---- ComputeStandoffPose (Part A: en-route standoff-before-sampling) -----
+// ---- ComputeStandoffPose (en-route standoff-before-sampling) -----
 
 TEST(ComputeStandoffPoseTest, standoffIsOutsideBboxAndFacesObject)
 {
@@ -634,7 +634,7 @@ TEST(ComputeStandoffPoseTest, registersWithoutError)
       "ComputeStandoffPose"));
 }
 
-// ---- HasResponsibleObjectCandidate (Part A gate) --------------------------
+// ---- HasResponsibleObjectCandidate (candidate gate) --------------------------
 
 TEST(HasResponsibleObjectCandidateTest, verifiedAndInferredAreCandidates)
 {

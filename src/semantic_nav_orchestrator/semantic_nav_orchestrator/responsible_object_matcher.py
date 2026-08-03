@@ -141,8 +141,8 @@ def _qualifying_live_overrides(
     Depth sensing marks an object's NEAR FACE, so a measured centroid is
     systematically displaced from the object center toward the robot -- a small
     live object can miss its own inflated-bbox containment while a co-located
-    static record's long bbox still contains the centroid (S3 2026-07-17
-    partition; S3 2026-07-19 doorway door:119). A live observation qualifies to
+    static record's long bbox still contains the centroid (e.g. a room partition
+    or a doorway with a co-located static twin). A live observation qualifies to
     take precedence over the static-only winner when its bbox INTERSECTS the
     winner's (same physical spot, not an unrelated bystander) AND it
     independently EXPLAINS the blockage (centroid within its own bbox +
@@ -154,7 +154,7 @@ def _qualifying_live_overrides(
     intersection is the bystander guard; own-blockage explanation is the
     identity/proximity guard. (A 1e-6 "at least as close" epsilon previously
     rejected a genuinely co-located live object that was ~20 microns farther
-    than its static twin -- S3 2026-07-19.)
+    than its static twin, so no such distance comparison is used.)
 
     Freshness is owned by the semantics layer: DynamicObjectCache.snapshot()
     purges expired entries before /refresh_local_objects responds, so every
@@ -312,7 +312,7 @@ def match_responsible_object(
 
     # Live-over-static precedence also applies when NOTHING is verified-contained
     # but the nearest candidate is a static record and a co-located live object
-    # independently explains the blockage (S3 doorway pass-1 fell here).
+    # independently explains the blockage (the co-located doorway case).
     if nearest.source != "dynamic_overlay":
         qualifying = _qualifying_live_overrides(
             blockage_centroid, candidates, nearest, inflate)

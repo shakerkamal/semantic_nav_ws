@@ -469,7 +469,7 @@ def test_clear_object_directive_strips_whitespace_from_key():
     directive = build_clear_object_directive(proposal, _ctx(), responsible_object_key=" box:2 ")
     assert directive.responsible_object_key == "box:2"
 
-# --- approach_and_recheck directive builder (spec 8.3) ---
+# --- approach_and_recheck directive builder ---
 
 def test_approach_directive_carries_standoff():
     proposal = LLMProposal(
@@ -498,11 +498,11 @@ def test_approach_directive_without_standoff_gives_up():
 
 
 def test_give_up_only_eligible_set_never_substitutes():
-    # S3 r1 (2026-07-17): eligible=['give_up'] (single_eligible), the LLM
-    # answered give_up @95 -- and the deterministic first-attempt semi-static
-    # override STILL issued wait_then_replan for an immovable partition,
-    # burning a full recovery round. When the policy already reduced the set
-    # to give_up only, the builder must not resurrect an ineligible action.
+    # Regression: with eligible=['give_up'] (single_eligible) and the LLM
+    # answering give_up, the deterministic first-attempt semi-static override
+    # must NOT resurrect wait_then_replan for an immovable object. When the
+    # policy has already reduced the set to give_up only, the builder must not
+    # resurrect an ineligible action.
     proposal = LLMProposal(
         action="give_up",
         rationale="Blocked by a room partition; no safe recovery.",

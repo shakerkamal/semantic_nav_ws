@@ -1,9 +1,9 @@
 # Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
-"""Deterministic up-front recovery policy (filter-not-decider, spec 21.3).
+"""Deterministic up-front recovery policy (filter-not-decider).
 
 eligible_directives() answers "which actions are safe/valid here?" (the filter,
-which M4's LLM keeps). choose_directive() makes a deterministic pick from that
-set (which M4's LLM replaces). Keeping them separate is what lets the LLM add
+which the LLM keeps). choose_directive() makes a deterministic pick from that
+set (which the LLM replaces). Keeping them separate is what lets the LLM add
 value without loosening safety.
 """
 
@@ -87,7 +87,7 @@ def barrier_cleared_status(
 
 @dataclass(frozen=True)
 class ResponsibleAffordances:
-    """Affordances of the barrier's responsible object (from M1 overlay/match)."""
+    """Affordances of the barrier's responsible object (from the overlay/match)."""
 
     tag: str
     openable: bool
@@ -183,7 +183,7 @@ def select_and_override_directive(
     aff: ResponsibleAffordances,
     has_reachable_standoff: bool,
 ) -> DirectiveSelection:
-    """Filter-not-policy selection (spec 21.3 + 11.3).
+    """Filter-not-policy selection.
 
     The deterministic layer supplies ``eligible``; the LLM's ``llm_action`` is
     honored only when it is in the eligible set. Single-eligible needs no LLM;
@@ -236,5 +236,5 @@ def choose_directive(
         return "clear_object_then_replan"
 
     # Structural / immovable / unknown-without-standoff -> concede (retry_target
-    # needs a known reachable alternative, which M3 does not yet enumerate).
+    # needs a known reachable alternative, which is not yet enumerated).
     return "give_up"

@@ -203,13 +203,13 @@ def generate_launch_description():
     up_front_llm_enabled_arg = DeclareLaunchArgument(
         'up_front_llm_enabled',
         default_value='true',
-        description='M4 ablation: true=LLM selects the up-front recovery directive '
-                    '(A2); false=deterministic default only (A1).',
+        description='LLM-selection ablation: true=LLM selects the up-front recovery '
+                    'directive (A2); false=deterministic default only (A1).',
     )
     open_set_inference_enabled_arg = DeclareLaunchArgument(
         'open_set_inference_enabled',
         default_value='true',
-        description='Open-set ablation (spec 21.4): true=LLM infers affordances for '
+        description='Open-set ablation: true=LLM infers affordances for '
                     'unclassifiable blocker tags (A2); false=table-only default (A1).',
     )
 

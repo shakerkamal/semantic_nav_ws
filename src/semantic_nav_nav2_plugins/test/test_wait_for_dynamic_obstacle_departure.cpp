@@ -79,7 +79,7 @@ TEST(WaitForDynamicObstacleDepartureTest, onlyDynamicOverlaySourceAllowsTracking
 {
   // Departure tracking is meaningful only for live-perceived objects: a
   // static catalog record trivially "overlaps the blocked region" forever
-  // (S3 2026-07-17: 'room partition:121' burned the full 30s timeout).
+  // (e.g. a static room partition burns the full timeout).
   // Routing is by source PROVENANCE, never by state/safety/tag heuristics.
   semantic_nav_interfaces::msg::ObjectInstance object;
 

@@ -13,9 +13,9 @@ def test_should_trust_supplied_match_verified_and_inferred():
     # A match_type already determined by an upstream matcher that DOES see
     # dynamic candidates (e.g. /match_responsible_object) must be trusted,
     # not re-derived from a static-only catalog that cannot see them at all
-    # (found 2026-07-15, S2: a dynamically-perceived 'door:903' was silently
-    # swapped for the co-located static 'door:119' because the orchestrator's
-    # internal static-only re-match couldn't find the dynamic key).
+    # (otherwise a dynamically-perceived key is silently swapped for a
+    # co-located static one because the orchestrator's internal static-only
+    # re-match cannot find the dynamic key).
     assert should_trust_supplied_match("verified") is True
     assert should_trust_supplied_match("inferred") is True
 
@@ -195,7 +195,7 @@ def test_colocated_verified_matches_prefer_dynamic_over_static_even_if_farther()
     # is physically there right now; the dynamic observation is what a live
     # detector actually perceived. Prefer it even when it is NOT the nearest
     # bbox center, since "nearest" alone has no way to break this tie
-    # correctly (found 2026-07-15, S3/S4/S5 co-location with object_121).
+    # correctly when a dynamic object is co-located with a static one.
     static_partition = ObjectCandidate(
         object_key="partition:121",
         object_tag="room partition",
@@ -294,7 +294,7 @@ def _s3_chair(center=(-2.507, -1.350, 0.0)) -> ObjectCandidate:
 
 
 def test_s3_geometry_live_chair_overrides_static_only_containment():
-    # EXACT S3 r1 attempt-1 numbers (2026-07-17): the measured centroid is
+    # The measured centroid is
     # the chair's NEAR FACE (depth marks are surface marks), which misses the
     # chair's small bbox but lands inside the co-located partition's long
     # thin bbox. The partition then verified ALONE and the dynamic-preference
@@ -380,7 +380,7 @@ def _s3_doorway_ball(center=(4.8622, -0.6772, 0.0)) -> ObjectCandidate:
 
 
 def test_s3_doorway_live_ball_overrides_colocated_static_door():
-    # S3 2026-07-19 doorway (the exact live numbers): the ball spawns on the
+    # A doorway case: the ball spawns on the
     # static door:119. The near-face centroid (~0.73m south of center) misses
     # the ball's 0.7 bbox but lands inside the door's long inflated bbox, so
     # door:119 verified alone. The OLD 1e-6 "at least as close" epsilon
@@ -419,8 +419,8 @@ def test_live_override_applies_in_the_nearest_fallback_branch():
     # When NOTHING is verified-contained (centroid outside every inflated
     # bbox) but the nearest candidate is a static record and a co-located live
     # object independently explains the blockage, the fallback branch must also
-    # prefer the live object -- not just the verified branch (S3 doorway pass-1
-    # fell here and tie-broke to door:119).
+    # prefer the live object -- not just the verified branch (the co-located
+    # doorway case would otherwise tie-break to the static door).
     result = match_responsible_object(
         blockage_centroid=(4.8622, -1.2772, 0.0),
         blockage_extent_m=0.150,

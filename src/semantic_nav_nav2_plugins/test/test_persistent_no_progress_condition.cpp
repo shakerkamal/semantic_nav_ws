@@ -175,7 +175,7 @@ TEST(PersistentNoProgressConditionTest, malformedCostmapFailsOpen)
 
 TEST(PersistentNoProgressConditionTest, inscribedInflationAloneDoesNotBlockAtTrueLethalThreshold)
 {
-  // S3 2026-07-17 final stall: 45 "lethal" cells at threshold 90 were the
+  // Regression: 45 "lethal" cells at threshold 90 were the
   // partition walls' INSCRIBED band (cost 99), counted as obstacle evidence
   // while the rotation shim was still settling -- killing an attempt that
   // was about to succeed. Inflation is a planning artifact, not physical

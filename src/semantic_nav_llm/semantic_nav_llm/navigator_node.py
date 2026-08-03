@@ -511,11 +511,11 @@ class NavigatorNode(Node):
     _SAFETY_CLASSES = {"none", "human", "animal"}
 
     def _handle_infer_affordance(self, request, response):
-        """Open-set affordance inference (spec 21.4).
+        """Open-set affordance inference.
 
         Maps an unclassifiable blocker (tag + caption) to physical affordances
         {openable, clearable, safety_class} that the affordance table could not
-        enumerate. Emits no geometry (spec 1.5); the orchestrator remains the
+        enumerate. Emits no geometry; the orchestrator remains the
         execution authority and the safety floor is enforced downstream.
         """
         tag = (request.object_tag or "").strip()
@@ -1259,7 +1259,7 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         The orchestrator computes the eligible set (up_front_policy.
         eligible_directives) and passes it as request.allowed_actions. The
         navigator does NOT recompute eligibility — this is the single source of
-        truth (spec 21.3, filter-not-policy). INELIGIBLE lines are still shown so
+        truth (filter-not-policy). INELIGIBLE lines are still shown so
         the LLM learns the boundary.
         """
         allowed = set(getattr(request, "allowed_actions", []) or [])
@@ -2076,8 +2076,8 @@ Remaining retry budget after this proposal: {max(0, int(request.remaining_retry_
         # /geometry noise is in play: a few cm of centroid error against a
         # thin object (e.g. a 0.2m-thick door) is enough to miss "verified"
         # on nearly every attempt, and real hardware will be noisier than
-        # simulation, not less (confirmed live 2026-07-15, S2: a match at
-        # 0.41m, a few mm outside the inflated bbox, was rejected outright).
+        # simulation, not less (a match a few mm outside the inflated bbox
+        # would otherwise be rejected outright).
         # Only "unknown" (no plausible candidate at all) is refused here.
         if (getattr(request, "match_type", "") or "").strip() not in {
             "verified", "inferred",

@@ -146,7 +146,7 @@ def test_standoff_plain_bt_can_be_an_explicit_path():
     assert bt == "/plain.xml"
 
 
-# --- approach_and_recheck eligibility (spec 8.4) ---
+# --- approach_and_recheck eligibility ---
 
 def test_structural_barrier_no_standoff_excludes_approach():
     aff = _aff(tag="", openable=False, clearable=False, match="none")
@@ -163,7 +163,7 @@ def test_reachable_nonstructural_includes_approach():
     assert len(elig) >= 2  # LLM is load-bearing here
 
 
-# --- select_and_override_directive (filter-not-policy, spec 21.3 / 11.3) ---
+# --- select_and_override_directive (filter-not-policy) ---
 
 def test_llm_pick_honored_when_eligible():
     elig = ["approach_and_recheck", "retry_target", "give_up"]

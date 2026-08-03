@@ -1,5 +1,5 @@
 # Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
-"""FailureDiagnosis (spec 10): explicit diagnosis object for logging, eval,
+"""FailureDiagnosis: explicit diagnosis object for logging, eval,
 and LLM prompting. ROS-free; poses are (frame, x, y, yaw) tuples or None."""
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 # Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
-"""Unit tests for the dynamic-object trigger-augmentation bug (2026-07-15).
+"""Unit tests for the dynamic-object trigger-augmentation bug.
 
 Uses NavigationOrchestrator.__new__ to exercise the method without the full
 node __init__ (which needs rclpy + a live ROS graph), mirroring the pattern
@@ -32,9 +32,9 @@ def _orchestrator(semantic_objects=()):
 
 
 def test_dynamic_only_key_keeps_supplied_match_not_treated_as_unknown():
-    # 2026-07-15: door:903 (a live-perceived, dynamic-only key -- never added
+    # A live-perceived, dynamic-only key (never added
     # to the orchestrator's static catalog by design) was silently swapped
-    # for the co-located static door:119 because the old code treated "not
+    # for a co-located static key because the old code treated "not
     # in the static catalog" as "unknown" unconditionally, discarding the
     # already-correct match_type/affordances supplied by the caller (which
     # came from /match_responsible_object, which DOES see dynamic

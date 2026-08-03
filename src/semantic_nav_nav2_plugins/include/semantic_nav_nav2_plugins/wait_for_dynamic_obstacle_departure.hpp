@@ -79,7 +79,7 @@ public:
    *
    * A static catalog record trivially overlaps its own blocked region
    * forever, so "waiting for it to depart" can only burn the timeout
-   * (S3 2026-07-17: 'room partition:121', full 30s). Routing is by source
+   * (e.g. a static room partition burns the full wait). Routing is by source
    * PROVENANCE -- never inferred from state/safety_class/tag/key naming.
    */
   static bool sourceAllowsDepartureTracking(const ObjectInstance & object);

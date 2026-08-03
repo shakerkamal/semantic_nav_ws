@@ -85,7 +85,7 @@ def build_approach_and_recheck_directive(
     target_pose: Optional[ResolvedPose],
     responsible_object_key: str,
 ) -> Directive:
-    """Move to a reachable standoff, then retry the original goal (spec 8.3).
+    """Move to a reachable standoff, then retry the original goal.
 
     The standoff pose is computed by the orchestrator (not the LLM). If no
     reachable standoff exists, degrade to terminal give_up with escalation.
@@ -220,7 +220,7 @@ def build_give_up_directive(
       )
       AND "wait_then_replan" is in eligible_actions
 
-    The eligibility gate is mandatory (S3 2026-07-17): when the policy has
+    The eligibility gate is mandatory: when the policy has
     already reduced the eligible set to give_up only, the override must not
     resurrect an action the policy ruled out -- it exists to catch a timid
     LLM, not to overrule eligibility.
@@ -287,7 +287,7 @@ def enforce_directive_eligibility(
     """Final policy invariant before the directive leaves the orchestrator.
 
     No layer between eligibility filtering and the BT response may issue an
-    action outside the eligible set (S3 2026-07-17: selected give_up became
+    action outside the eligible set (e.g. a selected give_up must not become
     a built wait_then_replan). An ineligible directive is converted into a
     terminal give_up carrying an explicit policy-violation rationale; it is
     never silently downgraded to some other action.
@@ -369,7 +369,7 @@ def build_clear_object_directive(
     )
 
 
-# M4 (spec 21.3): the closed-door deterministic decider
+# The closed-door deterministic decider
 # (maybe_build_closed_door_directive + build_direct_* helpers) was removed. A
 # closed door now yields >=2 eligible actions and the LLM selects among them;
 # the deterministic layer filters + overrides invalid picks, it does not decide.

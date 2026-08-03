@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="Md Shaker Ibna Kamal",
     maintainer_email="shakerkamal@proton.me",
-    description="Operator I/O node for BT-LR M5 operator actions.",
+    description="Operator I/O node for operator-mediated recovery actions.",
     license="Apache-2.0",
     tests_require=["pytest"],
     entry_points={

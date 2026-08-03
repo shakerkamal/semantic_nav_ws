@@ -85,10 +85,10 @@ def _request(match_type, key="door:119", safety_class="none"):
 
 
 def test_operator_action_rejects_unknown_match_type():
-    # 2026-07-15: real-world detection/matching noise means a strict
-    # "verified only" gate would reject correct picks far more often than in
-    # simulation -- but "unknown" (no plausible match at all) must still be
-    # refused; there is nothing to safely act on.
+    # Real-world detection/matching noise means a strict "verified only" gate
+    # would reject correct picks far more often than in simulation -- but
+    # "unknown" (no plausible match at all) must still be refused; there is
+    # nothing to safely act on.
     node = NavigatorNode.__new__(NavigatorNode)
     error = node._validate_operator_object_action_common(
         parsed=_parsed_action(), request=_request("unknown"),
@@ -115,8 +115,8 @@ def test_operator_action_accepts_inferred_match_type():
     # -bbox containment (verified) before ANY operator action is eligible is
     # an unrealistic bar once real sensor/geometry noise is in play (a few cm
     # of centroid error against e.g. a 0.2m-thick door is enough to miss
-    # "verified" every time) -- confirmed live 2026-07-15, S2 (a match at
-    # 0.41m, a few mm outside the inflated bbox, was rejected outright).
+    # "verified" every time): a match a few mm outside the inflated bbox
+    # would otherwise be rejected outright.
     node = NavigatorNode.__new__(NavigatorNode)
     error = node._validate_operator_object_action_common(
         parsed=_parsed_action(), request=_request("inferred"),

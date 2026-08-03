@@ -84,7 +84,7 @@ BT::NodeStatus CaptureBlockageContext::tick()
   }
 
   // No lethal cell on the path (stale/short path, blocker outside the
-  // rolling local costmap, OR -- a fully-sealed corridor like S2's closed
+  // rolling local costmap, OR -- a fully-sealed corridor like a closed
   // door -- the planner found NO path at all, so there is nothing to sample).
   // Read the robot's TF pose; every fallback tier below is anchored on it.
   double fallback_lookahead_m{1.0};

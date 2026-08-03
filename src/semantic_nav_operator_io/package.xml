@@ -3,7 +3,7 @@
 <package format="3">
   <name>semantic_nav_operator_io</name>
   <version>0.1.0</version>
-  <description>Operator I/O node for BT-LR M5 operator actions.</description>
+  <description>Operator I/O node for operator-mediated recovery actions.</description>
   <maintainer email="shakerkamal@proton.me">Md Shaker Ibna Kamal</maintainer>
   <license>Apache-2.0</license>
 

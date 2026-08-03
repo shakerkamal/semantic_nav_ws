@@ -1,5 +1,5 @@
 # Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
-"""Unit tests for the FailureDiagnosis schema (spec 10)."""
+"""Unit tests for the FailureDiagnosis schema."""
 
 import json
 

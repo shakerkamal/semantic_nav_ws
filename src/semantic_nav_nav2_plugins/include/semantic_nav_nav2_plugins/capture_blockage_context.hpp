@@ -60,12 +60,11 @@ public:
    * robot's current position, read directly from the local costmap.
    *
    * When the path is completely empty (a fully-sealed corridor: the planner
-   * cannot find ANY route, e.g. S2's closed door), fallbackCentroidAlongPath
+   * cannot find ANY route, e.g. a closed door), fallbackCentroidAlongPath
    * has nothing to project along and would return the robot's raw pose --
    * which can be a couple of metres from the actual blocker after a Tier-2
-   * backup moves the robot further away (found 2026-07-15, S2: robot at
-   * (2.808,-0.116), true door at (4.862,-0.677), match found an unrelated
-   * "trash bin" instead of the door). The costmap the robot is stopped in
+   * backup moves the robot further away, letting the match latch onto an
+   * unrelated nearby object instead of the true blocker. The costmap the robot is stopped in
    * front of already shows the real obstacle as lethal cells, so search
    * that directly instead of guessing geometrically. Returns false (leaves
    * out_centroid untouched) if no lethal cell is found within

@@ -15,8 +15,7 @@ namespace semantic_nav_nav2_plugins
 
 /**
  * @brief BT action that computes a standoff pose in front of a KNOWN object,
- * for Tier-3's "approach the detected candidate before sampling" step
- * (spec: en-route ablation Part A, 2026-07-15).
+ * for Tier-3's "approach the detected candidate before sampling" step.
  *
  * Ports the EXACT algorithm already proven up-front
  * (semantic_nav_semantics/standoff_planner.py:StandoffPlanner.plan) rather

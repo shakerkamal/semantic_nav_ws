@@ -470,7 +470,7 @@ class NavigationOrchestrator(Node):
             10,
         )
 
-        # --- M3: global costmap subscription for up-front blockage diagnosis ---
+        # --- Global costmap subscription for up-front blockage diagnosis ---
         self.declare_parameter('global_costmap_topic', '/global_costmap/costmap')
         self.declare_parameter('up_front_recovery_enabled', True)
         self.declare_parameter('up_front_cap', 2)
@@ -527,7 +527,7 @@ class NavigationOrchestrator(Node):
         # stack (semantic_nav_system.launch.py), whose rtabmap comes from
         # rtabmap_demos and does NOT set map_always_update — so a TB3 dwell would
         # stare at a frozen map and do nothing. 'spin' reproduces exactly the sweep
-        # the locked Ch7 TB3 results were collected with. The ugv_rover opts into
+        # the locked TB3 results were collected with. The ugv_rover opts into
         # 'dwell' from aws_small_house_ugv_semantic.launch.py, where
         # rover_rtabmap_rgbd.launch.py does set map_always_update=true.
         #   'spin'  — legacy sweep (+y, -2y, +y) every poll. TB3 default.
@@ -592,11 +592,11 @@ class NavigationOrchestrator(Node):
         # Ablation switch (A1 vs A2): when False the up-front loop skips the LLM
         # strategy call and uses the deterministic default from
         # select_and_override_directive -- i.e. the deterministic-only baseline.
-        # True = LLM selects among the eligible set (the M4 contribution).
+        # True = LLM selects among the eligible set.
         # Read live at use-time (see _up_front_llm_enabled) so `ros2 param set`
         # flips A1<->A2 on the same SLAM map without a relaunch.
         self.declare_parameter('up_front_llm_enabled', True)
-        # Open-set affordance inference (spec 21.4): for a blocker whose tag the
+        # Open-set affordance inference: for a blocker whose tag the
         # affordance table cannot classify, ask the LLM to infer its affordances
         # from the caption. Ablation switch (A1 vs A2 for the open-set case):
         # False = table-only, unclassifiable tags keep the restrictive default.
@@ -606,8 +606,8 @@ class NavigationOrchestrator(Node):
         # the goal autonomously -- there is no operator gate on that path, so
         # retry_target is dropped from the en-route eligible set. Up-front
         # retry_target is unaffected (it escalates to the operator). True only
-        # for the explicit retry-as-alternative ablation leg (en-route S5).
-        # Read live at use-time (see _enroute_retry_target_enabled) so the S5
+        # for the explicit retry-as-alternative ablation arm.
+        # Read live at use-time (see _enroute_retry_target_enabled) so the
         # ablation arm flips via `ros2 param set` without a relaunch, like the
         # sibling up_front_llm_enabled / open_set_inference_enabled switches.
         self.declare_parameter('enroute_retry_target_enabled', False)
@@ -687,7 +687,7 @@ class NavigationOrchestrator(Node):
         # Active semantic target context used as a fallback for BT-led
         # /request_recovery calls. ExecutePose/NavigateToPose carries only
         # pose + behavior_tree, so these object-centric fields are not naturally
-        # available on the Nav2 BT blackboard in M2.
+        # available on the Nav2 BT blackboard.
         self._active_original_object_tag = ""
         self._active_original_intent_hint = ""
         self._active_current_target_object_key = ""
@@ -1436,7 +1436,7 @@ class NavigationOrchestrator(Node):
                 # open-set inference already paid for at a prior attempt).
                 aff = sticky_aff
             else:
-                # Open-set inference (spec 21.4): if the affordance table can't
+                # Open-set inference: if the affordance table can't
                 # classify this tag, ask the LLM to infer the affordances from
                 # the caption; otherwise use the table-driven object attributes.
                 inferred = None
@@ -1472,7 +1472,7 @@ class NavigationOrchestrator(Node):
                 dist_to_barrier <= self._up_front_verify_range_m
             )
 
-            # M4 filter-not-policy (spec 21.3/9): the deterministic layer filters
+            # Filter-not-policy: the deterministic layer filters
             # to the eligible set; the LLM selects among it when >=2 remain; the
             # deterministic override coerces invalid/unavailable picks. Actions
             # already tried this recovery are dropped (exhaustion) so the LLM
@@ -2298,15 +2298,14 @@ class NavigationOrchestrator(Node):
                 # added here (see local_object_query_node), so a key sourced
                 # from a detector will always miss this lookup. The caller
                 # (en-route: /match_responsible_object, which DOES see
-                # dynamic candidates, commit a6f5e9c) already determined a
+                # dynamic candidates) already determined a
                 # valid match_type -- trust it. Re-deriving from this static
                 # -only catalog would silently discard a correct
                 # live-perceived match for a possibly-unrelated static object
-                # that merely happens to be co-located (e.g. object_121's
-                # partition sharing coordinates with a live-detected
-                # chair/person/door -- found 2026-07-15, S2: 'door:903' was
-                # swapped for 'door:119', harmless there only because they
-                # are the same physical door).
+                # that merely happens to be co-located (e.g. a room partition
+                # sharing coordinates with a live-detected chair/person/door,
+                # where swapping the live key for the static one is harmless
+                # only when they are the same physical object).
                 trigger.responsible_bbox_center = trigger.blockage_centroid
                 extent = float(trigger.blockage_extent_m)
                 trigger.responsible_bbox_extent = Vector3(
@@ -3137,7 +3136,7 @@ class NavigationOrchestrator(Node):
         )
 
     def _eligible_for_trigger(self, trigger: TriggerInfo) -> list:
-        """Eligible directive set for the en-route BT path (spec 21.3).
+        """Eligible directive set for the en-route BT path.
 
         No standoff is computed en-route (the geometric tier only backs up), so
         has_reachable_standoff=False -> approach_and_recheck is naturally
@@ -3159,25 +3158,25 @@ class NavigationOrchestrator(Node):
         return elig
 
     def _enroute_retry_target_enabled(self) -> bool:
-        """Read the S5 fixed-goal ablation switch live so `ros2 param set`
+        """Read the fixed-goal ablation switch live so `ros2 param set`
         flips arms without a relaunch."""
         return bool(self.get_parameter('enroute_retry_target_enabled')
                     .get_parameter_value().bool_value)
 
     def _up_front_llm_enabled(self) -> bool:
-        """Read the M4 ablation switch live so `ros2 param set` flips A1<->A2
-        without a relaunch."""
+        """Read the up-front LLM ablation switch live so `ros2 param set` flips
+        A1<->A2 without a relaunch."""
         return bool(self.get_parameter('up_front_llm_enabled')
                     .get_parameter_value().bool_value)
 
     def _open_set_inference_enabled(self) -> bool:
-        """Read the open-set ablation switch live (spec 21.4)."""
+        """Read the open-set ablation switch live."""
         return bool(self.get_parameter('open_set_inference_enabled')
                     .get_parameter_value().bool_value)
 
     def _infer_affordance(self, tag, caption):
         """Return an InferredAffordance from the LLM, or None (fall back to
-        table default). Runs only for unclassifiable tags (spec 21.4)."""
+        table default). Runs only for unclassifiable tags."""
         if not self._infer_affordance_client.wait_for_service(
             timeout_sec=self._service_wait_timeout_sec
         ):
@@ -3210,7 +3209,7 @@ class NavigationOrchestrator(Node):
     def _request_up_front_llm_choice(
         self, diag, aff, obj, eligible, target, initial_query: str, attempts=None
     ) -> str:
-        """Ask the LLM to pick one action from the eligible set (spec 21.3).
+        """Ask the LLM to pick one action from the eligible set.
 
         Returns the chosen action string, or "" on failure/timeout so the caller
         falls back to the deterministic default. The standoff pose is never
@@ -3386,7 +3385,7 @@ class NavigationOrchestrator(Node):
         req.responsible_openable = bool(trigger.responsible_openable)
         req.responsible_clearable = bool(trigger.responsible_clearable)
 
-        # M4: filter-not-policy. Hand the LLM exactly the eligible actions.
+        # Filter-not-policy: hand the LLM exactly the eligible actions.
         req.allowed_actions = self._eligible_for_trigger(trigger)
 
         req.blockage_centroid = trigger.blockage_centroid
@@ -3651,7 +3650,7 @@ class NavigationOrchestrator(Node):
                 eligible,
             )
 
-        # M4 filter-not-policy (spec 21.3): the LLM selects among the eligible
+        # Filter-not-policy: the LLM selects among the eligible
         # set; the deterministic layer overrides only invalid/ineligible picks.
         # No forced open_door/clear_object overrides -- those are eligible
         # actions the LLM selects (or the priority default falls back to).
@@ -3744,8 +3743,8 @@ class NavigationOrchestrator(Node):
         give_up is additionally always a legal terminal (converting an
         ineligible directive INTO give_up must itself be allowed). On a
         violation, log all stages and return the terminal replacement --
-        never silently pass an ineligible action to the tree
-        (S3 2026-07-17: selected give_up was issued as wait_then_replan).
+        never silently pass an ineligible action to the tree (e.g. a selected
+        give_up must not be issued as wait_then_replan).
         """
         allowed = set(eligible) | {"give_up"}
         final = enforce_directive_eligibility(directive, allowed)
@@ -4108,7 +4107,7 @@ class NavigationOrchestrator(Node):
         )
 
         try:
-            # M4 (spec 21.3): no closed-door deterministic short-circuit. A
+            # No closed-door deterministic short-circuit. A
             # closed door yields >=2 eligible actions and the LLM selects; the
             # deterministic layer only filters + overrides invalid picks.
             proposal = self._call_propose_recovery_for_bt_request(

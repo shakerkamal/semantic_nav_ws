@@ -1,4 +1,4 @@
-"""Operator I/O service node for BT-LR M5.
+"""Operator I/O service node for operator-mediated recovery actions.
 
 Serves /operator_decision. Prints a prompt to stdout and waits for y/n/q.
 Uses select() for non-blocking stdin so the ROS spin thread is not starved

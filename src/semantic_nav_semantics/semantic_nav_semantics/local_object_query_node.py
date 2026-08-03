@@ -1,7 +1,7 @@
 """ROS 2 node serving /refresh_local_objects from a SemanticStore.
 
-BT-LR M1 local semantic context provider, extended in M5B with a dynamic
-TTL overlay for short-lived observations (humans, animals, obstacles).
+Local semantic context provider with a dynamic TTL overlay for short-lived
+observations (humans, animals, obstacles).
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _default_config_path(filename: str) -> str:
 def load_object_action_attributes(path: str) -> Mapping[str, object]:
     """Load object_action_attributes.json.
 
-    Missing file is allowed for M1. Unknown tags default to:
+    Missing file is allowed. Unknown tags default to:
       safety_class="none", openable=False, clearable=False.
 
     Supported shapes:
@@ -206,7 +206,7 @@ def row_to_object_instance(
     )
     msg.bbox_volume = float(row.bbox_volume)
 
-    # M5B runtime metadata — zero/empty for persistent-map objects.
+    # Runtime overlay metadata — zero/empty for persistent-map objects.
     msg.source = "persistent_map"
     msg.confidence = 0.0
     msg.ttl_sec = 0.0
@@ -260,14 +260,12 @@ class LocalObjectQueryNode(Node):
         self.declare_parameter("default_door_state_ttl_sec", 3.0)
         self.declare_parameter("max_door_state_ttl_sec", 15.0)
 
-        # Open-set affordance inference (spec 21.4) for DYNAMIC (live
-        # -perceived) objects. A live detector can report ANY tag, not just
-        # the ones already in object_action_attributes.json (the up-front
-        # path already gets this via navigation_orchestrator; en-route never
-        # did, leaving a genuinely novel detected tag stuck with restrictive
-        # table defaults -- found 2026-07-15, user: "we definitely need this
-        # enabled by default since we don't know what object will be
-        # detected"). Default True per that explicit direction.
+        # Open-set affordance inference for DYNAMIC (live-perceived) objects.
+        # A live detector can report ANY tag, not just the ones already in
+        # object_action_attributes.json (the up-front path already gets this
+        # via navigation_orchestrator; en-route otherwise leaves a genuinely
+        # novel detected tag stuck with restrictive table defaults). Default
+        # True because we cannot know in advance what object will be detected.
         self.declare_parameter("open_set_inference_enabled", True)
         self.declare_parameter("infer_affordance_service", "/infer_affordance")
         self.declare_parameter("affordance_confidence_floor", 60)
@@ -549,7 +547,7 @@ class LocalObjectQueryNode(Node):
             # from the same table that classifies persistent-map objects
             # (parity with row_to_object_instance and the up-front flow),
             # falling back to open-set LLM inference for a tag the table
-            # cannot classify (spec 21.4) -- previously up-front only.
+            # cannot classify -- previously up-front only.
             safety_class, openable, clearable = self._classify_dynamic_object(
                 obj.object_tag, obj.object_caption
             )
@@ -753,8 +751,8 @@ class LocalObjectQueryNode(Node):
 
     def _classify_dynamic_object(self, tag: str, caption: str) -> Tuple[str, bool, bool]:
         """Table lookup first; open-set LLM inference ONLY for a tag the
-        table cannot classify (spec 21.4) -- a live detector can report ANY
-        tag, unlike the fixed set of persistent-map objects."""
+        table cannot classify -- a live detector can report ANY tag, unlike
+        the fixed set of persistent-map objects."""
         by_tag = self._action_attrs.get("by_tag", {})
         table_tags = set(by_tag.keys()) if isinstance(by_tag, dict) else set()
 

@@ -11,7 +11,7 @@ namespace semantic_nav_nav2_plugins
 /**
  * @brief BT condition: does QuerySemanticContext's first, wide-radius pass
  * already know a candidate (verified or inferred), so Tier-3 can navigate
- * DELIBERATELY to a standoff in front of it (Part A, 2026-07-15) instead of
+ * DELIBERATELY to a standoff in front of it instead of
  * falling back to a blind DriveOnHeading approach?
  *
  * Mirrors responsible_object_matcher.should_trust_supplied_match's exact

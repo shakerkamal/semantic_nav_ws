@@ -122,7 +122,7 @@ TEST(WaitForBarrierClearTest, rawGateRequiresOnlyMapForMapConfirmedChange)
   // Mode A's mandatory raw prerequisite is "/map confirms the physical
   // change" -- NOT "raw map AND raw global AND raw local all clear". Raw
   // Nav2 costmaps may contain exactly the stale data their clear services
-  // exist to remove (S3/S4 2026-07-17 deadlock).
+  // exist to remove, which would otherwise deadlock the gate.
   using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
 
   EXPECT_TRUE(Node::rawGateSatisfied("map_confirmed_change", true));
@@ -167,7 +167,7 @@ TEST(WaitForBarrierClearTest, verifiedSourcesFollowClearanceMode)
   // (immediate traversability) must verify. The global costmap is excluded --
   // consistent with preCleanupSourcesReady -- because its inflation layer can
   // amplify a single tolerated /map residual cell into a region-flooding stale
-  // occupancy that cleanup_local_grids cannot remove (S2/S3 2026-07-26).
+  // occupancy that cleanup_local_grids cannot remove.
   EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, true, true));
   EXPECT_TRUE(Node::verifiedSourcesClear("map_confirmed_change", true, false, true));
   EXPECT_FALSE(Node::verifiedSourcesClear("map_confirmed_change", false, true, true));
@@ -184,7 +184,7 @@ TEST(WaitForBarrierClearTest, mapConfirmedPostGateIgnoresGlobalInflation)
 {
   using Node = semantic_nav_nav2_plugins::WaitForBarrierClear;
 
-  // S2/S3 2026-07-26 Mechanism B: after the operator intervention, /map
+  // Mechanism B: after the operator intervention, /map
   // confirms the object is gone (sem <= max_lethal_cells) and the fresh local
   // costmap confirms immediate traversability, but the GLOBAL costmap inflates
   // the single tolerated /map residual into ~60 lethal-by-threshold cells that

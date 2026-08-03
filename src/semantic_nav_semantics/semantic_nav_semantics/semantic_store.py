@@ -9,7 +9,7 @@ Responsibilities:
   - Expose a navigable tag vocabulary for LLM intent prompts.
 
 The store does not produce poses. Object-to-standoff-pose planning belongs in
-``standoff_planner.py`` in a later milestone.
+a separate standoff planner.
 """
 
 from __future__ import annotations

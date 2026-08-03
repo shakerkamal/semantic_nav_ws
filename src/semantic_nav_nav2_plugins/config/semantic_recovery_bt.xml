@@ -148,7 +148,7 @@
               <!-- Blind forward nudge ONLY when nothing is known: it exists to
                    bring an unseen blocker into the 59-deg FOV. When a candidate
                    is already matched, driving forward rams the known obstacle
-                   and destroys the match on re-query (S3 2026-07-17). Skip it
+                   and destroys the match on re-query. Skip it
                    and escalate with the retained match instead. -->
               <Sequence name="BlindApproachUnknownOnly">
                 <Inverter>
@@ -305,8 +305,7 @@
                    only a live-perceived (dynamic_overlay) object can
                    meaningfully depart. A static catalog record trivially
                    overlaps its own blocked region forever, so tracking it
-                   can only burn the timeout (S3 2026-07-17, partition:121,
-                   full 30s). Non-dynamic sources take a conservative
+                   can only burn the timeout. Non-dynamic sources take a conservative
                    corridor recheck instead: still blocked means FAILURE and
                    the outer recovery continues. -->
               <Fallback name="DepartureConfirmationPolicy">

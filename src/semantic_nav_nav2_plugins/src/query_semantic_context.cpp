@@ -421,10 +421,10 @@ BT::PortsList QuerySemanticContext::providedPorts()
       "Winning candidate's provenance: dynamic_overlay | persistent_map | ''"),
     BT::OutputPort<geometry_msgs::msg::Point>(
       "responsible_bbox_center",
-      "Matched object's bbox center -- feeds ComputeStandoffPose (Part A)"),
+      "Matched object's bbox center -- feeds ComputeStandoffPose"),
     BT::OutputPort<geometry_msgs::msg::Vector3>(
       "responsible_bbox_extent",
-      "Matched object's bbox extent -- feeds ComputeStandoffPose (Part A)"),
+      "Matched object's bbox extent -- feeds ComputeStandoffPose"),
     BT::OutputPort<int>("local_db_version", ""),
     BT::OutputPort<std::string>("local_db_source", ""),
   };

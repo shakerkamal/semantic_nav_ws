@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fake ProposeRecovery service for BT-LR M1D validation.
+"""Fake ProposeRecovery service for BT-led recovery validation.
 
 Runs a deterministic /fake_propose_recovery service so /request_recovery can be
 tested without llama_ros.

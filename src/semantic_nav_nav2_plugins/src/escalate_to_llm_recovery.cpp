@@ -116,7 +116,7 @@ void EscalateToLLMRecovery::on_tick()
   getInput("local_db_source", local_db_source);
   request_->local_db_source = local_db_source.empty() ? "static_snapshot" : local_db_source;
 
-  // M3 does not yet generate a stable debounce key. Keep explicit but empty.
+  // No stable debounce key is generated yet. Keep explicit but empty.
   request_->debounce_key = "";
 }
 

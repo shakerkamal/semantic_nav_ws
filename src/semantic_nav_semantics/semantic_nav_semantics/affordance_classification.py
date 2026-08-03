@@ -1,8 +1,8 @@
 # Copyright 2026 Md Shaker Ibna Kamal. Apache-2.0.
-"""Pure helpers for open-set affordance classification (spec 21.4).
+"""Pure helpers for open-set affordance classification.
 
 Duplicated verbatim from semantic_nav_orchestrator/affordance_classification.py
-(2026-07-15) rather than imported, to avoid a semantics->orchestrator
+rather than imported, to avoid a semantics->orchestrator
 dependency: orchestrator already depends on semantics for the reverse
 direction (SemanticStore etc.), and this module is tiny, pure, and
 dependency-free, so duplication is cheaper than the inversion. Used here to
